@@ -48,9 +48,12 @@ const linqLifecycleSchema = z.union([
 
 const linqEventSchema = z.union([linqReceivedSchema, linqLifecycleSchema]);
 
-function readRawBody(req: IncomingMessage): Promise<string> {
+/** Buffer the body as raw bytes.  Decoding per chunk would corrupt a
+ *  multibyte UTF-8 character split across chunks, and the HMAC is over the
+ *  exact bytes Linq sent, so decode only once, after the signature check. */
+function readRawBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    let raw = "";
+    const chunks: Buffer[] = [];
     let bytes = 0;
     let done = false;
     const fail = (status: number, message: string) => {
@@ -63,12 +66,12 @@ function readRawBody(req: IncomingMessage): Promise<string> {
       const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
       bytes += buf.length;
       if (bytes > MAX_LINQ_WEBHOOK_BYTES) return fail(413, "Linq webhook body is too large");
-      raw += buf.toString("utf8");
+      chunks.push(buf);
     });
     req.on("end", () => {
       if (done) return;
       done = true;
-      resolve(raw);
+      resolve(Buffer.concat(chunks));
     });
     req.on("error", () => fail(400, "Could not read Linq webhook body"));
   });
@@ -91,10 +94,10 @@ function json(res: ServerResponse, status: number, body: Record<string, unknown>
  *  and accepts the call.  That matches Linq's trial tier behavior where
  *  signing is opt-in.  The audit doc tracks this as a hard follow-up to
  *  gate the secret behind a required-on-publish toggle. */
-function verifySignature(rawBody: string, header: string | undefined, secret: string | undefined): boolean {
+function verifySignature(rawBody: Buffer, header: string | undefined, secret: string | undefined): boolean {
   if (!secret) return true;
   if (!header) return false;
-  const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   const got = header.trim().toLowerCase();
   if (got.length !== expected.length) return false;
   try {
@@ -103,6 +106,9 @@ function verifySignature(rawBody: string, header: string | undefined, secret: st
     return false;
   }
 }
+
+/** `handleLinqInbound` reasons that are deliberate drops, not failures. */
+const FINAL_DROP_REASONS: ReadonlySet<string> = new Set(["no_bot_for_chat", "sender_blocked", "empty"]);
 
 export interface LinqWebhookOptions {
   /** Pull the active bots list.  Injected so this module can stay decoupled
@@ -115,7 +121,7 @@ export async function readLinqWebhook(
   res: ServerResponse,
   options: LinqWebhookOptions,
 ): Promise<void> {
-  let rawBody: string;
+  let rawBody: Buffer;
   try {
     rawBody = await readRawBody(req);
   } catch (err) {
@@ -131,7 +137,7 @@ export async function readLinqWebhook(
   }
   let parsedBody: unknown;
   try {
-    parsedBody = parseJson(rawBody) as unknown;
+    parsedBody = parseJson(rawBody.toString("utf8")) as unknown;
   } catch {
     json(res, 400, { ok: false, reason: "bad_json" });
     return;
@@ -156,6 +162,13 @@ export async function readLinqWebhook(
       sentAt: parsed.data.sent_at ?? new Date().toISOString(),
     };
     const result = await handleLinqInbound(inbound, options.getBots());
+    // Policy drops (no bound bot, blocked sender, empty message) are final:
+    // answer 200 so Linq does not redeliver them.  Anything else means the
+    // message never reached the bot, so answer 503 and let Linq retry.
+    if (!result.dispatched && !FINAL_DROP_REASONS.has(result.reason ?? "")) {
+      json(res, 503, { ok: false, retry: true, ...result });
+      return;
+    }
     json(res, 200, { ok: true, ...result });
     return;
   }
