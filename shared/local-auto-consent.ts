@@ -189,6 +189,23 @@ export function requiresLocalAutoConsent(
   return allowedComputers == null || allowedComputers.includes("local");
 }
 
+/** The operator allowlist as host control actually sees it.  The legacy
+ * `allowedComputers` array (`null` = every destination allowed) is narrowed
+ * by the per-provider toggle: once `computerProviders` is stored, "This
+ * Computer" is available only while `localMac === true`, the same rule
+ * `resolveGrants` applies (a missing key reads as off).  Consent checks feed
+ * this to `requiresLocalAutoConsent` so that turning the provider back on is
+ * seen as widening the allowlist, not as no change. */
+export function hostAwareAllowedComputers(
+  allowedComputers: readonly LocalComputerDestination[] | null | undefined,
+  providers: Partial<ComputerProviders> | undefined,
+): LocalComputerDestination[] | null {
+  const allowed = allowedComputers == null ? null : [...allowedComputers];
+  if (!providers || providers.localMac === true) return allowed;
+  const base: LocalComputerDestination[] = allowed ?? ["cloud", "vm", "local"];
+  return base.filter((entry) => entry !== "local");
+}
+
 /** Consent covers exactly the identities and names shown in the warning. */
 export function matchesLocalAutoConsent(value: unknown, required: LocalAutoConsentBot[]): boolean {
   if (!Array.isArray(value) || value.length !== required.length) return false;
