@@ -120,7 +120,17 @@ export function providersForBot(
       localMac = true;
     }
   }
-  return { asciiBox, selfHostedVps, localVm, localMac };
+  // Intersect with the per-provider allowlist, same as the Auto branch, so
+  // an explicit ["vm"] or ["cloud"] grant does NOT light a provider the
+  // operator has turned off.  An install with no `computerProviders` yet
+  // defers to the legacy allowlist, same as `server/computer-grants.ts`.
+  if (!workspaceProviders) return { asciiBox, selfHostedVps, localVm, localMac };
+  return {
+    asciiBox: asciiBox && Boolean(workspaceProviders.asciiBox),
+    selfHostedVps: selfHostedVps && Boolean(workspaceProviders.selfHostedVps),
+    localVm: localVm && Boolean(workspaceProviders.localVm),
+    localMac: localMac && Boolean(workspaceProviders.localMac),
+  };
 }
 
 export type BotComputerMatrixProps = {
