@@ -374,6 +374,18 @@ const ago = (at) => {
   return h < 24 ? h + " h ago" : Math.round(h / 24) + " d ago";
 };
 
+/** The two ways a notification is lost before it reaches Apple, one line
+ * each, worded the way the phone words them.  A queue-full drop is a local
+ * backlog; a circuit-breaker skip is an APNs outage.  One shared line would
+ * hide an outage with no overflow and blame a real overflow on either cause.
+ * A sidecar that predates circuitDropped simply shows no skip line. */
+const pushDropLines = (push) => {
+  const dropped = Number(push.dropped) || 0;
+  const skipped = Number(push.circuitDropped) || 0;
+  return (dropped > 0 ? "<p class=dim>" + dropped + " dropped (queue full).</p>" : "") +
+    (skipped > 0 ? "<p class=dim>" + skipped + " skipped (Apple push service unreachable).</p>" : "");
+};
+
 /** Call the control API and return the state it answers with. */
 async function api(path, method) {
   const res = await fetch(path, { method: method ?? "GET" });
@@ -459,9 +471,7 @@ function render(s) {
               ? "<p class=dim>Pushes are paused while the circuit breaker cools down " +
                 "until " + new Date(s.push.circuitOpenUntil).toLocaleTimeString() + ".</p>"
               : "") +
-            (s.push.dropped
-              ? "<p class=dim>" + s.push.dropped + " dropped from a full backlog or a paused circuit.</p>"
-              : ""));
+            pushDropLines(s.push));
 
   el("start")?.addEventListener("click", async () => render(await api("/pairing", "POST")));
   el("cancel")?.addEventListener("click", async () => render(await api("/pairing", "DELETE")));
