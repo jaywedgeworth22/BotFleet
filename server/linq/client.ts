@@ -104,8 +104,11 @@ async function call(
   }
   // Re-read the base URL every call so a desktop credential reload can
   // pick up a repointed partner API host without a harness restart.
+  // The documented base already ends in `/v3` (…/api/partner/v3) and every
+  // path here is written as the docs list it (`/v3/chats/…`), so drop the
+  // duplicate segment instead of calling …/v3/v3/….
   const { baseUrl } = readConfig();
-  const url = `${baseUrl}${path}`;
+  const url = baseUrl.endsWith("/v3") && path.startsWith("/v3/") ? `${baseUrl}${path.slice(3)}` : `${baseUrl}${path}`;
   const init: RequestInit = {
     method,
     headers: {
@@ -250,12 +253,15 @@ export async function linqGetContactCard(
 export async function linqGetUploadUrl(
   mimeType: string,
   filename: string,
+  sizeBytes: number,
   signal?: AbortSignal,
 ): Promise<LinqUploadCredentials> {
+  // `size_bytes` is required: the presigned PUT must carry exactly this many
+  // bytes (https://docs.linqapp.com/api/resources/attachments/methods/create/).
   const res = await call(
     "POST",
     "/v3/attachments",
-    { filename, content_type: mimeType },
+    { filename, content_type: mimeType, size_bytes: sizeBytes },
     signal,
   );
   const json = (await ensureOk(res, "linq: get-upload-url failed")) as {
