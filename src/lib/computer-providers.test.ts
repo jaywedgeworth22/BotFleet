@@ -9,7 +9,7 @@ import { providersForBot } from "../components/BotComputerMatrix";
 import type { Bot } from "../state/store";
 
 describe("computerProviders migrateAllowedComputersToProviders", () => {
-  it("maps [\"cloud\"] to { asciiBox: true, selfHostedVps: true, localVm: false, localMac: false } with shared VPS", () => {
+  it("maps [\"cloud\"] to { asciiBox: true, selfHostedVps: true, localVm: false, localMac: false } with per-bot VPS", () => {
     const result = migrateAllowedComputersToProviders(["cloud"]);
     expect(result.providers).toEqual({
       asciiBox: true,
@@ -17,7 +17,7 @@ describe("computerProviders migrateAllowedComputersToProviders", () => {
       localVm: false,
       localMac: false,
     });
-    expect(result.vpsMode).toBe("shared");
+    expect(result.vpsMode).toBe("per-bot");
   });
 
   it("maps [\"vm\"] to { localVm: true } with no VPS mode", () => {
@@ -50,7 +50,7 @@ describe("computerProviders migrateAllowedComputersToProviders", () => {
       localVm: false,
       localMac: true,
     });
-    expect(result.vpsMode).toBe("shared");
+    expect(result.vpsMode).toBe("per-bot");
   });
 
   it("maps null to ALL providers enabled (legacy meaning was 'every destination allowed')", () => {
@@ -61,7 +61,7 @@ describe("computerProviders migrateAllowedComputersToProviders", () => {
       localVm: true,
       localMac: true,
     });
-    expect(result.vpsMode).toBe("shared");
+    expect(result.vpsMode).toBe("per-bot");
   });
 
   it("maps undefined to ALL providers enabled", () => {
@@ -72,7 +72,7 @@ describe("computerProviders migrateAllowedComputersToProviders", () => {
       localVm: true,
       localMac: true,
     });
-    expect(result.vpsMode).toBe("shared");
+    expect(result.vpsMode).toBe("per-bot");
   });
 
   it("preserves an empty allowlist as a deliberate deny-all (NOT the default)", () => {
@@ -97,7 +97,7 @@ describe("computerProviders migrateAllowedComputersToProviders", () => {
     const result = migrateAllowedComputersToProviders(["cloud", "alien"] as Array<"cloud" | "vm" | "local">);
     expect(result.providers.asciiBox).toBe(true);
     expect(result.providers.selfHostedVps).toBe(true);
-    expect(result.vpsMode).toBe("shared");
+    expect(result.vpsMode).toBe("per-bot");
   });
 
   it("is idempotent on the new shape (running on already-migrated data is a no-op)", () => {
@@ -319,17 +319,49 @@ describe("computerProviders matrix rendering", () => {
     });
   });
 
-  it("renders the workspace providers for a bot whose computers[] is undefined (auto)", () => {
+  it("renders only what the auto path can mount for a bot whose computers[] is undefined and no workspace default", () => {
+    // True Auto reuses the resolved cloud backend and falls back to this
+    // computer (AUTO_DESTINATIONS in server/computer-grants.ts).  It never
+    // reaches the Local VM, so an enabled Local VM provider stays dark.
     const bot = makeBot("a", undefined);
     const workspaceProviders = {
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    };
+    expect(providersForBot(bot, workspaceProviders)).toEqual({
       asciiBox: true,
       selfHostedVps: false,
       localVm: false,
       localMac: true,
+    });
+    expect(providersForBot(bot, workspaceProviders, "vps")).toEqual({
+      asciiBox: false,
+      selfHostedVps: true,
+      localVm: false,
+      localMac: true,
+    });
+  });
+
+  it("intersects an Auto bot's inherited grant with the provider toggles", () => {
+    const bot = makeBot("a", undefined);
+    const workspaceProviders = {
+      asciiBox: false,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
     };
-    const providers = providersForBot(bot, workspaceProviders);
-    expect(providers).toEqual({
-      asciiBox: true,
+    // Box is off, so an Auto bot on the Box backend has only the host left.
+    expect(providersForBot(bot, workspaceProviders, "box")).toEqual({
+      asciiBox: false,
+      selfHostedVps: false,
+      localVm: false,
+      localMac: true,
+    });
+    // An inherited ["local"] default lights Local only.
+    expect(providersForBot(bot, workspaceProviders, "box", ["local"])).toEqual({
+      asciiBox: false,
       selfHostedVps: false,
       localVm: false,
       localMac: true,
