@@ -73,7 +73,7 @@ describe("linq/client", () => {
     const result = await linqSendMessage("chat-1", { text: "hi from bot" });
     expect(result).toEqual({ id: "msg-123" });
     const [call] = calls;
-    expect(call.url).toBe("https://api.linqapp.com/api/partner/v3/v3/chats/chat-1/messages");
+    expect(call.url).toBe("https://api.linqapp.com/api/partner/v3/chats/chat-1/messages");
     expect((call.init?.headers as Record<string, string>)?.authorization).toBe("Bearer test-token");
   });
 
@@ -171,10 +171,12 @@ describe("linq/client", () => {
         { status: 200, headers: { "content-type": "application/json" } },
       ),
     );
-    const creds = await linqGetUploadUrl("audio/mpeg", "voice.mp3");
+    const creds = await linqGetUploadUrl("audio/mpeg", "voice.mp3", 2048);
     expect(creds.attachmentId).toBe("att-up");
     expect(creds.uploadUrl).toBe("https://upload.linqapp.com/abc");
     expect(creds.requiredHeaders["x-amz-acl"]).toBe("private");
+    expect(calls[0].url).toBe("https://api.linqapp.com/api/partner/v3/attachments");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ filename: "voice.mp3", content_type: "audio/mpeg", size_bytes: 2048 });
   });
 
   it("PUTs bytes to the signed URL without the bearer token", async () => {
