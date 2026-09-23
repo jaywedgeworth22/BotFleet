@@ -986,7 +986,14 @@ export function rollbackHarnessBootstrapPlists(config, previous, existence) {
     return plists;
   }
   if (previous.launchdLoaded) plists.push(harnessBootstrapPlist(config, existence));
-  if (previous.legacyLaunchdLoaded) plists.push(config.legacyPlist);
+  // BOTFLEET_LAUNCH_AGENT_PLIST may point at a custom plist whose job runs
+  // under the legacy label on a pre-transition Mac.  The hardcoded legacy
+  // path was never written there, so restoring from it bootstraps nothing
+  // and the harness never comes back; the configured plist is the file the
+  // job was loaded from.
+  if (previous.legacyLaunchdLoaded) {
+    plists.push(config.customPlist && existence.plistExists ? config.plist : config.legacyPlist);
+  }
   return [...new Set(plists)];
 }
 
@@ -1277,6 +1284,7 @@ function createConfig(parsed) {
     appPath: resolve(process.env.BOTFLEET_APP_PATH || "/Applications/BotFleet.app"),
     dataDirectory: resolve(process.env.BOTFLEET_DATA_DIR || join(home, ".botfleet")),
     plist: resolve(process.env.BOTFLEET_LAUNCH_AGENT_PLIST || join(home, "Library/LaunchAgents/app.botfleet.server.plist")),
+    customPlist: Boolean(process.env.BOTFLEET_LAUNCH_AGENT_PLIST),
     label: process.env.BOTFLEET_LAUNCH_AGENT_LABEL || "app.botfleet.server",
     legacyPlist: join(home, `Library/LaunchAgents/${LEGACY_LAUNCH_AGENT_LABEL}.plist`),
     legacyLabel: LEGACY_LAUNCH_AGENT_LABEL,
