@@ -53,18 +53,23 @@ export const COMPUTER_PROVIDER_DISABLE_IMPACT: Record<ComputerProviderId, string
  * without re-importing zod. */
 export const LEGACY_ALLOWED_COMPUTERS_KEY = "allowedComputers";
 
-/** The fully-disabled shape that matches the operator's "every destination
- * allowed" legacy default.  Used as the fresh-install default when neither
- * `computerProviders` nor `allowedComputers` is on disk. */
+/** Every provider on: the per-provider spelling of the legacy "no
+ * allowlist = every destination is allowed" default.  Used when neither
+ * `computerProviders` nor `allowedComputers` is on disk, so an upgrade
+ * never revokes a Local VM or This Computer grant the legacy gate allowed. */
 export const DEFAULT_COMPUTER_PROVIDERS: ComputerProviders = {
   asciiBox: true,
   selfHostedVps: true,
-  localVm: false,
-  localMac: false,
+  localVm: true,
+  localMac: true,
 };
 
-/** Default VPS mode for a fresh install with `selfHostedVps: true`. */
-export const DEFAULT_VPS_MODE: VpsMode = "shared";
+/** Default VPS mode whenever `selfHostedVps` is on.  Per-bot is the only
+ * mode the VPS runtime implements (`server/vps-computer.ts` derives one
+ * container and lease per bot id); "shared" is accepted on disk for
+ * forward compatibility but is not offered in the UI until it has a
+ * runtime. */
+export const DEFAULT_VPS_MODE: VpsMode = "per-bot";
 
 /** All four keys as a stable iteration order so tests and UI code do not
  * depend on `Object.keys` (which is insertion-order in modern engines but
@@ -109,7 +114,7 @@ export function migrateAllowedComputersToProviders(
   // for any workspace that never narrowed the allowlist.
   if (allowedComputers === null || allowedComputers === undefined) {
     return {
-      providers: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+      providers: { ...DEFAULT_COMPUTER_PROVIDERS },
       vpsMode: vpsMode ?? DEFAULT_VPS_MODE,
     };
   }
@@ -140,7 +145,7 @@ export function migrateAllowedComputersToProviders(
     // already type-checked at write time, but a hand-edited file is
     // tolerated rather than crashing the boot migration.
   }
-  const resolvedVpsMode: VpsMode = vpsMode !== undefined ? vpsMode : hasCloud ? "shared" : null;
+  const resolvedVpsMode: VpsMode = vpsMode !== undefined ? vpsMode : hasCloud ? DEFAULT_VPS_MODE : null;
   if (providers.selfHostedVps && resolvedVpsMode === null) {
     throw new Error("Cannot migrate to computerProviders: vpsMode is null but selfHostedVps is enabled");
   }
