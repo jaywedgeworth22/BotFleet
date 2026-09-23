@@ -17,6 +17,7 @@ import {
   harnessBootstrapPlist,
   harnessLaunchdLabel,
   isExpectedBotFleetProcess,
+  launchAgentPlistLabel,
   loadPrepared,
   main,
   parseArguments,
@@ -1094,10 +1095,12 @@ test("rollback restores a legacy-label harness from a configured custom plist", 
     rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: false }),
     [config.plist],
   );
-  // Both flags recorded: the configured plist still restores only once.
+  // Both distinct labels recorded: the custom plist can only carry one of
+  // them, so the renamed job comes back from it and the legacy job from the
+  // legacy plist -- two bootstraps, not one deduped entry.
   assert.deepEqual(
     rollbackHarnessBootstrapPlists(config, { launchdLoaded: true, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: true }),
-    [config.plist],
+    [config.plist, config.legacyPlist],
   );
   // A configured plist that vanished mid-transaction falls back to the
   // legacy path that does exist.
@@ -1112,6 +1115,58 @@ test("rollback restores a legacy-label harness from a configured custom plist", 
     rollbackHarnessBootstrapPlists(stock, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: false }),
     [stock.legacyPlist],
   );
+});
+
+test("rollback restores both distinct loaded labels when a custom plist exists", () => {
+  // Both the renamed and the legacy label were loaded before the
+  // transaction and BOTFLEET_LAUNCH_AGENT_PLIST points at a custom plist.
+  // Both flags used to resolve to config.plist, the Set deduped them, and
+  // only one job came back.
+  const config = {
+    label: "app.botfleet.server",
+    plist: "/Users/test/custom/botfleet-server.plist",
+    customPlist: true,
+    legacyLabel: "com.jay.botfleet-server",
+    legacyPlist: "/Users/test/Library/LaunchAgents/com.jay.botfleet-server.plist",
+  };
+  const both = { launchdLoaded: true, legacyLaunchdLoaded: true };
+  // Custom plist declares the renamed label: legacy job from the legacy plist.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, both, { plistExists: true, legacyPlistExists: true, plistLabel: config.label }),
+    [config.plist, config.legacyPlist],
+  );
+  // Label unreadable: still two distinct restores.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, both, { plistExists: true, legacyPlistExists: true, plistLabel: null }),
+    [config.plist, config.legacyPlist],
+  );
+  // Custom plist missing: renamed job falls back to the legacy plist, which
+  // is also the legacy job's plist, so it is bootstrapped once.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, both, { plistExists: false, legacyPlistExists: true }),
+    [config.legacyPlist],
+  );
+  // Only the legacy job loaded and the custom plist declares the legacy
+  // label: it is restored from the custom plist.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: false, plistLabel: config.legacyLabel }),
+    [config.plist],
+  );
+  // Only the legacy job loaded but the custom plist declares the renamed
+  // label: it cannot be the legacy job's source.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: true, plistLabel: config.label }),
+    [config.legacyPlist],
+  );
+});
+
+test("launchAgentPlistLabel reads the plist Label and tolerates failures", async () => {
+  const calls = [];
+  const ok = async (command, args) => { calls.push([command, args]); return { code: 0, stdout: "com.jay.botfleet-server\n", stderr: "" }; };
+  assert.equal(await launchAgentPlistLabel("/tmp/x.plist", ok), "com.jay.botfleet-server");
+  assert.deepEqual(calls, [["plutil", ["-extract", "Label", "raw", "-o", "-", "/tmp/x.plist"]]]);
+  assert.equal(await launchAgentPlistLabel("/tmp/x.plist", async () => ({ code: 1, stdout: "", stderr: "no Label" })), null);
+  assert.equal(await launchAgentPlistLabel("/tmp/x.plist", async () => { throw new Error("spawn ENOENT"); }), null);
 });
 
 test("desktop attachment requires a static harness or a second same-owner UI endpoint", () => {
