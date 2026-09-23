@@ -115,7 +115,7 @@ export function createLinqTools(
       const mimeType = synthesized.mime || "audio/mpeg";
       let credentials: { uploadUrl: string; attachmentId: string; requiredHeaders: Record<string, string> };
       try {
-        credentials = await linqGetUploadUrl(mimeType, filename);
+        credentials = await linqGetUploadUrl(mimeType, filename, synthesized.bytes.byteLength);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         return failed(JSON.stringify({ error: `linq: signed upload URL failed: ${message}` }), "upload_url_error");
