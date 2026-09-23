@@ -550,8 +550,8 @@ async function resolveMounts<Lease>(
   // capability, not a preference: each one is resolved on its own terms below
   // and mounted with its own tools, so the agent chooses per task.  Granting
   // only the VM therefore means only the VM.
-  const { granted, auto } = resolveGrants(bot.computers, runOn, cfg.botDefaults?.computers, allowed);
-  const wantsCloud = granted.includes("cloud");
+  let { granted, auto } = resolveGrants(bot.computers, runOn, cfg.botDefaults?.computers, allowed);
+  // const wantsCloud = granted.includes("cloud"); // removed; use wantsCloudFiltered instead
   const wantsVm = granted.includes("vm");
   const wantsLocal = granted.includes("local");
   // `auto` says the bot never chose; these say where auto is still allowed to
@@ -559,13 +559,33 @@ async function resolveMounts<Lease>(
   // things — a cloud computer and, failing that, the host — and an operator
   // who disabled only one of them meant only one of them.
   const autoAllows = new Set(autoDestinations(allowed));
-  const autoCloud = auto && autoAllows.has("cloud");
-  const autoHost = auto && autoAllows.has("local");
   // Cloud destination (including runOn=cloud routines) resolves to ASCII.dev
   // Box or the operator's Coolify-hosted VPS via resolveCloudBackend.  runOn
   // selects the cloud *destination*; it must not override the bot/workspace
   // cloudBackend (historical bug: runOn==="cloud" hardcoded "box" and blocked VPS).
   const cloudBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+  // The redesigned Computer settings panel drives a per-provider allowlist
+  // (`botDefaults.computerProviders`) on top of the legacy
+  // `allowedComputers: ["cloud" | "vm" | "local"]` array.  The legacy
+  // field is too coarse to distinguish ASCII.dev Box from Self-Hosted
+  // VPS, so a workspace with `["cloud"]` in the legacy field AND the
+  // operator's Box toggle off would otherwise let a Box-backed bot
+  // continue using Box.  Drop the cloud destination entirely when the
+  // resolved backend is disabled by the new shape, for both explicit
+  // grants and the Auto fallback.
+  const providers = cfg.botDefaults?.computerProviders;
+  if (providers && granted.includes("cloud")) {
+    const backendEnabled = cloudBackend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true;
+    if (!backendEnabled) granted = granted.filter((d) => d !== "cloud");
+  }
+  // Recompute `wantsCloud` after the per-provider filter so the mount
+  // branches below see the post-filter grant.
+  const wantsCloudFiltered = granted.includes("cloud");
+  const autoCloudProviderEnabled = auto && autoAllows.has("cloud") && providers
+    ? (cloudBackend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true)
+    : true;
+  const autoCloud = auto && autoAllows.has("cloud") && autoCloudProviderEnabled;
+  const autoHost = auto && autoAllows.has("local");
   // One derivation for every destination — see computer-capability.ts.  The
   // names below are kept because the mount sites read as "does this turn
   // mount X", not "can this engine reach X".
@@ -620,13 +640,13 @@ async function resolveMounts<Lease>(
   // A VPS is a local-agent computer mount, never a remote agent runner.
   // Explicit Cloud may prepare/start it.  Auto remains read-only unless the
   // person explicitly opted this bot into remote lifecycle actions.
-  if ((wantsCloud || autoCloud) && cloudBackend === "vps") {
+  if ((wantsCloudFiltered || autoCloud) && cloudBackend === "vps") {
     const unsupported = deps.vps.vpsDriverError(engine.driverKind, reach);
-    if (unsupported && wantsCloud) throw new Error(unsupported);
+    if (unsupported && wantsCloudFiltered) throw new Error(unsupported);
     if (unsupported && autoCloud) autoVpsProblem = unsupported;
     if (!unsupported) {
       vpsLease = deps.vpsLeases.claim(bot.id, threadId, dispatchId);
-      const remote = wantsCloud || bot.autoStartVps
+      const remote = wantsCloudFiltered || bot.autoStartVps
         ? await deps.vps.vpsComputerAction("provision", cfg, bot.id)
         : await deps.vps.inspectVpsForAuto(cfg, bot.id);
       if (!(await deps.checkpoint())) return stopped();
@@ -647,7 +667,7 @@ async function resolveMounts<Lease>(
       } else {
         deps.vpsLeases.release(vpsLease);
         vpsLease = undefined;
-        if (wantsCloud) {
+        if (wantsCloudFiltered) {
           throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
         }
         autoVpsProblem = remote?.problem ?? "the VPS computer could not be reached";
@@ -657,15 +677,15 @@ async function resolveMounts<Lease>(
 
   // Cloud is also strict when explicitly selected.  Auto (unset) reuses an
   // existing cloud box, then falls back to host CUA without provisioning.
-  if ((wantsCloud || autoCloud) && cloudBackend === "box" && deps.box.boxConfigured(cfg)) {
-    if (!mountsCloudComputer && wantsCloud) {
+  if ((wantsCloudFiltered || autoCloud) && cloudBackend === "box" && deps.box.boxConfigured(cfg)) {
+    if (!mountsCloudComputer && wantsCloudFiltered) {
       throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
     }
     let b = await deps.box.findBox(cfg, bot.id).catch(() => null);
     if (!(await deps.checkpoint())) return stopped();
     // Explicit Cloud and the box-native Computer engine provision on first
     // use.  Auto remains non-surprising and only reuses an existing box.
-    if (!b && mountsCloudComputer && (wantsCloud || engine.driverKind === "boxAgent")) {
+    if (!b && mountsCloudComputer && (wantsCloudFiltered || engine.driverKind === "boxAgent")) {
       deps.broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
       await deps.box.provisionBox(cfg, bot.id, bot.name);
       if (!(await deps.checkpoint())) return stopped();
@@ -699,10 +719,10 @@ async function resolveMounts<Lease>(
       }
     }
   }
-  if (wantsCloud && cloudBackend === "box" && !deps.box.boxConfigured(cfg)) {
+  if (wantsCloudFiltered && cloudBackend === "box" && !deps.box.boxConfigured(cfg)) {
     throw new Error("Cloud box is not configured — add a Box API key or choose Local VM");
   }
-  if (wantsCloud && cloudBackend === "box" && !mounts.some((m) => m.kind === "box")) {
+  if (wantsCloudFiltered && cloudBackend === "box" && !mounts.some((m) => m.kind === "box")) {
     throw new Error("the cloud computer could not be created or reached");
   }
 
