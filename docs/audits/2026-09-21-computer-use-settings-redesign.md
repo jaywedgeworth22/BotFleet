@@ -47,7 +47,7 @@ the same question through the cut-over.
   caption explaining the impact of toggling off (no modal needed just
   to read about the change).
 - **`ComputerImpactConfirmModal`** before any disable commit: list
-  the bots that would lose a leg of their grant, "Disable anyway"
+  the bots that would lose a leg of their grant, "Disable Anyway"
   (accent red) and "Cancel" (neutral).
 - **`BotComputerMatrix`** row-per-bot table with check-mark chips per
   provider; header carries "Apply new default to all" that opens a
@@ -122,7 +122,7 @@ the same question through the cut-over.
   Per-Bot, which is what actually runs.
 - `src/components/ComputerImpactConfirmModal.tsx` — modal shell that
   lists the bots that would lose a leg of their grant, "Disable
-  anyway" (accent red unless no bot is affected, in which case the
+  Anyway" (accent red unless no bot is affected, in which case the
   button is accent green to read as "commit") and "Cancel" (neutral).
   Keyboard: Escape closes the modal.
 - `src/components/BotComputerMatrix.tsx` — row-per-bot table with
@@ -154,7 +154,7 @@ rows + the `<VpsModeToggle>`) and a Bots card
 `PUT /api/config` and back-fill the legacy `allowedComputers` from
 the new shape so the server's allowlist gate keeps working through
 the cut-over.  Disabling a provider opens the impact-confirm modal
-when at least one bot currently uses the provider; "Disable anyway"
+when at least one bot currently uses the provider; "Disable Anyway"
 commits, "Cancel" restores.  Toggling on is a no-modal commit
 (the only impact is that more bots can use the provider from this
 point on).  A `resolvedFromLegacy` notice shows when the section
