@@ -101,13 +101,26 @@ describe("ENGINE_CAPABILITIES registry", () => {
     expect(engineIdFromDriverKind(undefined)).toBeNull();
   });
 
-  it("marks MiniMax connectedApps as 'limited', not 'yes'", () => {
-    // The Codex review caught a previous 'yes' verdict: MiniMax's
-    // direct driver does not bundle a 'drives other apps on this Mac'
-    // channel the way Claude (computer-use) or Cursor (cursor-agent
-    // MCP) do.  Pin 'limited' here so a future edit cannot silently
-    // regress the matrix to overclaim.
-    expect(ENGINE_CAPABILITIES.minimax.capabilities.connectedApps).toBe("limited");
+  it("marks connectedApps 'yes' for every engine whose driver declares composioMcp", () => {
+    // The matrix rendered "-" for Claude and Codex because the registry
+    // omitted the key while their drivers declare composioMcp
+    // (server/drivers/claude.ts, codex.ts, antigravity.ts, and the DSH
+    // ACP adapter).  A missing key renders as "-", which reads as
+    // "engine cannot do this" — the exact underclaim Codex flagged.
+    for (const id of ["claude", "codex", "antigravity", "deepseek-harness"]) {
+      expect(ENGINE_CAPABILITIES[id].capabilities.connectedApps, id).toBe("yes");
+    }
+  });
+
+  it("marks MiniMax connectedApps as 'no' — the driver has no composioMcp", () => {
+    // Connected Apps is the Composio bridge, and MiniMax's direct
+    // driver declares no composioMcp in server/drivers/minimax.ts
+    // (Claude, Codex, Antigravity, pi, and the DSH ACP adapter all
+    // declare it).  'limited' still implied a partial channel that does
+    // not exist; driving this Mac is the thisComputer row
+    // (localComputerMcp), a different thing.  Pin 'no' so a future edit
+    // cannot silently regress the matrix to overclaim.
+    expect(ENGINE_CAPABILITIES.minimax.capabilities.connectedApps).toBe("no");
   });
 
   it("pricingModeLabel reads consistently with the pricing block", () => {
