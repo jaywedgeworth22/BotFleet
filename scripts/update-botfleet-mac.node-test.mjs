@@ -21,6 +21,7 @@ import {
   main,
   parseArguments,
   pendingRecoveryReceiptPath,
+  quiesceBootoutLabels,
   rollbackHarnessBootoutLabels,
   rollbackHarnessBootstrapPlists,
   rollbackReadinessError,
@@ -686,6 +687,32 @@ test("rollback boots out the legacy label when startHarness bootstrapped the leg
   assert.deepEqual(rollbackHarnessBootoutLabels(config, { startedHarnessLabel: config.label }), [config.label]);
   // Failure before startHarness: only the renamed label, as before.
   assert.deepEqual(rollbackHarnessBootoutLabels(config, {}), [config.label]);
+  // Quiesce can throw while booting out the legacy label, before startHarness
+  // records startedHarnessLabel.  Rollback must still retry the legacy
+  // bootout from the recorded launchd state, or the legacy job's KeepAlive
+  // restarts the harness mid-rollback.
+  assert.deepEqual(
+    rollbackHarnessBootoutLabels(config, { launchdLoaded: true, legacyLaunchdLoaded: true }),
+    [config.label, config.legacyLabel],
+  );
+  assert.deepEqual(
+    rollbackHarnessBootoutLabels(config, { launchdLoaded: false, legacyLaunchdLoaded: true }),
+    [config.label, config.legacyLabel],
+  );
+});
+
+test("quiesce boots out each loaded label exactly once, even when the renamed label is the legacy label", () => {
+  const config = { label: "app.botfleet.server", legacyLabel: "com.jay.botfleet-server" };
+  assert.deepEqual(quiesceBootoutLabels(config, { launchdLoaded: true, legacyLaunchdLoaded: true }), [config.label, config.legacyLabel]);
+  assert.deepEqual(quiesceBootoutLabels(config, { launchdLoaded: true, legacyLaunchdLoaded: false }), [config.label]);
+  assert.deepEqual(quiesceBootoutLabels(config, { launchdLoaded: false, legacyLaunchdLoaded: true }), [config.legacyLabel]);
+  assert.deepEqual(quiesceBootoutLabels(config, { launchdLoaded: false, legacyLaunchdLoaded: false }), []);
+  // BOTFLEET_LAUNCH_AGENT_LABEL may name the legacy label itself; the
+  // bootout must still run, exactly once, or the update installs over a live
+  // harness.
+  const aliased = { label: "com.jay.botfleet-server", legacyLabel: "com.jay.botfleet-server" };
+  assert.deepEqual(quiesceBootoutLabels(aliased, { launchdLoaded: true, legacyLaunchdLoaded: true }), ["com.jay.botfleet-server"]);
+  assert.deepEqual(quiesceBootoutLabels(aliased, { launchdLoaded: false, legacyLaunchdLoaded: true }), ["com.jay.botfleet-server"]);
 });
 
 test("startHarness records the started label before bootstrap and rollback boots it out before restoring files", async () => {
@@ -721,7 +748,7 @@ test("production updater has no force-kill or unrelated desktop-process cleanup"
   assert.doesNotMatch(source, /legacyPreflight/);
   assert.match(source, /LEGACY_LAUNCH_AGENT_LABEL = "com\.jay\.botfleet-server"/);
   assert.match(source, /legacyLaunchdLoaded: legacyLaunchd\.code === 0/);
-  assert.match(source, /previous\.legacyLaunchdLoaded, config\.legacyLabel/);
+  assert.match(source, /for \(const label of quiesceBootoutLabels\(config, previous\)\)/);
   assert.match(source, /previous\.legacyLaunchdLoaded[\s\S]*bootstrap[\s\S]*config\.legacyPlist/);
   assert.match(source, /POST/);
   assert.match(source, /update-botfleet\.sh unquiesce/);
