@@ -196,7 +196,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
     whyThisEngine: {
       headline: "Cursor Ultra quota without paying for Cursor twice.",
       prose: [
-        "Cursor's agent CLI is the same tool the Cursor desktop app exposes — BotFleet just drives it over ACP.",
+        "Cursor's CLI is the same tool the Cursor desktop app exposes — BotFleet just drives it over ACP.",
         "On Jay's seat the Cursor Ultra quota is bundled into the xAI SuperGrok Heavy subscription, so the same plan covers Grok and Cursor.",
         "Cross-bot coordination is reliable here: Cursor Agent participates in groups and rooms, unlike older MCP-only shells.",
       ],
@@ -227,6 +227,9 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       thisComputer: "yes",
       webAccess: "yes",
       imageAttachments: "yes",
+      // Driver declares composioMcp (server/drivers/claude.ts) — the
+      // matrix used to render "-" here because the registry omitted it.
+      connectedApps: "yes",
       longContext: "yes",
       crossBotCoordination: "yes",
       roomCoordination: "yes",
@@ -237,7 +240,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       headline: "Budget tier with voice, computer use, and full room coordination.",
       prose: [
         "Claude Max 20x is the only BotFleet engine today that exposes every capability — files, terminal, this-computer, web, images, long context, cross-bot calls, rooms, voice, and computer use.",
-        "Voice cloning on the TTS migration lane (PR #5xx) and the computer-use settings lane both surface through Claude first because the Anthropic driver is the most complete.",
+        "The computer-use settings lane surfaces through Claude first because the Anthropic driver is the most complete.  Voice cloning stays out of this pitch: it is a planned MiniMax lane (EFFORT-LOG), not something Claude ships today.",
         "If you need one engine that handles every class of task, Claude is the safest default on this seat.",
       ],
     },
@@ -268,6 +271,9 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       thisComputer: "yes",
       webAccess: "yes",
       imageAttachments: "yes",
+      // Driver declares composioMcp (server/drivers/codex.ts) — the
+      // matrix used to render "-" here because the registry omitted it.
+      connectedApps: "yes",
       longContext: "yes",
       computerUse: "yes",
     },
@@ -315,6 +321,9 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       thisComputer: "yes",
       webAccess: "yes",
       imageAttachments: "yes",
+      // Driver declares composioMcp (server/drivers/antigravity.ts) —
+      // the matrix used to render "-" here because the registry omitted it.
+      connectedApps: "yes",
       liveResearch: "yes",
     },
     whyThisEngine: {
@@ -362,6 +371,10 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       // composer rejects image input.  Render "no" rather than "yes" so
       // the matrix doesn't overclaim — Codex caught this in the review.
       imageAttachments: "no",
+      // The DSH ACP adapter declares composioMcp
+      // (server/drivers/acp/dsh.test.ts) — the matrix used to render
+      // "-" here because the registry omitted it.
+      connectedApps: "yes",
       crossBotCoordination: "yes",
     },
     whyThisEngine: {
@@ -369,7 +382,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       prose: [
         "DSH runs DeepSeek's small and fast models through the harness ACP bridge, with cheap tokens and the same cross-bot coordination as Claude.",
         "It is the right tool for short, mechanical turns — a code search, a reformat, a one-line edit — where Opus would burn quota for no quality gain.",
-        "DSH pairs well with MiniMax M3 for connected-app turns: DSH does the file work, MiniMax drives the apps.",
+        "DSH pairs well with Claude for connected-app turns: DSH does the file work, Claude drives the apps.  The MiniMax driver wires no Composio channel.",
       ],
     },
     defaultModels: [
@@ -410,13 +423,14 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       crossBotCoordination: "yes",
       roomCoordination: "yes",
       voiceChat: "yes",
-      // Connected Apps on MiniMax runs through the same MCP tool-loop as
-      // every other vendor — the driver does not bundle a "drives other
-      // apps on this Mac" channel the way Claude (computer-use) or
-      // Cursor (cursor-agent MCP) do.  Render "limited" rather than
-      // "yes" so the matrix doesn't claim something the driver cannot
-      // do standalone.  Voice + room chats are still a strong yes.
-      connectedApps: "limited",
+      // Connected Apps is the Composio bridge, and the MiniMax driver's
+      // declared capabilities (server/drivers/minimax.ts) carry no
+      // composioMcp — unlike Claude, Codex, Antigravity, pi, and the DSH
+      // ACP adapter, which all declare it.  Driving THIS Mac is the
+      // "thisComputer" row above (localComputerMcp + the tool loop), a
+      // different thing from Connected Apps.  Render "no" so the matrix
+      // stops claiming a channel the driver does not wire.
+      connectedApps: "no",
       longContext: "yes",
     },
     whyThisEngine: {
@@ -424,7 +438,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       prose: [
         "MiniMax is the strongest choice for cross-bot coordination and room chats — `server/group-routing.ts` was designed around the MiniMax driver's call semantics, so room turn reliability is highest here.",
         "Voice chat is supported through the Mavis voice channel; voice minutes are part of the Token Plan Max bundle rather than billed as PAYG minutes.",
-        "Connected apps support is limited: the direct MiniMax driver does not advertise `composioMcp`, `computerMcp`, or `phoneMcp` (see `server/drivers/minimax.ts`), so the matrix shows `limited` rather than `yes` — bots needing a real MCP channel pick Claude or Cursor.",
+        "Connected apps are not wired on MiniMax: the direct driver does not advertise `composioMcp`, `computerMcp`, or `phoneMcp` (see `server/drivers/minimax.ts`), so the matrix shows `no` — bots needing a real MCP channel pick Claude or Cursor.",
         "On the Mavis Token Plan Max subscription the engine is metered as included; the PAYG API block in the registry is reference data for the what-if projection only.",
       ],
     },
