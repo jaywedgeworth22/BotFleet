@@ -564,6 +564,9 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     features: frame.features,
     observability: frame.observability,
     infisical: frame.infisical,
+    // Without this every SSE `config` frame wipes Linq status and resets
+    // LinqSettings back to its empty defaults.
+    imessageLinq: frame.imessageLinq,
   };
 }
 
