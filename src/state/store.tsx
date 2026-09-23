@@ -396,8 +396,24 @@ export interface ConfigStatus {
   botDefaults?: {
     computers: Array<"cloud" | "vm" | "local">;
     cloudBackend: "box" | "vps";
-    /** null = every destination is allowed (the shipped default). */
+    /** null = every destination is allowed (the shipped default).  Legacy
+     * input — the redesigned Computer settings UI reads
+     * `computerProviders` instead and writes back through here so the
+     * server's allowlist gate keeps working through the cut-over. */
     allowedComputers: Array<"cloud" | "vm" | "local"> | null;
+    /** Per-provider allowlist written by the redesigned Computer
+     * settings UI.  The toggles drive this shape; the legacy
+     * `allowedComputers` above is back-filled from it for the cut-over
+     * release. */
+    computerProviders?: {
+      asciiBox: boolean;
+      selfHostedVps: boolean;
+      localVm: boolean;
+      localMac: boolean;
+    };
+    /** Shared-vs-per-bot VPS mode.  `null` is only legal when
+     * `selfHostedVps` is false. */
+    vpsMode?: "shared" | "per-bot" | null;
   };
   ingress?: { publicUrl?: string; enabled?: boolean };
   localVm: { mode: "shared" | "per-bot"; maxInstances: number };

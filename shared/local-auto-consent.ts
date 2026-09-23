@@ -5,6 +5,144 @@ export interface LocalAutoConsentBot {
 
 export type LocalComputerDestination = "cloud" | "vm" | "local";
 
+/** The four computer providers the operator can enable. Each maps to one or
+ * more legacy `LocalComputerDestination`s (see
+ * `migrateAllowedComputersToProviders`). `localMac` is the host running the
+ * app ("This Computer"); `localVm` is a containerized Cua desktop the
+ * operator has prepared on this machine; `asciiBox` is the hosted
+ * ASCII.dev Box; `selfHostedVps` is a container on the operator's own
+ * server, reached over SSH. */
+export type ComputerProviderId = "asciiBox" | "selfHostedVps" | "localVm" | "localMac";
+
+/** Persisted allowlist of enabled providers. `true` means "the operator
+ * has turned this provider on"; `false` means "the operator has turned
+ * it off, and any bot that still references it loses that leg of its
+ * grant".  A missing key defaults to `false` so a partial save is
+ * fail-closed: an unknown future provider simply reads as off. */
+export type ComputerProviders = Record<ComputerProviderId, boolean>;
+
+/** Shared vs per-bot mode for the self-hosted VPS.  `shared` means every
+ * bot that has `selfHostedVps` in its grant shares one managed container
+ * (the shipped default); `per-bot` means each bot gets a private container
+ * and durable workspace.  `null` means "the operator has not chosen a
+ * mode" — only legal when `selfHostedVps` is also off, otherwise the
+ * migration raises. */
+export type VpsMode = "shared" | "per-bot" | null;
+
+/** Provider labels in the operator UI.  Centralized so the toggle row,
+ * the matrix header, and any future tooltip stay in sync. */
+export const COMPUTER_PROVIDER_LABEL: Record<ComputerProviderId, string> = {
+  asciiBox: "ASCII.dev Box",
+  selfHostedVps: "Self-Hosted VPS",
+  localVm: "Local VM",
+  localMac: "This Computer",
+};
+
+/** Caption the toggle row shows under the button when the provider is on,
+ * explaining what turning it off would actually do to existing grants. */
+export const COMPUTER_PROVIDER_DISABLE_IMPACT: Record<ComputerProviderId, string> = {
+  asciiBox: "Turning this off blocks every bot that currently uses ASCII.dev Box.  Each affected bot would need a new computer picked manually.",
+  selfHostedVps: "Turning this off drops the shared VPS container and every per-bot VPS workspace.  Affected bots lose their VPS leg until they pick another provider.",
+  localVm: "Turning this off stops the Local VM container from starting.  Affected bots lose their private or shared VM desktop.",
+  localMac: "Turning this off blocks host control.  Affected bots lose their \"This Computer\" leg and Auto approvals stop working for them.",
+};
+
+/** Sentinel value used by the schema migrator when the stored config
+ * carries the legacy `allowedComputers` shape.  Kept exported so the
+ * boot migration in `electron/main.mjs` can name what it is replacing
+ * without re-importing zod. */
+export const LEGACY_ALLOWED_COMPUTERS_KEY = "allowedComputers";
+
+/** The fully-disabled shape that matches the operator's "every destination
+ * allowed" legacy default.  Used as the fresh-install default when neither
+ * `computerProviders` nor `allowedComputers` is on disk. */
+export const DEFAULT_COMPUTER_PROVIDERS: ComputerProviders = {
+  asciiBox: true,
+  selfHostedVps: true,
+  localVm: false,
+  localMac: false,
+};
+
+/** Default VPS mode for a fresh install with `selfHostedVps: true`. */
+export const DEFAULT_VPS_MODE: VpsMode = "shared";
+
+/** All four keys as a stable iteration order so tests and UI code do not
+ * depend on `Object.keys` (which is insertion-order in modern engines but
+ * worth pinning here). */
+export const COMPUTER_PROVIDER_ORDER: readonly ComputerProviderId[] = [
+  "asciiBox",
+  "selfHostedVps",
+  "localVm",
+  "localMac",
+] as const;
+
+/** Migrate a legacy `allowedComputers: ("cloud" | "vm" | "local")[]` to
+ * the new `ComputerProviders` shape.  Each entry of the legacy array maps
+ * to one or more provider keys:
+ * - `"cloud"` enabled both hosted Box and self-hosted VPS, so the
+ *   legacy `["cloud"]` becomes `{ asciiBox: true, selfHostedVps: true }`.
+ * - `"vm"` enables only the Local VM.
+ * - `"local"` enables only the host.
+ *
+ * The legacy array was never exhaustive (a workspace could leave it
+ * unset to mean "every destination is allowed"), so `null` and `[]` map
+ * to the shipped default rather than to "every provider off".  The
+ * caller can pass a `vpsMode` for the new VPS-specific toggle; absent
+ * that we infer `shared` whenever the legacy `"cloud"` was allowed.
+ *
+ * Throws if the migrated shape would land a `null` vpsMode with
+ * `selfHostedVps: true` — that is the lone combination the new schema
+ * refuses, because the VPS container's mode is its first question. */
+export function migrateAllowedComputersToProviders(
+  allowedComputers: readonly LocalComputerDestination[] | null | undefined,
+  vpsMode?: VpsMode,
+): { providers: ComputerProviders; vpsMode: VpsMode } {
+  // Fresh install or legacy "every destination is allowed": ship the
+  // default and let the operator narrow it from the UI.
+  if (allowedComputers === null || allowedComputers === undefined) {
+    return { providers: { ...DEFAULT_COMPUTER_PROVIDERS }, vpsMode: vpsMode ?? DEFAULT_VPS_MODE };
+  }
+  if (!Array.isArray(allowedComputers) || allowedComputers.length === 0) {
+    return { providers: { ...DEFAULT_COMPUTER_PROVIDERS }, vpsMode: vpsMode ?? DEFAULT_VPS_MODE };
+  }
+  const providers: ComputerProviders = {
+    asciiBox: false,
+    selfHostedVps: false,
+    localVm: false,
+    localMac: false,
+  };
+  let hasCloud = false;
+  for (const dest of allowedComputers) {
+    if (dest === "cloud") {
+      providers.asciiBox = true;
+      providers.selfHostedVps = true;
+      hasCloud = true;
+    } else if (dest === "vm") {
+      providers.localVm = true;
+    } else if (dest === "local") {
+      providers.localMac = true;
+    }
+    // any unrecognized entry is silently ignored — the saved shape is
+    // already type-checked at write time, but a hand-edited file is
+    // tolerated rather than crashing the boot migration.
+  }
+  const resolvedVpsMode: VpsMode = vpsMode !== undefined ? vpsMode : hasCloud ? "shared" : null;
+  if (providers.selfHostedVps && resolvedVpsMode === null) {
+    throw new Error("Cannot migrate to computerProviders: vpsMode is null but selfHostedVps is enabled");
+  }
+  return { providers, vpsMode: resolvedVpsMode };
+}
+
+/** Idempotency check for the boot migration: if the stored config already
+ * carries the new shape, return `true` so the migrator knows to skip the
+ * write.  A config with both keys (the brief window after deploy but
+ * before the first save) also returns `true` — the existing
+ * `computerProviders` wins, and `allowedComputers` is left untouched for
+ * the legacy code paths that still read it. */
+export function computerProvidersAlreadyMigrated(value: unknown): boolean {
+  return typeof value === "object" && value !== null && "computerProviders" in value;
+}
+
 /** Host and engine facts that only the automatic-discovery fallback needs.
  * Explicit and inherited Local grants stay consent-relevant without them. */
 export type LocalAutoConsentCapability = {

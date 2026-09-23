@@ -5585,8 +5585,22 @@ function configStatus() {
       cloudBackend: cfg.botDefaults?.cloudBackend ?? "box",
       // null = every destination is allowed (the shipped default).  An array
       // narrows the operator-level allowlist; the empty array is a real,
-      // persisted "no destination at all".
+      // persisted "no destination at all".  Legacy input — the redesigned
+      // Computer settings UI reads `computerProviders` below and writes
+      // back through this field for the cut-over.
       allowedComputers: allowedBotComputers(cfg),
+      // Per-provider allowlist written by the redesigned Computer settings
+      // UI.  Surfaced for the new toggles + matrix; absent on installs that
+      // pre-date the migration (the client falls back to the legacy field).
+      computerProviders: cfg.botDefaults?.computerProviders
+        ? {
+            asciiBox: Boolean(cfg.botDefaults.computerProviders.asciiBox),
+            selfHostedVps: Boolean(cfg.botDefaults.computerProviders.selfHostedVps),
+            localVm: Boolean(cfg.botDefaults.computerProviders.localVm),
+            localMac: Boolean(cfg.botDefaults.computerProviders.localMac),
+          }
+        : undefined,
+      vpsMode: cfg.botDefaults?.vpsMode ?? null,
     },
     ingress: {
       publicUrl: cfg.ingress?.publicUrl || "",
