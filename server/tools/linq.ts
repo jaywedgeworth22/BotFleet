@@ -6,6 +6,14 @@
 // to a Linq phone number AND whose workspace allows voice messages.  We
 // refuse early when the gate is closed so a misconfigured turn surfaces a
 // clean error rather than spinning on the TTS pipeline.
+//
+// `tools/linq.ts` does NOT import `server/tts/index.ts` directly.  The
+// sibling test in `tools/registry.test.ts:386` bans every file under
+// `server/tools/` from importing an `index.ts` to keep the cycle that
+// previously duplicated the `list_bots` filter out.  We reach the
+// first-party hosted TTS driver via lazy `linqDeps.synthesize` injection
+// from `server/index.ts` instead — the index module already pays the
+// import cost, so this stays a one-edge dependency.
 
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +38,10 @@ export interface LinqToolDeps {
   /** Synthesize speech.  Returns raw audio bytes (the Linq partner API
    *  accepts any common audio container; we ship mp3 because it is the
    *  smallest universal format).  Throws on upstream errors; the executor
-   *  turns the throw into a typed `TurnToolOutcome`. */
+   *  turns the throw into a typed `TurnToolOutcome`.  Required: production
+   *  callers pass the first-party hosted TTS driver; tests stub a
+   *  deterministic producer.  `tools/linq.ts` itself does NOT resolve the
+   *  driver — see the file-level comment for the dependency-cycle reason. */
   synthesize: (text: string, voice?: string) => Promise<{ bytes: Uint8Array; mime: string }>;
 }
 

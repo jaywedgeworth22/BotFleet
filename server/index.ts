@@ -3391,6 +3391,20 @@ async function startTurn(
               // are in place; the gate inside the host then offers
               // `send_voice_message` (host.ts owns the executor merge).
               linq: hasLinq ? { settings: linqBinding } : undefined,
+              // Production synthesizer: `server/index.ts` is the only place
+              // that imports `server/tts/index.ts` directly, and
+              // `server/tools/host.ts` cannot reach an `index.ts` file
+              // without tripping the import-cycle test in
+              // `tools/registry.test.ts:386`.  We close the loop here.
+              linqDeps: hasLinq
+                ? {
+                    synthesize: async (text, voice) => {
+                      const { speak } = await import("./tts/index.ts");
+                      const result = await speak(loadConfig(), text, voice);
+                      return { bytes: result.bytes, mime: result.mime };
+                    },
+                  }
+                : undefined,
               confinement: confinementForTurn,
               cwd: cwd ?? bot.cwd ?? undefined,
               // Read here, not derived from the catalog above: this is what

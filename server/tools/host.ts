@@ -105,23 +105,11 @@ export interface TurnToolHostContext {
 const failed = (content: string, detail?: string): TurnToolOutcome =>
   detail ? { kind: "error", content, detail } : { kind: "error", content };
 
-/** Production voice synthesizer used when the host is mounted without an
- *  injected `synthesize` (i.e., the real dispatch).  Funnels through the
- *  first-party hosted TTS driver (`server/tts/index.ts`) so this tool does
- *  not parallel-implement TTS the way the audit flagged in PR #519. */
-async function defaultLinqSynthesize(
-  text: string,
-  voice?: string,
-): Promise<{ bytes: Uint8Array; mime: string }> {
-  // `speak()` reads the workspace's tts config: provider, voice, key.  A
-  // thrown error surfaces to the executor's catch block as a typed outcome
-  // and the model gets a readable "TTS failed" message instead of a dead
-  // turn.
-  const { speak } = await import("../tts/index.ts");
-  const { loadConfig } = await import("../config.ts");
-  const result = await speak(loadConfig(), text, voice);
-  return { bytes: result.bytes, mime: result.mime };
-}
+/** Production voice synthesizer.  Resolved lazily inside `tools/linq.ts`
+ *  so the host module does not import `server/tts/index.ts` directly —
+ *  a sibling test (`server/tools/registry.test.ts#386`) bans every
+ *  `server/tools/*.ts` file from importing an `index.ts` to keep the
+ *  cycle that previously duplicated the `list_bots` filter out. */
 
 /** Build the tool host for ONE turn.  The returned host closes over the
  *  caller's identity, so nothing downstream can forge it. */
@@ -141,8 +129,22 @@ export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
     ...(ctx.localComputer ? Object.entries(createGithubTools(ctx.botId)) : []),
     ...(ctx.linq
       ? Object.entries(
-          createLinqTools({ botId: ctx.botId, threadId: ctx.threadId }, {
-            synthesize: ctx.linqDeps?.synthesize ?? defaultLinqSynthesize,
+          createLinqTools({
+            botId: ctx.botId,
+            threadId: ctx.threadId,
+            // `ctx.linq === true` only when the dispatch actually mounted the
+            // voice tool, which it does by binding this dep via the
+            // production synthesizer in `server/index.ts`.  Throwing here
+            // surfaces a misconfiguration loud and early; the audit doc
+            // lists this as a deliberate one-edge dependency across the
+            // `server/tools/` import-cycle fence.
+            synthesize:
+              ctx.linqDeps?.synthesize ??
+              (() => {
+                throw new Error(
+                  "send_voice_message fired without a synthesizer dep; the dispatch must inject one",
+                );
+              }),
           }),
         )
       : []),
