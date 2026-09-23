@@ -30,6 +30,7 @@ import {
   stableApplicationProcessError,
   swapPreparedFiles,
   validateBuiltBundle,
+  waitForLaunchdBootout,
 } from "./update-botfleet-mac.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -241,10 +242,10 @@ test("the stable wrapper bootstraps updater policy from the fetched target", asy
   assert.match(source, /BOOTSTRAP_REF="\$arg"/);
   assert.match(source, /UPDATER_ARGS\+=\(--target "\$BOTFLEET_UPDATE_TARGET"\)/);
   assert.ok(
-    source.indexOf('BOOTSTRAP_REF="$arg"') < source.indexOf('git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_REF"'),
+    source.indexOf('BOOTSTRAP_REF="$arg"') < source.indexOf('git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_COMMIT"'),
     "--target must select updater policy before the target graph is archived",
   );
-  assert.match(source, /git -C "\$BOTFLEET_CHECKOUT" archive "\$BOOTSTRAP_REF"/);
+  assert.match(source, /git -C "\$BOTFLEET_CHECKOUT" archive "\$BOOTSTRAP_COMMIT"/);
   for (const path of [
     "scripts/update-botfleet-mac.mjs",
     "scripts/mac-update-transaction.mjs",
@@ -266,7 +267,7 @@ test("forced updates refresh the selected bootstrap ref before archiving it", as
   const targetSelection = source.indexOf('BOOTSTRAP_REF="${BOTFLEET_UPDATE_TARGET:-origin/main}"');
   const targetOverride = source.indexOf('BOOTSTRAP_REF="$arg"');
   const fetch = source.indexOf('git -C "$BOTFLEET_CHECKOUT" fetch --quiet origin "$BOOTSTRAP_FETCH_REF"');
-  const archive = source.indexOf('git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_REF"');
+  const archive = source.indexOf('git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_COMMIT"');
 
   assert.ok(forceCheck >= 0, "the regression must exercise the forced-update path");
   assert.ok(targetSelection > forceCheck, "bootstrap selection happens after the force skip");
@@ -276,7 +277,7 @@ test("forced updates refresh the selected bootstrap ref before archiving it", as
   assert.match(source, /BOOTSTRAP_FETCH_REF="\$\{BOOTSTRAP_REF#origin\/\}"/);
   assert.match(
     source,
-    /if git -C "\$BOTFLEET_CHECKOUT" fetch --quiet origin "\$BOOTSTRAP_FETCH_REF" 2>\/dev\/null; then[\s\S]*?git -C "\$BOTFLEET_CHECKOUT" archive "\$BOOTSTRAP_REF"/,
+    /if git -C "\$BOTFLEET_CHECKOUT" fetch --quiet origin "\$BOOTSTRAP_FETCH_REF" 2>\/dev\/null; then[\s\S]*?git -C "\$BOTFLEET_CHECKOUT" archive "\$BOOTSTRAP_COMMIT"/,
     "a failed refresh must not fall through to a stale local archive",
   );
 });
@@ -287,7 +288,7 @@ test("the stable wrapper enforces origin/main ancestry before archiving or execu
   const mainRefresh = source.indexOf('git -C "$BOTFLEET_CHECKOUT" fetch --quiet origin main', fetch);
   const resolve = source.indexOf('BOOTSTRAP_COMMIT="$(git -C "$BOTFLEET_CHECKOUT" rev-parse --verify "${BOOTSTRAP_REF}^{commit}"', fetch);
   const ancestry = source.indexOf('merge-base --is-ancestor "$BOOTSTRAP_COMMIT" origin/main', fetch);
-  const archive = source.indexOf('git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_REF"');
+  const archive = source.indexOf('git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_COMMIT"');
   const exec = source.indexOf('"$NODE_BIN" "$BOOTSTRAP_DIR/scripts/update-botfleet-mac.mjs"');
   assert.ok(fetch >= 0, "the bootstrap target is fetched");
   assert.ok(mainRefresh > fetch, "origin/main is refreshed after the target fetch, as resolveTarget() does");
@@ -357,7 +358,7 @@ test("the stable wrapper rejects an unmerged --target before running any of its 
 });
 
 
-test("the stable wrapper forwards env and equals-form targets to both policy and candidate", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
+test("the stable wrapper resolves env and equals-form targets to the pinned validated commit", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
   const fixture = await mkdtemp(join(tmpdir(), "ubf-target-passthrough-"));
   t.after(() => rm(fixture, { recursive: true, force: true }));
   const remote = join(fixture, "remote");
@@ -389,6 +390,8 @@ test("the stable wrapper forwards env and equals-form targets to both policy and
   await git(remote, ["add", "."]);
   await git(remote, ["commit", "-m", "main advances"]);
   await git(fixture, ["clone", "remote", "checkout"]);
+  const envTargetCommit = (await git(checkout, ["rev-parse", "origin/env-target"])).stdout.trim();
+  const mainCommit = (await git(checkout, ["rev-parse", "origin/main"])).stdout.trim();
   const wrapper = join(scripts, "update-botfleet.sh");
   const env = { BOTFLEET_CHECKOUT: checkout, BOTFLEET_FORCE: "1", BOTFLEET_UPDATE_TARGET: "origin/env-target" };
 
@@ -396,15 +399,75 @@ test("the stable wrapper forwards env and equals-form targets to both policy and
   assert.equal(envRun.code, 0, envRun.stderr);
   assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), {
     label: "env-target",
-    args: ["--target", "origin/env-target"],
+    args: ["--target", envTargetCommit],
   });
 
   const equalsRun = await run("bash", [wrapper, "--target=origin/main"], { env, allowFailure: true });
   assert.equal(equalsRun.code, 0, equalsRun.stderr);
   assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), {
     label: "main",
-    args: ["--target=origin/main"],
+    args: ["--target", mainCommit],
   });
+});
+
+test("the stable wrapper builds the commit it validated, even when main moves mid-run", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
+  const fixture = await mkdtemp(join(tmpdir(), "ubf-pinned-target-"));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const remote = join(fixture, "remote");
+  const checkout = join(fixture, "checkout");
+  const marker = join(fixture, "executed.json");
+  await mkdir(remote, { recursive: true });
+  const git = (cwd, args) => run("git", ["-C", cwd, ...args]);
+  for (const path of [
+    "scripts/update-botfleet-mac.mjs",
+    "scripts/mac-update-transaction.mjs",
+    "scripts/update-progress.mjs",
+    "electron/update-credential-preparation.mjs",
+  ]) {
+    await mkdir(dirname(join(remote, path)), { recursive: true });
+    await writeFile(join(remote, path), path.endsWith("update-botfleet-mac.mjs")
+      ? `import { execFileSync } from "node:child_process";\nimport { writeFileSync } from "node:fs";\nexecFileSync("git", ["-C", process.env.UBF_FIXTURE_REMOTE, "commit", "--allow-empty", "-m", "raced"]);\nexecFileSync("git", ["-C", process.env.BOTFLEET_CHECKOUT, "fetch", "--quiet", "origin", "main"]);\nconst moved = execFileSync("git", ["-C", process.env.BOTFLEET_CHECKOUT, "rev-parse", "origin/main"], { encoding: "utf8" }).trim();\nwriteFileSync(${JSON.stringify(marker)}, JSON.stringify({ label: "main", args: process.argv.slice(2), moved }));\n`
+      : "// placeholder\n");
+  }
+  await git(fixture, ["init", "-b", "main", "remote"]);
+  await git(remote, ["config", "user.email", "test@example.com"]);
+  await git(remote, ["config", "user.name", "Test"]);
+  await git(remote, ["add", "."]);
+  await git(remote, ["commit", "-m", "updater"]);
+  const validatedCommit = (await git(remote, ["rev-parse", "HEAD"])).stdout.trim();
+  await git(fixture, ["clone", "remote", "checkout"]);
+  const wrapper = join(scripts, "update-botfleet.sh");
+  // The stub updater advances origin/main and re-fetches it, exactly the
+  // window in which resolveTarget() would resolve a newer main than the
+  // policy the wrapper archived.  The run must still build the validated
+  // commit.
+  const env = { BOTFLEET_CHECKOUT: checkout, BOTFLEET_FORCE: "1", UBF_FIXTURE_REMOTE: remote };
+  const result = await run("bash", [wrapper], { env, allowFailure: true });
+  assert.equal(result.code, 0, result.stderr);
+  const executed = JSON.parse(await readFile(marker, "utf8"));
+  assert.equal(executed.label, "main", "policy came from the validated commit");
+  assert.notEqual(executed.moved, validatedCommit, "the fixture must actually move origin/main mid-run");
+  assert.deepEqual(executed.args, ["--target", validatedCommit], "the candidate is pinned to the validated commit, not the moved origin/main");
+
+  // A full commit SHA is itself a valid --target: it resolves locally and
+  // passes the same origin/main ancestry check.
+  await rm(marker, { force: true });
+  const shaRun = await run("bash", [wrapper, "--target", validatedCommit], { env, allowFailure: true });
+  assert.equal(shaRun.code, 0, shaRun.stderr);
+  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")).args, ["--target", validatedCommit]);
+});
+
+test("resolveTarget accepts a full commit SHA on main", async () => {
+  const source = await readFile(join(scripts, "update-botfleet-mac.mjs"), "utf8");
+  const resolveTarget = source.indexOf("resolveTarget: async (plan) => {");
+  assert.ok(resolveTarget >= 0);
+  const body = source.slice(resolveTarget, source.indexOf("prepareSource:", resolveTarget));
+  // It fetches origin/main, never the target ref: a bare SHA needs no fetch
+  // of its own, resolves locally, and passes the same ancestry check.
+  assert.match(body, /\["fetch", "origin", "main"\]/);
+  assert.doesNotMatch(body, /\["fetch", "origin", plan\.target\]/);
+  assert.match(body, /rev-parse", "--verify", `\$\{plan\.target\}\^\{commit\}`/);
+  assert.match(body, /merge-base", "--is-ancestor", commit, "origin\/main"/);
 });
 
 test("the stable wrapper expands UPDATER_ARGS with the bash 3.2 safe form", async () => {
@@ -445,17 +508,19 @@ test("the stable wrapper runs with no arguments and no update target", { skip: p
   await git(remote, ["add", "."]);
   await git(remote, ["commit", "-m", "updater"]);
   await git(fixture, ["clone", "remote", "checkout"]);
+  const mainCommit = (await git(checkout, ["rev-parse", "origin/main"])).stdout.trim();
   // No positional arguments and no BOTFLEET_UPDATE_TARGET: UPDATER_ARGS
   // stays empty, the exact shape electron/updater.mjs spawns for the
   // no-argument in-app update. On bash >= 4.4 this passes even without the
   // guarded expansion; on bash 3.2 it exercises the path that used to exit
-  // with "unbound variable" before the updater ran.
+  // with "unbound variable" before the updater ran.  The bootstrapped
+  // updater receives the validated commit, not the symbolic origin/main.
   const result = await run("bash", [join(scripts, "update-botfleet.sh")], {
     env: { BOTFLEET_CHECKOUT: checkout, BOTFLEET_FORCE: "1" },
     allowFailure: true,
   });
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), { args: [] });
+  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), { args: ["--target", mainCommit] });
 });
 
 test("the stable wrapper detects a linked worktree checkout, where .git is a file", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
@@ -502,7 +567,8 @@ test("the stable wrapper detects a linked worktree checkout, where .git is a fil
   const forced = await run("bash", [wrapper], { env: { BOTFLEET_CHECKOUT: checkout, BOTFLEET_FORCE: "1" }, allowFailure: true });
   assert.equal(forced.code, 0, forced.stderr);
   assert.doesNotMatch(forced.stderr, /using the installed implementation/);
-  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), { label: "bootstrapped", args: [] });
+  const mainCommit = (await git(checkout, ["rev-parse", "origin/main"])).stdout.trim();
+  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), { label: "bootstrapped", args: ["--target", mainCommit] });
 });
 
 test("the up-to-date shortcut only swallows a plain update to origin/main", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
@@ -540,6 +606,7 @@ test("the up-to-date shortcut only swallows a plain update to origin/main", { sk
   await git(remote, ["commit", "-m", "main"]);
   await git(fixture, ["clone", "remote", "checkout"]);
   const mainCommit = (await git(checkout, ["rev-parse", "origin/main"])).stdout.trim();
+  const olderCommit = (await git(checkout, ["rev-parse", "origin/older"])).stdout.trim();
   assert.equal((await git(checkout, ["rev-parse", "HEAD"])).stdout.trim(), mainCommit, "the fixture checkout must be at origin/main");
   const stage = join(fixture, "stage");
   await mkdir(stage, { recursive: true });
@@ -560,18 +627,21 @@ test("the up-to-date shortcut only swallows a plain update to origin/main", { sk
     assert.equal(result.executed, null, `${JSON.stringify(args)} ran an updater`);
   }
 
+  // Commands that resolve a candidate get it pinned to the commit the
+  // wrapper validated; apply keeps its stage manifest target and unquiesce
+  // stays option-free.
   const mustRun = [
     // The admission recovery action must release the fence even when current.
     { args: ["unquiesce"], expected: { label: "main", args: ["unquiesce"] } },
-    { args: ["prepare"], expected: { label: "main", args: ["prepare"] } },
+    { args: ["prepare"], expected: { label: "main", args: ["prepare", "--target", mainCommit] } },
     { args: ["apply", "--stage", stage], expected: { label: "main", args: ["apply", "--stage", stage] } },
-    { args: ["--target", "origin/older"], expected: { label: "older", args: ["--target", "origin/older"] } },
-    { args: ["--target=origin/older"], expected: { label: "older", args: ["--target=origin/older"] } },
-    { args: [], env: { BOTFLEET_UPDATE_TARGET: "origin/older" }, expected: { label: "older", args: ["--target", "origin/older"] } },
+    { args: ["--target", "origin/older"], expected: { label: "older", args: ["--target", olderCommit] } },
+    { args: ["--target=origin/older"], expected: { label: "older", args: ["--target", olderCommit] } },
+    { args: [], env: { BOTFLEET_UPDATE_TARGET: "origin/older" }, expected: { label: "older", args: ["--target", olderCommit] } },
     // The harness's detached run needs the updater's progress record.
     {
       args: ["update", "--progress", join(fixture, "run.json"), "--run-id", "run_one"],
-      expected: { label: "main", args: ["update", "--progress", join(fixture, "run.json"), "--run-id", "run_one"] },
+      expected: { label: "main", args: ["update", "--progress", join(fixture, "run.json"), "--run-id", "run_one", "--target", mainCommit] },
     },
   ];
   for (const { args, env = {}, expected } of mustRun) {
@@ -713,6 +783,45 @@ test("quiesce boots out each loaded label exactly once, even when the renamed la
   const aliased = { label: "com.jay.botfleet-server", legacyLabel: "com.jay.botfleet-server" };
   assert.deepEqual(quiesceBootoutLabels(aliased, { launchdLoaded: true, legacyLaunchdLoaded: true }), ["com.jay.botfleet-server"]);
   assert.deepEqual(quiesceBootoutLabels(aliased, { launchdLoaded: false, legacyLaunchdLoaded: true }), ["com.jay.botfleet-server"]);
+});
+
+test("rollback confirms a bootout label is absent, retrying a slow teardown within a bounded window", async () => {
+  // Already gone: launchctl print exits nonzero on the first probe.
+  assert.equal(await waitForLaunchdBootout("gui/501", "app.botfleet.server", { probe: async () => ({ code: 1 }) }), true);
+  // Still loaded, then torn down: retry until print fails.
+  let probes = 0;
+  const waits = [];
+  const cleared = await waitForLaunchdBootout("gui/501", "app.botfleet.server", {
+    probe: async () => { probes += 1; return { code: probes < 3 ? 0 : 1 }; },
+    wait: async (ms) => { waits.push(ms); },
+  });
+  assert.equal(cleared, true);
+  assert.equal(probes, 3);
+  assert.equal(waits.length, 2, "no wait after the probe that confirms absence");
+  // Never torn down: the window stays bounded and reports failure.
+  let stuckProbes = 0;
+  const stuck = await waitForLaunchdBootout("gui/501", "com.jay.botfleet-server", {
+    attempts: 4,
+    probe: async () => { stuckProbes += 1; return { code: 0 }; },
+    wait: async () => {},
+  });
+  assert.equal(stuck, false);
+  assert.equal(stuckProbes, 4, "a surviving job is retried, not awaited forever");
+});
+
+test("rollback verifies each bootout with launchctl print before restoring files", async () => {
+  const source = await readFile(join(scripts, "update-botfleet-mac.mjs"), "utf8");
+  const rollback = source.indexOf("rollback: async (prepared, previous, originalError) => {");
+  assert.ok(rollback >= 0, "the transaction has a rollback step");
+  const restore = source.indexOf("Restore only from copies THIS run put at the rollback paths", rollback);
+  assert.ok(restore > rollback);
+  const bootout = source.indexOf("for (const label of rollbackHarnessBootoutLabels(config, previous))", rollback);
+  const verify = source.indexOf("waitForLaunchdBootout(config.domain, label)", bootout);
+  assert.ok(bootout > rollback && verify > bootout && verify < restore,
+    "every bootout label is confirmed absent before any file is restored");
+  const stopCheck = source.indexOf("if (stopErrors.length) throw new AggregateError(", rollback);
+  assert.ok(verify < stopCheck && stopCheck < restore,
+    "a label that survives bootout aborts the rollback before the restore");
 });
 
 test("startHarness records the started label before bootstrap and rollback boots it out before restoring files", async () => {
@@ -1098,4 +1207,5 @@ test("a relaunch of a finished run does nothing and exits successfully", async (
   assert.equal(await readFile(progressPath, "utf8"), written);
   assert.equal(process.exitCode, undefined);
 });
+
 
