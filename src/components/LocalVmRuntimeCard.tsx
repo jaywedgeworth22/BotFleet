@@ -253,7 +253,7 @@ export function LocalVmRuntimeCard() {
       <Card
         title="Local VM"
         subtitle={perBot
-          ? `Private Cua Linux desktops on this ${host}, with one container and durable workspace per bot. Distinct bots can work concurrently and idle desktops stop after 8 hours.`
+          ? `Private Cua Linux desktops on this ${host}, with one container and durable workspace per bot.  Distinct bots can work concurrently and idle desktops stop after 8 hours.`
           : `A shared Cua Linux sandbox on this ${host} for bots to browse and work in — isolated, backed by one durable workspace, and automatically recycled after 8 hours without activity.`}
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -304,14 +304,14 @@ export function LocalVmRuntimeCard() {
         title="VM Mode"
         subtitle={
           perBot
-            ? "Each bot gets its own private container, durable workspace, and loopback viewer. Idle desktops stop on their own after 8 hours."
-            : "One shared container on this machine, used by bots one at a time. Cookies, sign-ins, files, and installed apps/CLI tools are all shared across bots."
+            ? "Each bot gets its own private container, durable workspace, and loopback viewer.  Idle desktops stop on their own after 8 hours."
+            : "One shared container on this machine, used by bots one at a time.  Cookies, sign-ins, files, and installed apps/CLI tools are all shared across bots."
         }
       >
         {unavailable ? (
           <div className="flex items-center gap-2 text-[13px] text-ink-secondary">
             <AlertTriangle size={14} className="text-warning" />
-            Status is unavailable, so VM mode is greyed out. Re-check above.
+            Status is unavailable, so VM mode is greyed out.  Re-check above.
           </div>
         ) : (
           <div className="flex overflow-hidden rounded-lg border border-hairline/40">
@@ -344,7 +344,7 @@ export function LocalVmRuntimeCard() {
         <div className="flex flex-col gap-4">
           <Step n={1} title="Install a Container Runtime" done={Boolean(status?.runtime)}>
             <div className="text-[13px] leading-relaxed text-ink-secondary">
-              Podman and Colima are free. Docker Desktop may require a paid licence for larger companies and government use.
+              Podman and Colima are free.  Docker Desktop may require a paid licence for larger companies and government use.
             </div>
             {c?.install ? (
               <CommandLine command={c.install} />
@@ -382,9 +382,9 @@ export function LocalVmRuntimeCard() {
             {perBot ? (
               <div className="text-[13px] leading-relaxed text-ink-secondary">
                 {perBotRuntimeUnsupported
-                  ? "Apple container requires an explicit host port, so BotFleet will not guess or expose one. Install or start Docker or Podman for safe per-bot dynamic loopback ports."
+                  ? "Apple container requires an explicit host port, so BotFleet will not guess or expose one.  Install or start Docker or Podman for safe per-bot dynamic loopback ports."
                   : <>
-                      Choose <b className="text-ink">Local VM</b> for a bot, open that bot's Computer panel, then create its desktop there. BotFleet assigns a private workspace and an available loopback viewer port automatically.
+                      Choose <b className="text-ink">Local VM</b> for a bot, open that bot's Computer panel, then create its desktop there.  BotFleet assigns a private workspace and an available loopback viewer port automatically.
                     </>}
               </div>
             ) : needsRecreate ? (
@@ -420,7 +420,7 @@ export function LocalVmRuntimeCard() {
         <Card>
           <div className="flex gap-2 text-[13px] text-ink-secondary">
             <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
-            <span>BotFleet could not inspect the container runtime. Re-check, or review the app logs.</span>
+            <span>BotFleet could not inspect the container runtime.  Re-check, or review the app logs.</span>
           </div>
         </Card>
       )}
