@@ -83,17 +83,19 @@ function ActionButton({
   children,
   onClick,
   danger = false,
+  disabled = false,
 }: {
   action: Action;
   pending: Action | null;
   children: React.ReactNode;
   onClick: () => void;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      disabled={pending !== null}
+      disabled={disabled || pending !== null}
       className={cn(
         "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium disabled:opacity-50",
         danger ? "bg-danger/15 text-danger hover:bg-danger/20" : "bg-accent text-white hover:brightness-110",
@@ -123,6 +125,13 @@ export function LocalVmRuntimeCard() {
   // stays internally consistent with the rest of the section.
   const localVmMode = state.config?.localVm?.mode;
   const perBot = localVmMode === "per-bot";
+  // The Local VM provider toggle in Computer settings.  When it is off the
+  // server refuses run and start (409), so the controls that would create
+  // or start the VM are disabled here too.  Stop and remove stay available.
+  // An install with no `computerProviders` yet defers to the legacy
+  // allowlist, same as the server.
+  const computerProviders = state.config?.botDefaults?.computerProviders;
+  const localVmOff = Boolean(computerProviders) && computerProviders?.localVm !== true;
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch("/api/local-computer", { signal });
@@ -385,7 +394,7 @@ export function LocalVmRuntimeCard() {
                   <span>{status?.problem}</span>
                 </div>
                 {status?.image ? (
-                  <ActionButton action="recreate" pending={pending} onClick={() => void act("recreate")} danger>
+                  <ActionButton action="recreate" pending={pending} onClick={() => void act("recreate")} danger disabled={localVmOff}>
                     <RotateCcw size={13} /> Delete and recreate
                   </ActionButton>
                 ) : (
@@ -393,12 +402,15 @@ export function LocalVmRuntimeCard() {
                 )}
               </>
             ) : status?.container === "stopped" ? (
-              <ActionButton action="start" pending={pending} onClick={() => void act("start")}>Start Local VM</ActionButton>
+              <ActionButton action="start" pending={pending} onClick={() => void act("start")} disabled={localVmOff}>Start Local VM</ActionButton>
             ) : status?.container === "running" ? (
               <div className="flex items-center gap-2 text-[13px] text-ink-secondary"><Loader2 size={13} className="animate-spin" /> Waiting for the desktop…</div>
             ) : status?.image ? (
-              <ActionButton action="run" pending={pending} onClick={() => void act("run")}>Create Local VM</ActionButton>
+              <ActionButton action="run" pending={pending} onClick={() => void act("run")} disabled={localVmOff}>Create Local VM</ActionButton>
             ) : null}
+            {localVmOff && !perBot && (
+              <div className="text-[13px] text-ink-secondary">Local VM is turned off in Computer settings. Turn it on above to create or start it.</div>
+            )}
             {c?.run && <details className="text-[12px] text-ink-secondary"><summary className="cursor-pointer">Show Command</summary><div className="mt-2"><CommandLine command={c.run} /></div></details>}
           </Step>
         </div>
