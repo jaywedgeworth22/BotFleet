@@ -400,7 +400,7 @@ export function UsageSection() {
     <div className="flex flex-col gap-4">
       <Card
         title="Usage"
-        subtitle={`Tokens and cost per bot, added up from every settled turn.\u00A0  Click a bot to expand its sessions and see model, tokens in/out, $/turn, and the per-session cumulative.\u00A0  A turn that ran on a fallback is billed as that fallback reported it, not as the bot's current model.\u00A0  Only engines that report a price show one.`}
+        subtitle={`Tokens and cost per bot, added up from every settled turn.\u00A0  Click a bot to expand its sessions and see model, tokens in/out, $/turn, and the per-session cumulative.\u00A0  A turn that ran on a fallback is billed as that fallback reported it, not as the bot's current model.\u00A0  Only engines that report a price show one.`}
         actions={
           rows.length > 0 ? (
             <button
@@ -494,7 +494,7 @@ export function UsageSection() {
               // (see server/grok-quota.ts); a configured Grok instance
               // still renders because we want the "no quota source
               // available yet" line to show under the row.
-              (instance.instanceId === "grok" && Boolean(grokQuota)) ||
+              instance.instanceId === "grok" ||
               (isDeepSeek && deepseekBalance?.balanceUsd != null) ||
               // MiniMax's row must render whenever the engine is configured,
               // not only once it's capped or has spent something — a fresh
@@ -740,16 +740,16 @@ export function UsageSection() {
             // fabricated 100% / Ready chip.  When xAI ships a quota
             // endpoint the swap is in `server/grok-quota.ts`, not here.
             const isGrokNoSource =
-              instance.instanceId === "grok" && grokQuota?.method === "no-source";
+              instance.instanceId === "grok" && (!grokQuota || grokQuota.method === "no-source");
             const grokNoSourceLine = isGrokNoSource
               ? (grokQuota?.noSourceReason ?? "No quota source available yet for Grok.")
               : null;
 
             // The headline/fullSummary lines are shown only for the healthy,
-            // uncapped path they were designed for.
-            const statusLine = grokNoSourceLine
-              ? grokNoSourceLine
-              : isCapped
+            // uncapped path they were designed for.  Grok's no-source line
+            // sits with them — below the capped/partial/disabled/unavailable
+            // branches, because the engine's real state must outrank it.
+            const statusLine = isCapped
               // MiniMax's own line already names the binding window's real
               // reset time (minimaxQuotaLine); the generic cooldown-based
               // wording below has nothing for MiniMax specifically and
@@ -763,6 +763,8 @@ export function UsageSection() {
               ? "Disabled in settings · subscription inactive"
               : isUnavailable
               ? instance.snapshot.reason ?? "Unavailable"
+              : grokNoSourceLine
+              ? grokNoSourceLine
               : isNearCap
               ? (minimaxLine ?? (allHeadlineLines.length > 0 ? allHeadlineLines.join("  ·  ") : "Approaching its usage cap"))
               : allHeadlineLines.length > 0
@@ -975,61 +977,72 @@ export function UsageSection() {
             // report 0; the projection card then shows "Your cost:
             // bundled" instead of a fabricated number.
             //
-            // Attribution walks each task's own `modelSelection` (so a
-            // bot that switched engines mid-history attributes its old
-            // tokens to the engine that ran them) and falls back to the
-            // bot's current selection when the task has no override.
-            // The driver-kind layer reports `dsh` as the default DSH
-            // instance id, which is why `deepseek-harness` accepts both
-            // `deepseek` and `dsh` here in addition to the canonical
-            // `deepseek-harness` id.  We iterate `state.bots` rather
+            // Attribution walks each task's own records so a bot that
+            // switched engines mid-history attributes its old tokens to
+            // the engine that ran them.  We iterate `state.bots` rather
             // than the per-bot `rows` shape because rows aggregates the
-            // task totals — we need the per-task modelSelection to
-            // attribute each task's tokens to the engine that actually
-            // ran it.
-            let tokensForEngine = 0;
-            let inputTokensForEngine = 0;
-            let outputTokensForEngine = 0;
-            let cachedForEngine = 0;
-            // The projection card labels its window "Last 30 days" — the
-            // raw `TaskUsage` field is an all-time aggregate per task,
-            // so a year-old task would inflate the projection against
-            // a single monthly fee.  Filter to tasks whose `lastActivity`
-            // (or `createdAt` as a fallback) is within the window.  When
-            // per-turn model tracking lands in a follow-up lane the
-            // time cutoff moves into the server-side accounting; the
-            // current shape keeps the UI honest for the lifetime case.
+            // task totals — we need the per-task detail.
             //
-            // Each task is a single turn lifetime in the current data
-            // model — `usage.input` / `usage.output` are aggregated since
-            // the task started.  A coarse fix is to require the task's
-            // `lastActivity` (or `createdAt` fallback) to be inside the
-            // 30-day window AND mark the entire task as in-window.  When
-            // per-turn timestamps land we can interpolate this cutoff
-            // to per-turn granularity; until then this filter prevents
-            // the worst all-time inflation against a monthly fee.
-            const windowStartMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            // "Last 30 days": only activity inside the window counts —
+            // the card compares this usage against ONE monthly
+            // subscription fee, so lifetime usage would overstate the
+            // API-equivalent by an unbounded factor.
+            const periodStartMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            // Map the raw instanceId back to a registry key so a user
+            // with a second MiniMax connection under a custom id still
+            // aggregates into the canonical row; engineIdFromDriverKind
+            // covers instances deleted since the turn ran, including the
+            // legacy deepseek/dshAgent aliases.
+            const engineFor = (instanceId: string) =>
+              instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
+            let tokensForEngine = 0;
+            let cachedForEngine = 0;
+            let inputForEngine = 0;
+            let outputForEngine = 0;
             for (const bot of state.bots) {
               if (bot.hidden) continue;
               const botInstanceId = bot.modelSelection?.instanceId;
               for (const task of bot.tasks ?? []) {
+                if ((task.lastActivity ?? task.createdAt) < periodStartMs) continue;
+                // The per-instance breakdown records the engine that
+                // ACTUALLY ran each turn (fallbacks included); legacy
+                // tasks without it attribute the whole task to the
+                // configured selection, the only attribution they have.
+                const buckets = task.usageByInstance && Object.keys(task.usageByInstance).length > 0
+                  ? Object.entries(task.usageByInstance)
+                  : null;
+                if (buckets) {
+                  for (const [bucketInstanceId, bucketUsage] of buckets) {
+                    if ((bucketUsage.turns ?? 0) <= 0) continue;
+                    if (engineFor(bucketInstanceId) !== id) continue;
+                    tokensForEngine += bucketUsage.input + bucketUsage.output;
+                    cachedForEngine += cachedInput(bucketUsage);
+                    inputForEngine += bucketUsage.input;
+                    outputForEngine += bucketUsage.output;
+                  }
+                  continue;
+                }
                 if ((task.usage?.turns ?? 0) <= 0) continue;
-                const lastTouchedAt = task.lastActivity ?? task.createdAt;
-                if (typeof lastTouchedAt === "number" && lastTouchedAt < windowStartMs) continue;
                 const instanceId = task.modelSelection?.instanceId ?? botInstanceId;
                 if (!instanceId) continue;
-                // Map the raw instanceId back to a registry key so a
-                // user with a second MiniMax connection under a custom
-                // id still aggregates into the canonical row.  The map
-                // is built once at render time, not per task.
-                const resolvedId = instanceIdToEngineId.get(instanceId) ?? instanceId;
-                const matches = resolvedId === id
-                  || (id === "deepseek-harness" && (resolvedId === "deepseek" || resolvedId === "dsh"));
-                if (!matches) continue;
+                if (engineFor(instanceId) !== id) continue;
                 tokensForEngine += task.usage!.input + task.usage!.output;
-                inputTokensForEngine += task.usage!.input;
-                outputTokensForEngine += task.usage!.output;
                 cachedForEngine += cachedInput(task.usage!);
+                inputForEngine += task.usage!.input;
+                outputForEngine += task.usage!.output;
+              }
+              // Shared-room turns bank per engine on the speaking bot —
+              // they have no task thread, so without this the room's
+              // spend reached telemetry only and the projection's
+              // API-equivalent understated the engine's real volume.
+              for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
+                if (roomUsage.lastAt < periodStartMs) continue;
+                if ((roomUsage.turns ?? 0) <= 0) continue;
+                if (engineFor(roomInstanceId) !== id) continue;
+                tokensForEngine += roomUsage.input + roomUsage.output;
+                cachedForEngine += cachedInput(roomUsage);
+                inputForEngine += roomUsage.input;
+                outputForEngine += roomUsage.output;
               }
             }
             const actualCostUsd = id === "minimax"
@@ -1039,9 +1052,9 @@ export function UsageSection() {
                 : 0;
             return [{
               engineId: id,
-              inputTokens: inputTokensForEngine,
-              outputTokens: outputTokensForEngine,
               totalTokens: tokensForEngine,
+              inputTokens: inputForEngine,
+              outputTokens: outputForEngine,
               cachedTokens: cachedForEngine,
               actualCostUsd,
             }];
@@ -1377,8 +1390,9 @@ function UsageRow({
                 <span className="text-right tabular-nums text-ink-secondary">
                   {perTurnCost != null ? formatUsd(perTurnCost) : "—"}
                 </span>
-                <span className="text-right tabular-nums text-ink" title={`Cumulative tokens: ${formatTokens(cumTokens)}`}>
+                <span className="text-right tabular-nums text-ink">
                   {hasFiniteCost(taskUsage.costUsd) ? formatUsd(cumCost) : "—"}
+                  <span className="block text-[10.5px] text-ink-secondary">{formatTokens(cumTokens)} cumulative</span>
                 </span>
               </div>
             );
@@ -1401,6 +1415,9 @@ interface TaskLike {
   createdAt: number;
   lastActivity?: number;
   usage?: TaskUsage;
+  /** Per-instance breakdown of `usage`, banked from the selection that
+   *  actually ran each turn (post-fallback).  Absent on older records. */
+  usageByInstance?: Record<string, TaskUsage>;
   modelSelection?: ModelSelectionLike;
 }
 interface ModelSelectionLike {
