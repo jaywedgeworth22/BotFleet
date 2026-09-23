@@ -409,7 +409,7 @@ export function LocalVmRuntimeCard() {
               <ActionButton action="run" pending={pending} onClick={() => void act("run")} disabled={localVmOff}>Create Local VM</ActionButton>
             ) : null}
             {localVmOff && !perBot && (
-              <div className="text-[13px] text-ink-secondary">Local VM is turned off in Computer settings. Turn it on above to create or start it.</div>
+              <div className="text-[13px] text-ink-secondary">Local VM is turned off in Computer settings.  Turn it on above to create or start it.</div>
             )}
             {c?.run && <details className="text-[12px] text-ink-secondary"><summary className="cursor-pointer">Show Command</summary><div className="mt-2"><CommandLine command={c.run} /></div></details>}
           </Step>
