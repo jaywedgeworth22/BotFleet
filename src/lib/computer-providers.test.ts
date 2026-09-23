@@ -3,8 +3,6 @@ import {
   COMPUTER_PROVIDER_DISABLE_IMPACT,
   COMPUTER_PROVIDER_LABEL,
   COMPUTER_PROVIDER_ORDER,
-  DEFAULT_COMPUTER_PROVIDERS,
-  DEFAULT_VPS_MODE,
   migrateAllowedComputersToProviders,
 } from "../../shared/local-auto-consent";
 import { providersForBot } from "../components/BotComputerMatrix";
@@ -55,22 +53,40 @@ describe("computerProviders migrateAllowedComputersToProviders", () => {
     expect(result.vpsMode).toBe("shared");
   });
 
-  it("ships the default when the legacy value is null (every destination allowed)", () => {
+  it("maps null to ALL providers enabled (legacy meaning was 'every destination allowed')", () => {
     const result = migrateAllowedComputersToProviders(null);
-    expect(result.providers).toEqual(DEFAULT_COMPUTER_PROVIDERS);
-    expect(result.vpsMode).toBe(DEFAULT_VPS_MODE);
+    expect(result.providers).toEqual({
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    });
+    expect(result.vpsMode).toBe("shared");
   });
 
-  it("ships the default when the legacy value is undefined", () => {
+  it("maps undefined to ALL providers enabled", () => {
     const result = migrateAllowedComputersToProviders(undefined);
-    expect(result.providers).toEqual(DEFAULT_COMPUTER_PROVIDERS);
-    expect(result.vpsMode).toBe(DEFAULT_VPS_MODE);
+    expect(result.providers).toEqual({
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    });
+    expect(result.vpsMode).toBe("shared");
   });
 
-  it("ships the default when the legacy value is empty", () => {
+  it("preserves an empty allowlist as a deliberate deny-all (NOT the default)", () => {
+    // SAFETY: an existing config with `allowedComputers: []` was the
+    // operator's explicit "no destination is allowed" choice.  The
+    // migrator must NOT silently re-enable Box and VPS on upgrade.
     const result = migrateAllowedComputersToProviders([]);
-    expect(result.providers).toEqual(DEFAULT_COMPUTER_PROVIDERS);
-    expect(result.vpsMode).toBe(DEFAULT_VPS_MODE);
+    expect(result.providers).toEqual({
+      asciiBox: false,
+      selfHostedVps: false,
+      localVm: false,
+      localMac: false,
+    });
+    expect(result.vpsMode).toBeNull();
   });
 
   it("ignores unrecognized legacy entries rather than throwing", () => {
@@ -96,7 +112,12 @@ describe("computerProviders migrateAllowedComputersToProviders", () => {
     // migrateComputerProvidersConfig, which sees `computerProviders`
     // already on disk and returns null.  We pin that contract here
     // so the shape stays stable across re-runs.
-    expect(second.providers).toEqual(DEFAULT_COMPUTER_PROVIDERS);
+    expect(second.providers).toEqual({
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    });
   });
 
   it("respects an explicit vpsMode argument when given a legacy value that does not imply one", () => {
@@ -267,17 +288,18 @@ describe("computerProviders matrix rendering", () => {
       localMac: false,
     };
     const providers = providersForBot(bot, workspaceProviders);
-    // ["cloud"] lights up both hosted Box and self-hosted VPS — the
-    // same mapping `migrateAllowedComputersToProviders` uses, so the
-    // matrix shows the operator the truth about what the bot has.
+    // ["cloud"] resolves to the runtime's chosen backend (Box when no
+    // cloudBackend is set and no workspace default), not both.  The
+    // matrix therefore lights up exactly one column, matching the
+    // grant the runtime will actually use.
     expect(providers).toEqual({
       asciiBox: true,
-      selfHostedVps: true,
+      selfHostedVps: false,
       localVm: false,
       localMac: false,
     });
     const checkCount = Object.values(providers).filter(Boolean).length;
-    expect(checkCount).toBe(2);
+    expect(checkCount).toBe(1);
   });
 
   it("renders zero check-marks for a bot whose computers[] is empty (off)", () => {

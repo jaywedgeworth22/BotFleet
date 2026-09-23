@@ -10,11 +10,72 @@
 // off cannot leak host control into a single bot's grant.  A new install
 // leaves it unset (every destination is allowed), matching the shipped
 // behavior exactly.
+//
+// This card is the LEGACY editor for the workspace default — the
+// redesigned Computer settings UI (`<LocalComputerSection>`) is the
+// primary view.  This card still edits the same on-disk shape; to keep
+// both editors consistent we mirror every write onto the new
+// `botDefaults.computerProviders` and `botDefaults.vpsMode` fields the
+// primary view owns.  A future lane (see audit doc) will delete this
+// card once every install has had a release to migrate.
 import { useEffect, useState } from "react";
 import { ApiError, api, useStore, type ConfigStatus } from "@/state/store";
 import { Card } from "./SettingsPrimitives";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { cn } from "@/lib/cn";
+import type { ComputerProviders, VpsMode } from "../../shared/local-auto-consent";
+
+/** Derive the new per-provider shape from the legacy allowlist array so
+ * the primary editor (LocalComputerSection) renders the same on-disk
+ * state this legacy card just wrote.  Mirrors the inverse helper in
+ * LocalComputerSection so the two stay symmetric. */
+function providersFromAllowed(
+  allowed: Destination[] | null,
+): ComputerProviders {
+  const providers: ComputerProviders = {
+    asciiBox: false,
+    selfHostedVps: false,
+    localVm: false,
+    localMac: false,
+  };
+  if (allowed === null) {
+    // "Every destination is allowed" → every provider on.  VPS mode
+    // is left to the operator via the primary view's VPS toggle; this
+    // card does not write vpsMode.
+    providers.asciiBox = true;
+    providers.selfHostedVps = true;
+    providers.localVm = true;
+    providers.localMac = true;
+    return providers;
+  }
+  for (const dest of allowed) {
+    if (dest === "cloud") {
+      providers.asciiBox = true;
+      providers.selfHostedVps = true;
+    } else if (dest === "vm") {
+      providers.localVm = true;
+    } else if (dest === "local") {
+      providers.localMac = true;
+    }
+  }
+  return providers;
+}
+
+/** Inverse: derive the legacy allowlist from the new per-provider
+ * shape so this legacy card's toggle row renders the same state the
+ * primary view shows.  `null` means "every destination is allowed" —
+ * the only case every legacy destination is on. */
+function allowedFromProviders(providers: ComputerProviders): Destination[] | null {
+  const cloud = providers.asciiBox || providers.selfHostedVps;
+  const vm = providers.localVm;
+  const local = providers.localMac;
+  if (cloud && vm && local) return null;
+  const result: Destination[] = [];
+  if (cloud) result.push("cloud");
+  if (vm) result.push("vm");
+  if (local) result.push("local");
+  return result;
+}
 
 type Destination = "cloud" | "vm" | "local";
 type Backend = "box" | "vps";
@@ -22,6 +83,11 @@ type DefaultsRequest = {
   computers: Destination[];
   cloudBackend: Backend;
   allowedComputers?: Destination[] | null;
+  /** New per-provider shape mirrored onto every save so the
+   * redesigned primary editor renders the same state.  Optional so
+   * the existing call sites that omit it continue to type-check. */
+  computerProviders?: ComputerProviders;
+  vpsMode?: VpsMode | undefined;
 };
 type ConsentRequest = {
   kind: "save" | "apply";
@@ -69,13 +135,17 @@ export function BotComputerDefaults() {
   useEffect(() => {
     setComputers(saved?.computers ?? []);
     setBackend(saved?.cloudBackend ?? "box");
-    setAllowed(saved?.allowedComputers ?? null);
-  }, [saved?.computers, saved?.cloudBackend, saved?.allowedComputers]);
+    // Read the allowlist from the new per-provider shape first, then
+    // fall back to the legacy field for installs that pre-date the
+    // migration.  This keeps both editors rendering the same state
+    // even when only one of them was the last writer.
+    setAllowed(saved?.computerProviders ? allowedFromProviders(saved.computerProviders) : (saved?.allowedComputers ?? null));
+  }, [saved?.computers, saved?.cloudBackend, saved?.allowedComputers, saved?.computerProviders]);
 
   const restoreSavedDefaults = () => {
     setComputers(saved?.computers ?? []);
     setBackend(saved?.cloudBackend ?? "box");
-    setAllowed(saved?.allowedComputers ?? null);
+    setAllowed(saved?.computerProviders ? allowedFromProviders(saved.computerProviders) : (saved?.allowedComputers ?? null));
   };
 
   const submit = (request: ConsentRequest, acknowledgedBots?: { id: string; name: string }[]) => {
@@ -118,6 +188,14 @@ export function BotComputerDefaults() {
     setComputers(nextComputers);
     setBackend(nextBackend);
     setAllowed(nextAllowed);
+    // Mirror the legacy allowlist onto the new `computerProviders`
+    // shape so the redesigned primary editor renders the same state
+    // and the localStorage migration sees a populated new field.
+    // vpsMode is owned by the primary view; we leave it as the
+    // previously-persisted value (or undefined on the wire, which
+    // merges into whatever is on disk) to avoid clobbering the
+    // operator's mode choice.
+    const nextProviders = providersFromAllowed(nextAllowed);
     submit({
       kind: "save",
       method: "PUT",
@@ -127,6 +205,8 @@ export function BotComputerDefaults() {
           computers: nextComputers,
           cloudBackend: nextBackend,
           allowedComputers: allowedForWire(nextAllowed),
+          computerProviders: nextProviders,
+          vpsMode: saved?.vpsMode ?? undefined,
         },
       },
     });

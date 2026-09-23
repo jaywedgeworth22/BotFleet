@@ -93,7 +93,7 @@ export function ComputerImpactConfirmModal({
             <p id="computer-impact-confirm-body" className="mt-1.5 text-[13px] leading-relaxed text-ink-secondary">
               {noOneAffected
                 ? "No bot currently uses this provider, so disabling it is a no-op."
-                : `${affected.length} bot${affected.length === 1 ? "" : "s"} currently use${affected.length === 1 ? "s" : ""} ${providerLabel}. Disabling it removes that leg of their grant until you re-enable the provider or the bot picks a different one.`}
+                : `${affected.length} bot${affected.length === 1 ? "" : "s"} currently use${affected.length === 1 ? "s" : ""} ${providerLabel}.  Disabling it removes that leg of their grant until you re-enable the provider or the bot picks a different one.`}
             </p>
             {!noOneAffected && (
               <ul className="mt-3 max-h-[200px] overflow-y-auto rounded-lg border border-hairline/40 bg-inset">

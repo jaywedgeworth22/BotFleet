@@ -41,16 +41,28 @@ import {
 /** Derive the legacy `allowedComputers: Destination[]` array from the
  * new per-provider shape so the server-side allowlist gate
  * (`server/computer-grants.ts`) keeps answering the same question
- * through the cut-over.  Every provider that maps to the same legacy
- * destination turns that destination on.  Returns `null` (= "every
- * destination is allowed") when every legacy destination is on, which
- * matches the shipped default and is what the legacy field has always
- * meant. */
+ * through the cut-over.  The legacy `"cloud"` destination is
+ * ambiguous between ASCII Box and Self-Hosted VPS; for the cut-over
+ * we keep the legacy field's contract narrow (`["cloud"]` means
+ * "either cloud backend is allowed", `null` means "every legacy
+ * destination is allowed") and rely on `server/computer-grants.ts`'s
+ * later `computerProviders` consult to enforce the per-backend
+ * distinction.  Returns `null` only when ALL four providers are on
+ * AND `selfHostedVps` is on (the only combination where every legacy
+ * destination is meaningfully on). */
 function allowedComputersFromProviders(providers: ComputerProviders): Array<"cloud" | "vm" | "local"> | null {
   const cloud = providers.asciiBox || providers.selfHostedVps;
   const vm = providers.localVm;
   const local = providers.localMac;
+  // Every provider on (the legitimate "null = every destination is
+  // allowed" answer).  Returning null here is correct: it matches the
+  // legacy "no allowlist = every destination is allowed" semantics.
   if (cloud && vm && local) return null;
+  // Otherwise, write an explicit narrowed array.  A partial-cloud
+  // shape (only one of {asciiBox, selfHostedVps} on) intentionally
+  // serializes `"cloud"` here so the server-side allowlist keeps the
+  // box-vs-vps decision; the later `computerProviders` consult in
+  // server/computer-grants.ts then picks the right backend.
   const result: Array<"cloud" | "vm" | "local"> = [];
   if (cloud) result.push("cloud");
   if (vm) result.push("vm");
@@ -149,12 +161,15 @@ export function LocalComputerSection() {
   // The bots that would lose a leg of their grant if the named
   // provider were disabled.  Used both to gate the toggle (no affected
   // bots -> commit without a modal) and to populate the modal list.
+  // Auto bots (`computers === undefined`) are included: their grant is
+  // the workspace default, so disabling a provider does effectively
+  // remove a leg of their grant, and the modal must list them so the
+  // operator confirms before that change ships.
   const botsUsingProvider = useCallback(
     (provider: ComputerProviderId): ImpactedBot[] =>
       bots
         .filter((bot) => {
-          if (bot.computers === undefined) return false;
-          if (bot.computers.length === 0) return false;
+          if (bot.computers !== undefined && bot.computers.length === 0) return false;
           const botProviders = providersForBot(bot, providers);
           return botProviders[provider] === true;
         })
@@ -170,25 +185,36 @@ export function LocalComputerSection() {
   // Persist a new providers shape.  Always writes both the new key and
   // the legacy `allowedComputers` (back-filled from the new shape)
   // so the server-side allowlist gate stays in lock-step with the
-  // operator-facing toggle.
+  // operator-facing toggle.  When the server refuses with
+  // `needsAcknowledgement` (e.g. enabling This Computer would newly
+  // grant local Auto access to an auto-approved bot), the existing
+  // `<LocalComputerAutoWarning>` dialog is opened so the operator can
+  // consent and resubmit; a plain error is not surfaced in that case.
   const persist = useCallback(
     (nextProviders: ComputerProviders, nextVpsMode: VpsMode) => {
+      const body = {
+        botDefaults: {
+          computerProviders: nextProviders,
+          vpsMode: nextVpsMode,
+          allowedComputers: allowedComputersFromProviders(nextProviders),
+        },
+      };
       setSaving(true);
       setError(null);
-      api("/api/config", {
-        method: "PUT",
-        body: JSON.stringify({
-          botDefaults: {
-            computerProviders: nextProviders,
-            vpsMode: nextVpsMode,
-            allowedComputers: allowedComputersFromProviders(nextProviders),
-          },
-        }),
-      })
+      api("/api/config", { method: "PUT", body: JSON.stringify(body) })
         .then((config: ConfigStatus) => {
           dispatch({ type: "configStatus", config });
         })
-        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        .catch((e) => {
+          if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
+            setPendingAck({
+              bots: e.body.needsAcknowledgement,
+              request: { path: "/api/config", method: "PUT", body },
+            });
+            return;
+          }
+          setError(e.message);
+        })
         .finally(() => setSaving(false));
     },
     [dispatch],
@@ -196,21 +222,16 @@ export function LocalComputerSection() {
 
   const handleProviderToggle = (provider: ComputerProviderId, next: boolean) => {
     if (saving) return;
-    // Cross-field invariant: `vpsMode === null` is only legal when the
-    // VPS provider is off.  Toggling the VPS on without a mode is a
-    // disabled toggle (the parent rendered the toggle as off), but
-    // defense-in-depth lives here so a future test that toggles the
-    // row programmatically does not silently land a null mode.
-    if (provider === "selfHostedVps" && next && vpsMode === null) {
-      setError("Pick a VPS mode (Shared or Per-Bot) before enabling the VPS provider");
-      return;
-    }
     if (!next) {
       // Disable path.  If any bot currently uses the provider, gate
       // the change on the modal; otherwise commit immediately.
       const impacted = botsUsingProvider(provider);
       if (impacted.length === 0) {
         const nextProviders = { ...providers, [provider]: false };
+        // Disabling the VPS provider clears its mode.  Other providers
+        // leave the existing mode untouched (the VPS mode is its
+        // question; the cloudBackend for the ASCII Box provider is
+        // unrelated).
         persist(nextProviders, provider === "selfHostedVps" ? null : vpsMode);
         return;
       }
@@ -218,9 +239,14 @@ export function LocalComputerSection() {
       return;
     }
     // Enable path: no modal, the only impact is that more bots can use
-    // the provider from this point on.
+    // the provider from this point on.  When re-enabling the VPS
+    // provider after a disable, atomically restore the shipped
+    // default mode so the toggle and the mode control do not
+    // deadlock — the operator would otherwise have to pick a mode
+    // before re-enabling, with no UI path to do either first.
     const nextProviders = { ...providers, [provider]: true };
-    persist(nextProviders, vpsMode);
+    const nextVpsMode = provider === "selfHostedVps" && vpsMode === null ? DEFAULT_VPS_MODE : vpsMode;
+    persist(nextProviders, nextVpsMode);
   };
 
   const handleVpsModeChange = (next: VpsMode) => {

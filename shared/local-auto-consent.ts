@@ -84,11 +84,17 @@ export const COMPUTER_PROVIDER_ORDER: readonly ComputerProviderId[] = [
  * - `"vm"` enables only the Local VM.
  * - `"local"` enables only the host.
  *
- * The legacy array was never exhaustive (a workspace could leave it
- * unset to mean "every destination is allowed"), so `null` and `[]` map
- * to the shipped default rather than to "every provider off".  The
- * caller can pass a `vpsMode` for the new VPS-specific toggle; absent
- * that we infer `shared` whenever the legacy `"cloud"` was allowed.
+ * Three distinct input shapes are honored:
+ * - `null` / `undefined`: legacy meaning was "every destination is
+ *   allowed", which translates to all four providers on.  The caller
+ *   can pass a `vpsMode`; absent that we pin it to `shared` (the
+ *   runtime default the server has always assumed when "cloud" was
+ *   allowed).
+ * - `[]` (empty array): an explicit deny-all.  Preserved verbatim —
+ *   every provider off, `vpsMode: null`.  A config that intentionally
+ *   disabled everything must NOT silently re-enable Box and VPS on
+ *   upgrade.
+ * - non-empty array: each entry maps to the provider keys above.
  *
  * Throws if the migrated shape would land a `null` vpsMode with
  * `selfHostedVps: true` — that is the lone combination the new schema
@@ -97,13 +103,21 @@ export function migrateAllowedComputersToProviders(
   allowedComputers: readonly LocalComputerDestination[] | null | undefined,
   vpsMode?: VpsMode,
 ): { providers: ComputerProviders; vpsMode: VpsMode } {
-  // Fresh install or legacy "every destination is allowed": ship the
-  // default and let the operator narrow it from the UI.
+  // Fresh install or legacy "every destination is allowed": all four
+  // providers on.  A fresh install has no `allowedComputers` and the
+  // legacy "null = every destination is allowed" answer lands here
+  // for any workspace that never narrowed the allowlist.
   if (allowedComputers === null || allowedComputers === undefined) {
-    return { providers: { ...DEFAULT_COMPUTER_PROVIDERS }, vpsMode: vpsMode ?? DEFAULT_VPS_MODE };
+    return {
+      providers: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+      vpsMode: vpsMode ?? DEFAULT_VPS_MODE,
+    };
   }
   if (!Array.isArray(allowedComputers) || allowedComputers.length === 0) {
-    return { providers: { ...DEFAULT_COMPUTER_PROVIDERS }, vpsMode: vpsMode ?? DEFAULT_VPS_MODE };
+    // Explicit deny-all: preserved verbatim.  Every provider off, no
+    // VPS mode (the VPS provider is off, so the mode question is
+    // moot).
+    return { providers: { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false }, vpsMode: null };
   }
   const providers: ComputerProviders = {
     asciiBox: false,

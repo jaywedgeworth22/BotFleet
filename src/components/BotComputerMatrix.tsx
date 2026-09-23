@@ -26,20 +26,27 @@ import { ConfirmDialog } from "./ConfirmDialog";
  * `computers[]` field (the legacy wire shape) and the workspace
  * `botDefaults.computerProviders` so a cell lights up whether the bot
  * itself selected the provider or inherited the workspace default.
- * Keeping the mapping in one place means a future server-side change
- * to the grant shape only touches this helper, not the cell render. */
-export function providersForBot(bot: Bot, workspaceProviders: ComputerProviders | undefined): ComputerProviders {
-  const list = new Set<string>(bot.computers ?? []);
+ *
+ * For the `"cloud"` destination, the matrix lights up exactly the
+ * backend the runtime will pick: the bot's own `cloudBackend` if set,
+ * else the workspace default, else `"box"`.  This matches
+ * `server/computer-grants.ts:resolveCloudBackend` so the matrix
+ * reflects what the bot actually has, not a fictional "cloud as
+ * either backend" superset.  Keeping the mapping in one place means a
+ * future server-side change to the grant shape only touches this
+ * helper, not the cell render. */
+export function providersForBot(
+  bot: Bot,
+  workspaceProviders: ComputerProviders | undefined,
+  workspaceCloudBackend?: "box" | "vps",
+): ComputerProviders {
   // "off" means the operator disabled the bot — no providers light up.
   if (bot.computers !== undefined && bot.computers.length === 0) {
     return { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false };
   }
   // Auto (computers undefined): the bot inherits whatever the workspace
-  // default enables, so the matrix lights up the workspace providers
-  // verbatim.  A real `["cloud"]` resolves to "asciiBox + selfHostedVps
-  // are on" via the legacy `["cloud"] -> { asciiBox, selfHostedVps }`
-  // mapping that has always been the renderer-side meaning of
-  // "computers includes cloud".
+  // default enables.  A bot with no cloudBackend and no workspace
+  // default falls back to "box", matching server-side resolveCloudBackend.
   if (bot.computers === undefined) {
     return {
       asciiBox: Boolean(workspaceProviders?.asciiBox),
@@ -49,16 +56,20 @@ export function providersForBot(bot: Bot, workspaceProviders: ComputerProviders 
     };
   }
   // Explicit selection: map each legacy destination back onto the
-  // provider keys.  "cloud" lights both hosted (Box) and self-hosted
-  // (VPS) per the same rule `migrateAllowedComputersToProviders` uses.
+  // provider keys.  "cloud" lights the resolved backend only —
+  // `asciiBox` if the runtime would pick Box, `selfHostedVps` if it
+  // would pick VPS.  This stops the matrix from reporting a
+  // nonexistent grant when the operator toggles one cloud backend off
+  // while the bot's resolved backend is the other.
   let asciiBox = false;
   let selfHostedVps = false;
   let localVm = false;
   let localMac = false;
-  for (const dest of list) {
+  const resolvedCloud: "box" | "vps" = bot.cloudBackend ?? workspaceCloudBackend ?? "box";
+  for (const dest of bot.computers) {
     if (dest === "cloud") {
-      asciiBox = true;
-      selfHostedVps = true;
+      if (resolvedCloud === "box") asciiBox = true;
+      else selfHostedVps = true;
     } else if (dest === "vm") {
       localVm = true;
     } else if (dest === "local") {
