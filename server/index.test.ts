@@ -6453,6 +6453,37 @@ describe("local Auto consent for inherited and discovered computers", () => {
   });
 });
 
+describe("cloud computer lifecycle routes honor the provider toggles", () => {
+  it("refuses to provision, join, exec or screenshot on a turned-off provider, and still lets it sleep", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Bea Boxless", cloudBackend: "box" })).body.bot;
+    try {
+      const off = await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: false, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      expect(off.status).toBe(200);
+      for (const action of ["provision", "join", "exec", "screenshot"]) {
+        const refused = await api("POST", `/api/bots/${bot.id}/computer/${action}`, {});
+        expect(refused.status).toBe(409);
+        expect(String(refused.body.error)).toContain("ASCII.dev Box is turned off");
+      }
+      // Winding a computer down is never blocked by the toggle.
+      const sleep = await api("POST", `/api/bots/${bot.id}/computer/sleep`, {});
+      expect(String(sleep.body.error ?? "")).not.toContain("turned off in Computer settings");
+
+      // A VPS bot is not affected by the Box toggle.
+      const vpsBot = (await api("PATCH", `/api/bots/${bot.id}`, { cloudBackend: "vps" })).body.bot;
+      expect(vpsBot.cloudBackend).toBe("vps");
+      const vpsExec = await api("POST", `/api/bots/${bot.id}/computer/exec`, {});
+      expect(String(vpsExec.body.error ?? "")).not.toContain("turned off in Computer settings");
+    } finally {
+      await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+});
+
 describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
   it("applies the workspace default to every bot, filtered through the allowlist", async () => {
     const ada = (await api("POST", "/api/bots", { name: "Ada Apply" })).body.bot;
