@@ -183,6 +183,16 @@ if [[ "$BOTFLEET_CHECKOUT_IS_GIT" == "1" ]]; then
       HAS_BOOTSTRAP_TARGET=1
     fi
   done
+  # unquiesce is the recovery action that releases runtime admission, so it
+  # must run even while BOTFLEET_UPDATE_TARGET (or a stray --target) names an
+  # unmerged ref: the ancestry check below would otherwise exit before the
+  # recovery could run, leaving admission fenced.  parseArguments hard-rejects
+  # options on unquiesce, so a target can never reach it as an argument;
+  # ignore targets for its bootstrap too and recover with origin/main's
+  # updater.
+  if [[ "${1:-update}" == "unquiesce" ]]; then
+    BOOTSTRAP_REF="origin/main"
+  fi
   # BOTFLEET_UPDATE_TARGET is part of the wrapper interface, so forward it to
   # commands that resolve a candidate as well as using it for bootstrap policy.
   # apply gets its immutable target from prepared.json; unquiesce takes no options.
