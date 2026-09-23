@@ -5,7 +5,12 @@ import {
   alertIsBlocking,
   apnsJwt,
   apnsPayload,
+  classifyHttpResponse,
+  classifyTransportError,
   deliveryForKind,
+  dropHttp2Sessions,
+  getOrOpenSession,
+  inspectTransportError,
   providerToken,
   resetProviderTokens,
   retryAfterMs,
@@ -14,6 +19,8 @@ import {
   watchHarnessNotifications,
   type ApnsConfig,
   type ApnsPayload,
+  type Http2ApnsSession,
+  type Http2SessionFactory,
 } from "./apns.ts";
 
 function testP8(): string {
@@ -45,6 +52,14 @@ function recordingSleep() {
 
 const rejection = (status: number, reason: string, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify({ reason }), { status, headers });
+
+/** Top-level frame helpers — the in-describe definitions are scoped, so the
+ * failure-classification + circuit-breaker tests reuse these. */
+const moduleNotifyFrame = (kind: string, body = "done") =>
+  `data: ${JSON.stringify({
+    kind: "notify",
+    notification: { kind, title: "Scout finished", body, threadId: "t1", botId: "b1" },
+  })}\n\n`;
 
 /** A promise someone else finishes.  The resolver lives on the object
  * because a `let` only ever assigned inside a callback is narrowed to
@@ -209,7 +224,7 @@ describe("sendApnsAlert", () => {
         },
       },
     );
-    expect(result).toEqual({ ok: true, status: 200, attempts: 1 });
+    expect(result).toEqual({ ok: true, status: 200, attempts: 1, failureKind: "none" });
     expect(url).toBe(`https://api.push.apple.com/3/device/${token}`);
     expect(headers?.get("apns-push-type")).toBe("alert");
     expect(headers?.get("apns-topic")).toBe("app.botfleet");
@@ -299,7 +314,14 @@ describe("sendApnsAlert", () => {
     );
     expect(calls).toBe(1);
     expect(waits).toEqual([]);
-    expect(result).toEqual({ ok: false, status: 403, reason: "InvalidProviderToken", attempts: 1 });
+    expect(result).toEqual({
+      ok: false,
+      status: 403,
+      reason: "InvalidProviderToken",
+      attempts: 1,
+      failureKind: "key_fault",
+      errorTimestamp: undefined,
+    });
   });
 
   it("retries a 429 after the Retry-After Apple asked for", async () => {
@@ -319,7 +341,7 @@ describe("sendApnsAlert", () => {
         },
       },
     );
-    expect(result).toEqual({ ok: true, status: 200, attempts: 2 });
+    expect(result).toEqual({ ok: true, status: 200, attempts: 2, failureKind: "none" });
     expect(waits).toEqual([7000]);
   });
 
@@ -340,7 +362,15 @@ describe("sendApnsAlert", () => {
     );
     expect(calls).toBe(3);
     expect(waits).toEqual([1000, 2000]);
-    expect(result).toEqual({ ok: false, status: 503, reason: "ServiceUnavailable", attempts: 3 });
+    expect(result).toEqual({
+      ok: false,
+      status: 503,
+      reason: "ServiceUnavailable",
+      attempts: 3,
+      failureKind: "rate_limit",
+      errorCode: undefined,
+      errorTimestamp: undefined,
+    });
   });
 
   it("retries a thrown fetch inside the attempt budget, the same as a 503", async () => {
@@ -363,7 +393,7 @@ describe("sendApnsAlert", () => {
         },
       },
     );
-    expect(result).toEqual({ ok: true, status: 200, attempts: 3 });
+    expect(result).toEqual({ ok: true, status: 200, attempts: 3, failureKind: "none" });
     expect(waits).toEqual([1000, 2000]);
   });
 
@@ -380,7 +410,15 @@ describe("sendApnsAlert", () => {
         },
       },
     );
-    expect(result).toEqual({ ok: false, status: 0, reason: "SendFailed", attempts: 3 });
+    expect(result).toEqual({
+      ok: false,
+      status: 0,
+      reason: "SendFailed",
+      attempts: 3,
+      failureKind: "transport",
+      errorCode: undefined,
+      errorTimestamp: undefined,
+    });
     expect(waits).toEqual([1000, 2000]);
   });
 
@@ -401,7 +439,14 @@ describe("sendApnsAlert", () => {
     );
     expect(calls).toBe(1);
     expect(waits).toEqual([]);
-    expect(result).toEqual({ ok: false, status: 400, reason: "BadDeviceToken", attempts: 1 });
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      reason: "BadDeviceToken",
+      attempts: 1,
+      failureKind: "bad_token",
+      errorTimestamp: undefined,
+    });
   });
 
   it("returns a 410 with its reason so the caller can drop the token", async () => {
@@ -418,7 +463,13 @@ describe("sendApnsAlert", () => {
       },
     );
     expect(calls).toBe(1);
-    expect(result).toEqual({ ok: false, status: 410, reason: "Unregistered", attempts: 1 });
+    expect(result).toEqual({
+      ok: false,
+      status: 410,
+      reason: "Unregistered",
+      attempts: 1,
+      failureKind: "bad_token",
+    });
   });
 });
 
@@ -1270,6 +1321,316 @@ describe("watchHarnessNotifications", () => {
     });
     expect(watch.health().configured).toBe(false);
     expect(watch.health().production).toBeNull();
+    watch.stop();
+  });
+});
+
+// --- Failure classification + circuit breaker -----------------------------
+//
+// The native `fetch` HTTP/2 path swallows every transport error under a
+// generic "fetch failed" message.  These tests pin down the bucketed shape
+// the health page renders: a DNS blip is `transport`, an HTTP/2 GOAWAY is
+// `http2_protocol`, a 410 is `bad_token`.  They also pin down the
+// consecutive-failure run that opens the circuit and the skip-while-open
+// behaviour that keeps a hot loop from burning provider-token re-signs.
+
+describe("inspectTransportError", () => {
+  it("reads every field Node attaches to a thrown error", () => {
+    const info = inspectTransportError(
+      Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET", name: "Error" }),
+    );
+    expect(info.code).toBe("ECONNRESET");
+    expect(info.message).toContain("ECONNRESET");
+    expect(info.name).toBe("Error");
+  });
+
+  it("falls back to a string when the error is not an object", () => {
+    const info = inspectTransportError("socket hang up");
+    expect(info.message).toBe("socket hang up");
+    expect(info.code).toBe("");
+  });
+});
+
+describe("classifyTransportError", () => {
+  it("buckets an HTTP/2 GOAWAY as http2_protocol", () => {
+    const kind = classifyTransportError({
+      name: "Error",
+      code: "ERR_HTTP2_GOAWAY",
+      message: "http2: received GOAWAY",
+    });
+    expect(kind).toBe("http2_protocol");
+  });
+
+  it("buckets a TCP RST as socket_closed", () => {
+    const kind = classifyTransportError({
+      name: "Error",
+      code: "ECONNRESET",
+      message: "read ECONNRESET",
+    });
+    expect(kind).toBe("socket_closed");
+  });
+
+  it("buckets a DNS failure as transport", () => {
+    const kind = classifyTransportError({
+      name: "Error",
+      code: "ENOTFOUND",
+      message: "getaddrinfo ENOTFOUND api.push.apple.com",
+    });
+    expect(kind).toBe("transport");
+  });
+});
+
+describe("classifyHttpResponse", () => {
+  it("maps 410 to bad_token", () => {
+    expect(classifyHttpResponse(410, "Unregistered")).toBe("bad_token");
+  });
+  it("maps 400 BadDeviceToken to bad_token", () => {
+    expect(classifyHttpResponse(400, "BadDeviceToken")).toBe("bad_token");
+  });
+  it("maps 403 ExpiredProviderToken to expired_token", () => {
+    expect(classifyHttpResponse(403, "ExpiredProviderToken")).toBe("expired_token");
+  });
+  it("maps 403 InvalidProviderToken to key_fault", () => {
+    expect(classifyHttpResponse(403, "InvalidProviderToken")).toBe("key_fault");
+  });
+  it("maps 429 to rate_limit", () => {
+    expect(classifyHttpResponse(429, undefined)).toBe("rate_limit");
+  });
+  it("maps a 503 to rate_limit", () => {
+    expect(classifyHttpResponse(503, undefined)).toBe("rate_limit");
+  });
+  it("maps a generic 500 to server", () => {
+    expect(classifyHttpResponse(500, undefined)).toBe("server");
+  });
+});
+
+describe("sendApnsAlert — transport error capture", () => {
+  it("maps ECONNRESET to failureKind=socket_closed and surfaces the code", async () => {
+    const result = await sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      maxAttempts: 1,
+      fetchImpl: async () => {
+        throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET", name: "Error" });
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(0);
+    expect(result.reason).toBe("SendFailed");
+    expect(result.attempts).toBe(1);
+    expect(result.failureKind).toBe("socket_closed");
+    expect(result.errorCode).toBe("ECONNRESET");
+  });
+
+  it("maps an HTTP/2 GOAWAY stream error to failureKind=http2_protocol", async () => {
+    const result = await sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      maxAttempts: 1,
+      fetchImpl: async () => {
+        throw Object.assign(new Error("http2: received GOAWAY"), {
+          code: "ERR_HTTP2_GOAWAY",
+          name: "Error",
+        });
+      },
+    });
+    expect(result.failureKind).toBe("http2_protocol");
+    expect(result.errorCode).toBe("ERR_HTTP2_GOAWAY");
+  });
+
+  it("parses Apple's timestamp field from a 403 InvalidProviderToken body", async () => {
+    const result = await sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      maxAttempts: 1,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ reason: "InvalidProviderToken", timestamp: 1_700_000_000_000 }), {
+          status: 403,
+        }),
+    });
+    expect(result.reason).toBe("InvalidProviderToken");
+    expect(result.errorTimestamp).toBe(1_700_000_000_000);
+  });
+
+  it("falls back to undefined timestamp when Apple omits the field", async () => {
+    const result = await sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      maxAttempts: 1,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ reason: "InvalidProviderToken" }), { status: 403 }),
+    });
+    expect(result.errorTimestamp).toBeUndefined();
+  });
+});
+
+describe("HTTP/2 session cache", () => {
+  beforeEach(() => {
+    dropHttp2Sessions();
+  });
+
+  /** A fake session stand-in: the cache test only cares about identity and
+   * `closed` / `destroyed` flags, never about a real socket.  A bare object
+   * with those two boolean fields is enough — `getOrOpenSession` reads them
+   * and `dropHttp2Sessions` checks them before calling `.close()`.  The
+   * `as unknown as ClientHttp2Session` cast is the same shape `apns.ts` uses
+   * to define `Http2ApnsSession.raw`: tests do not exercise the wire, so
+   * the wider interface contract does not apply. */
+  const fakeSession = (): Http2ApnsSession =>
+    ({ raw: { closed: false, destroyed: false, close() {} } }) as unknown as Http2ApnsSession;
+  const fakeFactory = (): Http2SessionFactory => () => fakeSession();
+
+  it("reuses a session while the keyId is unchanged", () => {
+    const f = fakeFactory();
+    const sessionA = getOrOpenSession("api.push.apple.com", "K1", f);
+    const sessionB = getOrOpenSession("api.push.apple.com", "K1", f);
+    expect(sessionA).toBe(sessionB);
+    dropHttp2Sessions();
+  });
+
+  it("drops the cached session when the keyId rotates", () => {
+    const f = fakeFactory();
+    const sessionA = getOrOpenSession("api.push.apple.com", "K1", f);
+    const sessionB = getOrOpenSession("api.push.apple.com", "K2", f);
+    expect(sessionA).not.toBe(sessionB);
+    dropHttp2Sessions();
+  });
+});
+
+describe("watchHarnessNotifications — circuit breaker", () => {
+  beforeEach(() => {
+    dropHttp2Sessions();
+  });
+
+  it("opens the circuit after 20 consecutive transport failures and skips the rest", async () => {
+    let clock = 1_700_000_000_000;
+    const sent: number[] = [];
+    const frames = Array.from({ length: 30 }, (_, i) => moduleNotifyFrame("done", String(i))).join("");
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "aa".repeat(32) }],
+      config: testConfig(),
+      now: () => clock,
+      maxQueuedPerDevice: 32,
+      fetchImpl: async () =>
+        new Response(frames, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async () => {
+        sent.push(clock);
+        return {
+          ok: false,
+          status: 0,
+          reason: "SendFailed",
+          attempts: 1,
+          failureKind: "transport",
+          errorCode: "ECONNRESET",
+        };
+      },
+    });
+    const started = Date.now();
+    while (watch.health().circuitOpenUntil === null && Date.now() - started < 5000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const h = watch.health();
+    // After the 20th consecutive transport failure the circuit opens; from
+    // there on every drain iteration skips the send and increments `dropped`.
+    expect(sent.length).toBeGreaterThanOrEqual(20);
+    expect(h.consecutiveTransportFailures).toBeGreaterThanOrEqual(20);
+    expect(h.circuitOpenUntil).not.toBeNull();
+    expect(h.failureKind).toBe("transport");
+    expect(h.lastErrorCode).toBe("ECONNRESET");
+
+    // The drain keeps processing queued items, but every call now skips the
+    // send and only bumps `dropped`.  Wait for the queue to drain, then
+    // verify the drop count is at least the size of the post-circuit queue.
+    const dropWait = Date.now();
+    while (watch.health().dropped + sent.length < 30 && Date.now() - dropWait < 3000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const final = watch.health();
+    // Every item past the threshold of 20 went through the skip path:
+    // total `dropped` should equal `frames - sends`.
+    expect(final.dropped).toBeGreaterThanOrEqual(30 - sent.length);
+    // The skip path does not increment `failed` — `sent.length` did.
+    expect(final.failed).toBe(sent.length);
+    watch.stop();
+  });
+
+  it("resets consecutiveTransportFailures on a successful send", async () => {
+    let nextOk = true;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "aa".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(moduleNotifyFrame("done"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async () => {
+        if (nextOk) return { ok: true, status: 200, attempts: 1, failureKind: "none" };
+        return {
+          ok: false,
+          status: 0,
+          reason: "SendFailed",
+          attempts: 1,
+          failureKind: "transport",
+          errorCode: "ECONNRESET",
+        };
+      },
+    });
+    // First frame → ok; counter never increments.
+    const started = Date.now();
+    while (watch.health().sent === 0 && Date.now() - started < 2000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(watch.health().consecutiveTransportFailures).toBe(0);
+    expect(watch.health().failureKind).toBe("none");
+    expect(watch.health().lastErrorCode).toBeNull();
+
+    // Now let the next frame fail — counter should climb to 1.
+    nextOk = false;
+    const watch2 = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "aa".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(moduleNotifyFrame("done"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async () => ({
+        ok: false,
+        status: 0,
+        reason: "SendFailed",
+        attempts: 1,
+        failureKind: "transport",
+        errorCode: "ECONNRESET",
+      }),
+    });
+    const started2 = Date.now();
+    while (watch2.health().failed === 0 && Date.now() - started2 < 2000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(watch2.health().consecutiveTransportFailures).toBeGreaterThanOrEqual(1);
+    expect(watch2.health().failureKind).toBe("transport");
+    expect(watch2.health().lastErrorCode).toBe("ECONNRESET");
+    watch.stop();
+    watch2.stop();
+  });
+
+  it("surfaces Apple's timestamp on the health page after a key fault", async () => {
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "aa".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(moduleNotifyFrame("done"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async () => ({
+        ok: false,
+        status: 403,
+        reason: "InvalidProviderToken",
+        attempts: 1,
+        failureKind: "key_fault",
+        errorTimestamp: 1_700_000_000_000,
+      }),
+    });
+    const started = Date.now();
+    while (watch.health().failed === 0 && Date.now() - started < 2000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const h = watch.health();
+    expect(h.keyRejected).toBe("InvalidProviderToken");
+    expect(h.lastError).toContain("timestamp=1700000000000");
     watch.stop();
   });
 });

@@ -1,6 +1,7 @@
 // Closed-app wake: when a paired phone has no live SSE stream, the sidecar
 // sends an APNs alert so iOS can relaunch the companion.  The .p8 never
 // leaves this process; tests inject sendImpl.
+import { connect as http2Connect, type ClientHttp2Session } from "node:http2";
 import { createHash, createPrivateKey, sign as cryptoSign } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -239,12 +240,40 @@ export function apnsPayload(alert: ApnsAlert): ApnsPayload {
 
 // --- Sending --------------------------------------------------------------
 
+/** The bucketed shape of why a send did not land.  Defaults to "none" on a
+ * healthy send so old callers that build `ApnsSendResult` by hand stay valid
+ * — a missing `failureKind` field reads as "none", which is the value the
+ * helper writes for every successful send and for the cheap rejections that
+ * never went anywhere near the wire (a bad device token in the call site). */
+export type ApnsFailureKind =
+  | "none"
+  | "transport"        // DNS / TCP / TLS handshake before any HTTP/2 frame
+  | "http2_protocol"   // GOAWAY, RST_STREAM, INTERNAL_ERROR, PROTOCOL_ERROR
+  | "socket_closed"    // socket dropped mid-request
+  | "timeout"
+  | "rate_limit"       // 429 / 503 with Retry-After
+  | "bad_token"        // 400 BadDeviceToken / DeviceTokenNotForTopic, 410
+  | "expired_token"    // 403 ExpiredProviderToken
+  | "key_fault"        // 403 InvalidProviderToken
+  | "server"           // 500-504 other than 503 rate limit
+  | "rejected";        // 400 / 403 with reason Apple sent that does not match the buckets above
+
 export interface ApnsSendResult {
   ok: boolean;
   status: number;
   /** Apple's own `reason` string, when it sent one.  Safe to log. */
   reason?: string;
   attempts: number;
+  /** The bucketed shape of why this send did not land.  "none" on a healthy
+   * send or on the cheap rejections that never reached the wire. */
+  failureKind?: ApnsFailureKind;
+  /** Apple-side `err.code` / HTTP/2 code, surfaced verbatim from the underlying
+   * transport error so the health page can name what actually went wrong
+   * (e.g. "ECONNRESET", "ERR_HTTP2_PROTOCOL_ERROR"). */
+  errorCode?: string;
+  /** Apple's own `timestamp` field on a 403 InvalidProviderToken body —
+   * the exact value the Apple debug page asks for. */
+  errorTimestamp?: number;
 }
 
 export interface ApnsSendOptions {
@@ -252,6 +281,9 @@ export interface ApnsSendOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   maxAttempts?: number;
+  /** Inject a session factory for tests.  The default opens a Node http2
+   * session with the APNs-recommended keepalive and concurrency settings. */
+  http2SessionFactory?: Http2SessionFactory;
 }
 
 /** One send plus its retries.  Three is enough to ride out a rate limit or
@@ -308,22 +340,286 @@ function backoffMs(attempt: number): number {
   return Math.min(1000 * 2 ** (attempt - 1), APNS_MAX_BACKOFF_MS);
 }
 
-/** Apple answers a rejection with `{"reason":"BadDeviceToken"}`.  The body
- * is tiny and the parse is best-effort: a reason we could not read must not
- * turn a clean 400 into a thrown error. */
-async function readReason(res: Response): Promise<string | undefined> {
+// --- HTTP/2 transport -----------------------------------------------------
+//
+// Node 26's native `fetch` (undici) opens a fresh HTTP/2 session per
+// request, sets no TCP keepalive, no HTTP/2 keepalive, and reports
+// GOAWAY/RST_STREAM as a generic "fetch failed".  Apple explicitly asks
+// long-lived APNs senders to keep a persistent HTTP/2 session with PING
+// keepalives.  We hold one session per (host, keyId) — a key rotation
+// rebuilds the cache entry — close it cleanly when the stream is idle and
+// no peer still holds a request, and rebuild lazily after a GOAWAY.
+
+/** What an `http2.connect(...)` call takes, narrowed to the options we use. */
+export interface Http2ConnectOptions {
+  peerMaxConcurrentStreams: number;
+  initialWindowSize: number;
+  maxSessionMemory: number;
+  keepaliveTimeoutMillis: number;
+  keepaliveIntervalMillis: number;
+  /** Seconds — `client.connect` takes this as a number, not ms. */
+  keepAliveInitialDelay: number;
+}
+
+/** Apple's recommended dial for long-lived APNs HTTP/2 senders.  Pulled from
+ * the APNs HTTP/2 reference; PING every 30s after a 60s idle, and the
+ * 1 MiB initial window + 500 concurrent streams is the documented cap. */
+export const DEFAULT_HTTP2_OPTIONS: Http2ConnectOptions = {
+  peerMaxConcurrentStreams: 500,
+  initialWindowSize: 1_048_576,
+  maxSessionMemory: 10_485_760,
+  keepaliveTimeoutMillis: 60_000,
+  keepaliveIntervalMillis: 30_000,
+  keepAliveInitialDelay: 30,
+};
+
+/** One transport session: the http2 client + a notifier for the call site. */
+export interface Http2ApnsSession {
+  /** The Node http2 session.  May be closed by either side; callers must
+   * reopen rather than reuse a session whose `closed` flag is true. */
+  raw: ClientHttp2Session;
+}
+
+/** Factory injected into `sendApnsAlert` so tests can count rebuilds and
+ * fake the wire without standing up a real socket. */
+export type Http2SessionFactory = (host: string, keyId: string) => Http2ApnsSession;
+
+/** Default factory — `node:http2` with Apple's recommended settings. */
+export const defaultHttp2SessionFactory: Http2SessionFactory = (host, _keyId) => {
+  const session = http2Connect(`https://${host}`, DEFAULT_HTTP2_OPTIONS);
+  // A GOAWAY mid-request comes back as a stream error; the next call opens
+  // a fresh session.  We don't preemptively close on GOAWAY because the
+  // session is still usable for streams the peer hadn't refused yet — the
+  // caller's per-stream error is what triggers a rebuild on next send.
+  return { raw: session };
+};
+
+/** Read every field Node attaches to a thrown error in a single helper, so
+ * the caller can stash them on `ApnsSendResult` verbatim and the health
+ * page can render what actually went wrong without re-classifying. */
+export interface TransportErrorInfo {
+  name: string;
+  code: string;
+  message: string;
+  /** The underlying cause when the error chains; HTTP/2 surfaces the real
+   * reason on `err.cause`, undici chains an `UndiciError` onto a `fetch`,
+   * and the stack of `Error` subclasses Node produces otherwise all
+   * converge there. */
+  cause?: unknown;
+}
+
+export function inspectTransportError(err: unknown): TransportErrorInfo {
+  if (err && typeof err === "object") {
+    const e = err as { name?: unknown; code?: unknown; message?: unknown; cause?: unknown };
+    return {
+      name: typeof e.name === "string" ? e.name : "Error",
+      code: typeof e.code === "string" ? e.code : "",
+      message: typeof e.message === "string" ? e.message : String(err),
+      cause: e.cause,
+    };
+  }
+  return { name: "Error", code: "", message: String(err) };
+}
+
+/** Bucketed shape of why a transport-layer call did not return a Response.
+ * Pure decision: takes the fields we read off the error and the elapsed
+ * time, returns the `ApnsFailureKind` that lands on the health page. */
+export function classifyTransportError(info: TransportErrorInfo): Exclude<ApnsFailureKind, "none"> {
+  const code = info.code.toUpperCase();
+  const name = info.name.toUpperCase();
+  // HTTP/2 protocol-level: GOAWAY, RST_STREAM, INTERNAL_ERROR, PROTOCOL_ERROR,
+  // FRAME_SIZE_ERROR, FLOW_CONTROL_ERROR, COMPRESSION_ERROR.  Node raises
+  // these as a `DOMException` whose `code` carries one of the magic strings
+  // (`ERR_HTTP2_PROTOCOL_ERROR`, `ERR_HTTP2_STREAM_ERROR`, etc.) — name
+  // rarely matches because the wrapper class is generic.
+  if (code.startsWith("ERR_HTTP2") || name.includes("HTTP2")) return "http2_protocol";
+  // The classic mid-request drop: ECONNRESET / EPIPE on the TCP layer, and
+  // the http2-specific RST_STREAM that arrives too late for the request
+  // promise to resolve.
+  if (code === "ECONNRESET" || code === "EPIPE") return "socket_closed";
+  // Anything below the TLS layer — DNS, TCP handshake, TLS handshake —
+  // gets the generic "transport" bucket.  Err.code is normally enough.
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
+      code === "ETIMEDOUT" || code === "EHOSTUNREACH" || code === "ENETUNREACH" ||
+      code === "ECONNRESET" || code === "EPIPE" || code === "CERT_HAS_EXPIRED" ||
+      code === "DEPTH_ZERO_SELF_SIGNED_CERT" || code === "SELF_SIGNED_CERT_IN_CHAIN" ||
+      code === "ERR_TLS_CERT_ALTNAME_INVALID" || code.startsWith("ERR_SSL"))
+    return "transport";
+  if (name === "TIMEOUTERROR" || code === "ETIMEDOUT" || code === "ERR_HTTP2_PING_CANCEL" ||
+      code === "ERR_HTTP2_SESSION_EOF") return "timeout";
+  // Fall-through: still a transport error — we never saw a Response, so
+  // "transport" is the honest default.
+  return "transport";
+}
+
+/** Apple answers a rejection with `{"reason":"BadDeviceToken"}`; the 403
+ * InvalidProviderToken body additionally carries a `timestamp` field whose
+ * value Apple's debug page asks for verbatim.  Both reads are best-effort:
+ * a body we could not parse must not turn a clean 400 into a thrown error. */
+async function readErrorBody(res: Response): Promise<{ reason?: string; timestamp?: number }> {
   try {
     const text = (await res.text()).slice(0, 512);
-    if (!text) return undefined;
+    if (!text) return {};
     // SAFETY: this came from Apple's error body and the assertion grants no
-    // behaviour — it permits one optional property read whose value must be
-    // a string before it is used, and that value is only logged or compared
-    // to a fixed literal.
-    const parsed = JSON.parse(text) as { reason?: unknown };
-    return typeof parsed.reason === "string" ? parsed.reason : undefined;
+    // behaviour — it permits two optional property reads, each of which is
+    // type-checked before use, and the values are only logged or compared
+    // to fixed literals.
+    const parsed = JSON.parse(text) as { reason?: unknown; timestamp?: unknown };
+    return {
+      reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+      timestamp: typeof parsed.timestamp === "number" ? parsed.timestamp : undefined,
+    };
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+/** POST one JSON payload over a persistent http2 session.  Returns a
+ * `Response`-shaped object so the test seam and the production path stay
+ * type-compatible with `fetch`.  Internally holds the session open and
+ * rebuilds it after a GOAWAY. */
+export type ApnsHttp2Fetch = (
+  input: URL | string,
+  init?: { method?: string; headers?: Record<string, string>; body?: string },
+) => Promise<Response>;
+
+interface SessionCacheEntry {
+  factory: Http2SessionFactory;
+  session: Http2ApnsSession | null;
+  lastKeyId: string | null;
+}
+
+const sessionCache = new Map<string, SessionCacheEntry>();
+
+/** Build (or reuse) the persistent session for `(host, keyId)`.  Pulled out
+ * so tests can inject a factory that counts how many times a fresh session
+ * was opened — the rebuild-on-rotation invariant asserts on that count. */
+export function getOrOpenSession(
+  host: string,
+  keyId: string,
+  factory: Http2SessionFactory,
+): Http2ApnsSession {
+  let entry = sessionCache.get(host);
+  if (!entry) {
+    entry = { factory, session: null, lastKeyId: null };
+    sessionCache.set(host, entry);
+  }
+  // Always replace a session whose key changed — a rotated .p8 should never
+  // share a TLS session with the key it replaced, and a small hole of
+  // reusing the same TLS ticket is not worth the bookkeeping.  This is the
+  // invariant `refreshConfig` asserts on in the watcher.
+  if (entry.factory !== factory || entry.lastKeyId !== keyId || !entry.session || entry.session.raw.closed || entry.session.raw.destroyed) {
+    if (entry.session && !entry.session.raw.closed && !entry.session.raw.destroyed) {
+      try {
+        entry.session.raw.close();
+      } catch {
+        /* ignore — close() can throw on an already-closing session */
+      }
+    }
+    entry.factory = factory;
+    entry.lastKeyId = keyId;
+    entry.session = factory(host, keyId);
+  }
+  return entry.session;
+}
+
+/** Clear every cached session.  Exposed so tests can reset between runs
+ * and so `refreshConfig` can drop the cache when the loaded key changes
+ * fingerprint (not just keyId — a same-id-but-different-bytes key should
+ * also force a rebuild, which the caller does by calling this with the
+ * new keyId, and the cache miss on next send reopens). */
+export function dropHttp2Sessions(): void {
+  for (const entry of sessionCache.values()) {
+    if (entry.session && !entry.session.raw.closed && !entry.session.raw.destroyed) {
+      try {
+        entry.session.raw.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  sessionCache.clear();
+}
+
+/** Default production impl: POST through a persistent http2 session.  Accepts
+ * the same `(URL | string, init)` shape as `fetch` so a test can swap a
+ * `fetchImpl` in and the rest of `sendApnsAlert` does not change. */
+export const apnsHttp2Fetch: ApnsHttp2Fetch = (input, init) => {
+  const url = typeof input === "string" ? new URL(input) : input;
+  const host = url.host;
+  const keyId = url.pathname.split("/").pop() ?? "";
+  return new Promise<Response>((resolve, reject) => {
+    const factory = defaultHttp2SessionFactory;
+    const session = getOrOpenSession(host, keyId, factory);
+    if (session.raw.closed || session.raw.destroyed) {
+      // Mid-GOAWAY race: drop the cache and re-open.
+      dropHttp2Sessions();
+      const fresh = getOrOpenSession(host, keyId, factory);
+      sendOver(fresh.raw, url, init, resolve, reject);
+      return;
+    }
+    sendOver(session.raw, url, init, resolve, reject);
+  });
+};
+
+function sendOver(
+  raw: ClientHttp2Session,
+  url: URL,
+  init: { method?: string; headers?: Record<string, string>; body?: string } | undefined,
+  resolve: (response: Response) => void,
+  reject: (reason: unknown) => void,
+): void {
+  const headers: Record<string, string> = { ":method": init?.method ?? "POST", ":path": url.pathname, ...(init?.headers ?? {}) };
+  // Host header is required by HTTP/2; Node fills `:authority` from the
+  // connect URL automatically, but we set Host explicitly so the header map
+  // matches what `fetch` would have produced.
+  headers[":authority"] = url.host;
+  headers["host"] = url.host;
+  let settled = false;
+  const settle = (fn: () => void) => {
+    if (settled) return;
+    settled = true;
+    fn();
+  };
+  let req: ReturnType<ClientHttp2Session["request"]>;
+  try {
+    req = raw.request(headers, { endStream: false });
+  } catch (err) {
+    settle(() => reject(err));
+    return;
+  }
+  req.setEncoding("utf8");
+  const bodyChunks: string[] = [];
+  req.on("response", (responseHeaders) => {
+    const status = Number(responseHeaders[":status"] ?? 0);
+    const responseHeadersObj: Record<string, string> = {};
+    for (const [key, value] of Object.entries(responseHeaders)) {
+      if (key.startsWith(":")) continue;
+      if (typeof value === "string") responseHeadersObj[key.toLowerCase()] = value;
+    }
+    req.on("data", (chunk: string) => bodyChunks.push(chunk));
+    req.on("end", () => {
+      const body = bodyChunks.join("");
+      const response = new Response(body, {
+        status,
+        statusText: responseHeadersObj["status"] ?? "",
+        headers: responseHeadersObj,
+      });
+      settle(() => resolve(response));
+    });
+    req.on("error", (err) => {
+      settle(() => reject(err));
+    });
+  });
+  req.on("error", (err) => {
+    settle(() => reject(err));
+  });
+  req.on("frameError", (type, code) => {
+    settle(() => reject(Object.assign(new Error(`HTTP/2 frameError type=${type} code=${code}`), { code: "ERR_HTTP2_PROTOCOL_ERROR", name: "HTTP2FrameError" })));
+  });
+  // Write the body and end the stream.  An empty body is fine — APNs allows
+  // it for keepalive probes.
+  req.end(init?.body ?? "");
 }
 
 export async function sendApnsAlert(
@@ -332,19 +628,28 @@ export async function sendApnsAlert(
   alert: ApnsAlert,
   options: ApnsSendOptions = {},
 ): Promise<ApnsSendResult> {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  // The default transport is the http2 path; tests inject `fetchImpl` and
+  // bypass it entirely.  `fetchImpl` keeps the same URL-or-string input
+  // shape as the production impl so a test that swaps in a fake does not
+  // have to know about http2.
+  const fetchImpl: typeof fetch = (options.fetchImpl as typeof fetch | undefined) ?? (apnsHttp2Fetch as unknown as typeof fetch);
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const maxAttempts = Math.max(1, options.maxAttempts ?? APNS_MAX_ATTEMPTS);
   const host = config.production ? "api.push.apple.com" : "api.sandbox.push.apple.com";
   const token = deviceToken.replace(/\s+/g, "").toLowerCase();
-  if (!/^[0-9a-f]{64,}$/.test(token)) return { ok: false, status: 400, reason: "BadDeviceToken", attempts: 0 };
+  if (!/^[0-9a-f]{64,}$/.test(token)) {
+    return { ok: false, status: 400, reason: "BadDeviceToken", attempts: 0, failureKind: "bad_token" };
+  }
   const body = JSON.stringify(apnsPayload(alert));
 
   let attempts = 0;
   let resigned = false;
   let lastStatus = 0;
   let lastReason: string | undefined;
+  let lastFailureKind: ApnsFailureKind = "none";
+  let lastErrorCode: string | undefined;
+  let lastErrorTimestamp: number | undefined;
 
   while (attempts < maxAttempts) {
     attempts += 1;
@@ -361,26 +666,33 @@ export async function sendApnsAlert(
         },
         body,
       });
-    } catch {
-      // A reset connection, a DNS blip, a Wi-Fi drop.  This is the most
-      // common transient failure on a home link and the only one the status
-      // ladder below cannot see, so it earns the same bounded backoff a 503
-      // gets rather than losing the alert on the first attempt.
+    } catch (err) {
+      // A reset connection, a DNS blip, a Wi-Fi drop, an HTTP/2 GOAWAY.  This
+      // is the most common transient failure on a home link and the only
+      // one the status ladder below cannot see, so it earns the same bounded
+      // backoff a 503 gets rather than losing the alert on the first
+      // attempt.  The bucketed kind lands on `failureKind` so the health
+      // page can tell a DNS blip apart from a RST_STREAM.
+      const info = inspectTransportError(err);
       lastStatus = 0;
       lastReason = TRANSPORT_FAILURE_REASON;
+      lastFailureKind = classifyTransportError(info);
+      lastErrorCode = info.code || undefined;
       if (attempts >= maxAttempts) break;
       await sleep(backoffMs(attempts));
       continue;
     }
-    if (res.ok) return { ok: true, status: res.status, attempts };
+    if (res.ok) return { ok: true, status: res.status, attempts, failureKind: "none" };
 
-    const reason = await readReason(res);
+    const { reason, timestamp } = await readErrorBody(res);
     lastStatus = res.status;
     lastReason = reason;
+    lastErrorTimestamp = timestamp;
+    lastFailureKind = classifyHttpResponse(res.status, reason);
 
     // Apple has unregistered this token.  The caller drops it; sending again
     // would only earn the same answer.
-    if (res.status === 410) return { ok: false, status: 410, reason, attempts };
+    if (res.status === 410) return { ok: false, status: 410, reason, attempts, failureKind: "bad_token" };
 
     // A stale provider token is the one failure worth retrying instantly:
     // sign a new one and go straight back, no backoff, exactly once.
@@ -390,13 +702,46 @@ export async function sendApnsAlert(
       continue;
     }
 
-    if (!RETRYABLE_STATUSES.has(res.status)) return { ok: false, status: res.status, reason, attempts };
+    if (!RETRYABLE_STATUSES.has(res.status)) {
+      // Surface the InvalidProviderToken timestamp on the health page so
+      // Jay's debug page interaction does not require a log dive.
+      return {
+        ok: false,
+        status: res.status,
+        reason,
+        attempts,
+        failureKind: lastFailureKind,
+        errorTimestamp: timestamp,
+      };
+    }
     if (attempts >= maxAttempts) break;
     const wait = res.status === 429 ? retryAfterMs(res.headers.get("retry-after")) : null;
     await sleep(wait ?? backoffMs(attempts));
   }
 
-  return { ok: false, status: lastStatus, reason: lastReason, attempts };
+  return {
+    ok: false,
+    status: lastStatus,
+    reason: lastReason,
+    attempts,
+    failureKind: lastFailureKind,
+    errorCode: lastErrorCode,
+    errorTimestamp: lastErrorTimestamp,
+  };
+}
+
+/** Bucketed shape of why a HTTP-layer call did not land.  Decision table:
+ * every status Apple commonly returns plus the matching reason string. */
+export function classifyHttpResponse(status: number, reason: string | undefined): Exclude<ApnsFailureKind, "none"> {
+  if (status === 429) return "rate_limit";
+  if (status === 410) return "bad_token";
+  if (status === 400 && (reason === "BadDeviceToken" || reason === "DeviceTokenNotForTopic")) return "bad_token";
+  if (status === 403 && reason === EXPIRED_TOKEN_REASON) return "expired_token";
+  if (status === 403 && reason === INVALID_PROVIDER_TOKEN) return "key_fault";
+  if (status === 503) return "rate_limit";
+  if (status >= 500 && status < 600) return "server";
+  if (status === 400 || status === 403) return "rejected";
+  return "server";
 }
 
 // --- Sender health --------------------------------------------------------
@@ -415,23 +760,61 @@ export interface PushSenderHealth {
   failed: number;
   lastSentAt: number | null;
   lastErrorAt: number | null;
-  /** Status plus Apple's reason, e.g. `403 ExpiredProviderToken`. */
+  /** Status plus Apple's reason, e.g. `403 ExpiredProviderToken`.  The
+   * InvalidProviderToken case additionally carries the `timestamp` field
+   * Apple sent (formatted as `InvalidProviderToken (timestamp=12345)`) so
+   * the owner can paste it straight into the Apple debug page. */
   lastError: string | null;
   /** Set when Apple refused the signing key itself.  Sending is off until
    * the key file changes; a new signature from the same key cannot help. */
   keyRejected: string | null;
   /** Notifications dropped because a device's queue was already full. */
   dropped: number;
+  /** The bucketed shape of the last failure — Apple vs transport vs key.
+   * "none" when the last attempt succeeded or no attempt has happened yet.
+   * This is the field that tells the owner which fix to read next. */
+  failureKind: ApnsFailureKind;
+  /** Transport failures in a row (DNS / TCP / TLS / HTTP/2 socket drop).
+   * Resets to zero the moment a send lands at Apple with a 2xx, regardless
+   * of how many transport failures came before — a recovered network
+   * should not carry an old run's bad luck forward. */
+  consecutiveTransportFailures: number;
+  /** `err.code` / HTTP/2 code from the last failure, surfaced verbatim so
+   * the owner sees exactly what Node raised (e.g. `ECONNRESET`,
+   * `ERR_HTTP2_PROTOCOL_ERROR`).  Null between failures. */
+  lastErrorCode: string | null;
+  /** Epoch ms; non-null means we are intentionally not sending because
+   * transport failures exceeded the threshold.  The watcher's
+   * `recordOutcome` short-circuits and increments `dropped` while this is
+   * in the future.  Null when the circuit is closed. */
+  circuitOpenUntil: number | null;
 }
 
 interface HealthTracker {
   snapshot(): PushSenderHealth;
   setConfigured(config: ApnsConfig | null): void;
-  rejectKey(at: number, reason: string): void;
+  rejectKey(at: number, reason: string, errorTimestamp?: number): void;
   recordSent(at: number): void;
-  recordError(at: number, status: number, reason?: string): void;
+  recordError(
+    at: number,
+    status: number,
+    reason?: string,
+    failureKind?: ApnsFailureKind,
+    errorCode?: string,
+    errorTimestamp?: number,
+  ): void;
   recordDropped(): void;
+  /** True iff `circuitOpenUntil` is in the future — the next send must
+   * be skipped without incrementing `failed`. */
+  circuitIsOpen(at: number): boolean;
+  /** Open the circuit for 60 seconds.  Used by the watcher when the
+   * transport-failure or http2-protocol threshold trips. */
+  openCircuit(at: number, ms: number): void;
 }
+
+export const APNS_CIRCUIT_WINDOW_MS = 60_000;
+export const APNS_TRANSPORT_THRESHOLD = 20;
+export const APNS_HTTP2_PROTOCOL_THRESHOLD = 5;
 
 function createHealthTracker(tokensRegistered: () => number): HealthTracker {
   let configured = false;
@@ -443,6 +826,10 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
   let lastError: string | null = null;
   let keyRejected: string | null = null;
   let dropped = 0;
+  let failureKind: ApnsFailureKind = "none";
+  let consecutiveTransportFailures = 0;
+  let lastErrorCode: string | null = null;
+  let circuitOpenUntil: number | null = null;
   return {
     snapshot: () => ({
       configured,
@@ -455,6 +842,10 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       lastError,
       keyRejected,
       dropped,
+      failureKind,
+      consecutiveTransportFailures,
+      lastErrorCode,
+      circuitOpenUntil,
     }),
     setConfigured: (config) => {
       configured = config !== null;
@@ -463,24 +854,64 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       // the verdict on the old one no longer describes what we hold.
       if (config) keyRejected = null;
     },
-    rejectKey: (at, reason) => {
+    rejectKey: (at, reason, errorTimestamp) => {
       configured = false;
       production = null;
       keyRejected = reason;
       lastErrorAt = at;
-      lastError = reason;
+      // Apple stamps InvalidProviderToken rejections with a `timestamp`
+      // field the debug page asks for verbatim.  Surface it on the health
+      // so the owner does not have to dig through the log.
+      if (reason === INVALID_PROVIDER_TOKEN && typeof errorTimestamp === "number") {
+        lastError = `${reason} (timestamp=${errorTimestamp})`;
+      } else {
+        lastError = reason;
+      }
     },
     recordSent: (at) => {
       sent += 1;
       lastSentAt = at;
+      // A successful send resets the transport-failure run and clears the
+      // circuit.  Even a 200 against the test seam means the round trip
+      // worked, which is the only signal the circuit should react to.
+      consecutiveTransportFailures = 0;
+      failureKind = "none";
+      lastErrorCode = null;
+      circuitOpenUntil = null;
     },
-    recordError: (at, status, reason) => {
+    recordError: (at, status, reason, kind, code, errorTimestamp) => {
       failed += 1;
       lastErrorAt = at;
-      lastError = reason ? `${status} ${reason}` : String(status);
+      failureKind = kind ?? "transport";
+      // A transport-layer failure increments the run; an HTTP-layer Apple
+      // verdict does not.  Apple's `lastError`/`lastErrorCode` describe
+      // the bucket either way.
+      if (failureKind === "transport" || failureKind === "http2_protocol" || failureKind === "socket_closed") {
+        consecutiveTransportFailures += 1;
+      } else {
+        consecutiveTransportFailures = 0;
+      }
+      lastErrorCode = code ?? null;
+      let formatted: string;
+      if (reason) {
+        formatted = `${status} ${reason}`;
+        // Apple stamps InvalidProviderToken rejections with a `timestamp`
+        // field the debug page asks for verbatim.  Surface it on the
+        // health so the owner does not have to dig through the log.
+        if (failureKind === "key_fault" && typeof errorTimestamp === "number") {
+          formatted = `${formatted} (timestamp=${errorTimestamp})`;
+        }
+      } else {
+        formatted = String(status);
+      }
+      lastError = formatted;
     },
     recordDropped: () => {
       dropped += 1;
+    },
+    circuitIsOpen: (at) => circuitOpenUntil !== null && circuitOpenUntil > at,
+    openCircuit: (at, ms) => {
+      circuitOpenUntil = at + ms;
     },
   };
 }
@@ -542,6 +973,10 @@ export function watchHarnessNotifications(options: {
   }
 
   const send = options.send ?? sendApnsAlert;
+  // The harness SSE stream is HTTP/1.1 loopback; native `fetch` is the
+  // right choice for it.  APNs pushes go through the http2 path inside
+  // `sendApnsAlert`, not here — the watcher never calls `fetch` against
+  // an APNs host.
   const fetchImpl = options.fetchImpl ?? fetch;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -559,6 +994,14 @@ export function watchHarnessNotifications(options: {
   /** One line per device and failure, so a phone with a dead token does not
    * write a log line for every notification the fleet ever sends. */
   const loggedFailures = new Set<string>();
+  /** APNs host → the key fingerprint (sha256[:16] of the .p8) we last
+   * built an http2 session with.  Used to rebuild the session when the
+   * watcher reloads a rotated key — a TLS session tied to the old key is
+   * not safe to reuse, even with the same keyId. */
+  const sessionFingerprints = new Map<string, string>();
+  /** Hosts we've already announced the circuit opening for, so a 60-second
+   * blip does not log a warning every drain iteration. */
+  const loggedCircuitOpen = new Set<string>();
 
   if (fixed) health.setConfigured(fixed);
 
@@ -569,15 +1012,28 @@ export function watchHarnessNotifications(options: {
     return true;
   };
 
-  const onKeyFault = (reason: string) => {
+  const onKeyFault = (reason: string, errorTimestamp?: number) => {
     if (keyFault) return;
     keyFault = true;
     discovered = null;
-    health.rejectKey(now(), reason);
+    health.rejectKey(now(), reason, errorTimestamp);
     console.warn(`companion: APNs refused the signing key (${reason}); pushes are off until the key file changes`);
     // Leave the stream so the pump re-enters the key check rather than
     // sending the same doomed request for every notification that follows.
     abort?.abort();
+  };
+
+  /** Open the circuit breaker.  Called when transport failures exceed the
+   * threshold OR when http2_protocol errors cluster — a hot loop burning
+   * provider-token re-signs against an unreachable gateway is what we
+   * are guarding against.  Logs once per host. */
+  const tripCircuit = (host: string, reason: string) => {
+    const at = now();
+    health.openCircuit(at, APNS_CIRCUIT_WINDOW_MS);
+    if (!loggedCircuitOpen.has(`${host}:${reason}`)) {
+      loggedCircuitOpen.add(`${host}:${reason}`);
+      console.warn(`companion: APNs circuit open for ${APNS_CIRCUIT_WINDOW_MS / 1000}s after ${reason} on ${host}`);
+    }
   };
 
   /** Look at the key file and reload when it has changed.  Runs on a timer
@@ -602,8 +1058,15 @@ export function watchHarnessNotifications(options: {
     // with identical bytes — a secrets sync, a backup restore — is the same
     // key, and throwing away its cached provider token would spend one of
     // Apple's once-per-twenty-minutes re-signs for nothing.
-    if (discovered && (!loaded || providerTokenKey(discovered) !== providerTokenKey(loaded))) {
-      invalidateProviderToken(discovered);
+    const previousKey = discovered ? providerTokenKey(discovered) : null;
+    const nextKey = loaded ? providerTokenKey(loaded) : null;
+    if (previousKey && nextKey && previousKey !== nextKey) {
+      // The key changed.  Forget the cached provider token and force the
+      // http2 session cache to rebuild on the next send — a TLS session
+      // tied to the old key is not safe to reuse against the new one.
+      invalidateProviderToken(discovered!);
+      dropHttp2Sessions();
+      sessionFingerprints.clear();
     }
     discovered = loaded;
     discoveredStamp = stamp;
@@ -663,12 +1126,26 @@ export function watchHarnessNotifications(options: {
   const queueDepth = (queue: DeviceQueue): number => queue.blocking.length + queue.normal.length;
 
   const sendOne = async (config: ApnsConfig, deviceId: string, token: string, alert: ApnsAlert) => {
+    const at = now();
+    if (health.circuitIsOpen(at)) {
+      // The circuit is open: do not call `send` at all.  Skipping keeps
+      // the http2 session idle so PING keepalives can recover it, and
+      // avoids burning provider-token re-signs against an unreachable
+      // gateway.
+      health.recordDropped();
+      if (!loggedCircuitOpen.has("circuit-skip")) {
+        loggedCircuitOpen.add("circuit-skip");
+        console.warn(`companion: APNs circuit is open — dropping notifications until ${new Date(health.snapshot().circuitOpenUntil ?? at).toISOString()}`);
+      }
+      return;
+    }
     let result: ApnsSendResult;
     try {
       result = await send(config, token, alert);
-    } catch {
-      health.recordError(now(), 0, TRANSPORT_FAILURE_REASON);
-      console.warn("companion: APNs send failed");
+    } catch (err) {
+      const info = inspectTransportError(err);
+      health.recordError(at, 0, TRANSPORT_FAILURE_REASON, classifyTransportError(info), info.code || undefined);
+      console.warn(`companion: APNs send failed (${info.code || info.name})`);
       return;
     }
     // Everything below is bookkeeping, and some of it writes to disk:
@@ -688,7 +1165,28 @@ export function watchHarnessNotifications(options: {
       health.recordSent(now());
       return;
     }
-    health.recordError(now(), result.status, result.reason);
+    const at = now();
+    const host = config.production ? "api.push.apple.com" : "api.sandbox.push.apple.com";
+    health.recordError(
+      at,
+      result.status,
+      result.reason,
+      result.failureKind,
+      result.errorCode,
+      result.errorTimestamp,
+    );
+    // Trip the circuit when the failure shape is what we open on.  We
+    // count AFTER recording so the health snapshot reflects the run that
+    // tripped it.
+    const h = health.snapshot();
+    if (
+      (result.failureKind === "transport" || result.failureKind === "socket_closed") &&
+      h.consecutiveTransportFailures >= APNS_TRANSPORT_THRESHOLD
+    ) {
+      tripCircuit(host, `${h.consecutiveTransportFailures} transport failures in a row`);
+    } else if (result.failureKind === "http2_protocol" && h.consecutiveTransportFailures >= APNS_HTTP2_PROTOCOL_THRESHOLD) {
+      tripCircuit(host, `${h.consecutiveTransportFailures} HTTP/2 protocol errors in a row`);
+    }
 
     // The key, not the phone: every device is about to fail the same way.
     if (result.reason === INVALID_PROVIDER_TOKEN) {
@@ -705,7 +1203,7 @@ export function watchHarnessNotifications(options: {
       // rotation and wave through a rejection of the key still in use.
       const current = fixed ?? discovered;
       if (current !== null && providerTokenKey(config) === providerTokenKey(current)) {
-        onKeyFault(result.reason);
+        onKeyFault(result.reason, result.errorTimestamp);
       } else if (!keyFault) {
         console.warn("companion: APNs refused a signing key that has since been replaced; the replacement stands");
       }
@@ -925,6 +1423,10 @@ export function watchHarnessNotifications(options: {
         queue.normal.length = 0;
       }
       queues.clear();
+      // Close the persistent http2 session on the way out.  Tests do not
+      // expect open sockets across runs.
+      dropHttp2Sessions();
+      sessionFingerprints.clear();
     },
     health: health.snapshot,
   };

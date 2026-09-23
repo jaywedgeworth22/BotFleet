@@ -1121,6 +1121,10 @@ describe("pairing, end to end", () => {
           lastError: "403 ExpiredProviderToken",
           keyRejected: null,
           dropped: 0,
+          failureKind: "expired_token",
+          consecutiveTransportFailures: 0,
+          lastErrorCode: null,
+          circuitOpenUntil: null,
         }),
       }),
     );
@@ -1151,6 +1155,10 @@ describe("pairing, end to end", () => {
         lastError: "403 ExpiredProviderToken",
         keyRejected: null,
         dropped: 0,
+        failureKind: "expired_token",
+        consecutiveTransportFailures: 0,
+        lastErrorCode: null,
+        circuitOpenUntil: null,
       });
       // Nothing about the signing key may cross this boundary.
       expect(body).not.toMatch(/PRIVATE KEY|keyId|teamId|p8/i);

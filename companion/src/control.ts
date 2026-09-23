@@ -429,7 +429,10 @@ function render(s) {
       ? "<p class=dim>Not reported by this sidecar.</p>"
       : s.push.keyRejected
         ? "<p>Apple refused the signing key (<code>" + esc(s.push.keyRejected) + "</code>).&nbsp; " +
-          "Replace the key file to turn pushes back on.</p>"
+          "Replace the key file to turn pushes back on.</p>" +
+          (s.push.lastError
+            ? "<p class=dim>Last error: <code>" + esc(String(s.push.lastError)) + "</code></p>"
+            : "")
         : !s.push.configured
           ? "<p class=dim>No signing key found, so a phone that is not open will not be woken.&nbsp; " +
             "The key is looked for again every few minutes.</p>"
@@ -438,10 +441,26 @@ function render(s) {
             (s.push.lastSentAt ? "&nbsp; Last sent " + ago(s.push.lastSentAt) + "." : "&nbsp; Nothing sent yet.") +
             "</p>" +
             (s.push.lastError
-              ? "<p class=dim>Last error: <code>" + esc(String(s.push.lastError)) + "</code> " + ago(s.push.lastErrorAt) + ".</p>"
+              ? "<p class=dim>Last error: <code>" + esc(String(s.push.lastError)) + "</code> " +
+                ago(s.push.lastErrorAt) + "." +
+                (s.push.lastErrorCode
+                  ? "&nbsp; Code: <code>" + esc(s.push.lastErrorCode) + "</code>."
+                  : "") +
+                "</p>"
+              : "") +
+            (s.push.failureKind && s.push.failureKind !== "none"
+              ? "<p class=dim>Last failure kind: <code>" + esc(s.push.failureKind) + "</code>" +
+                (s.push.consecutiveTransportFailures > 0
+                  ? "&nbsp; in a row: <code>" + s.push.consecutiveTransportFailures + "</code>."
+                  : ".") +
+                "</p>"
+              : "") +
+            (s.push.circuitOpenUntil && s.push.circuitOpenUntil > Date.now()
+              ? "<p class=dim>Pushes are paused while the circuit breaker cools down " +
+                "until " + new Date(s.push.circuitOpenUntil).toLocaleTimeString() + ".</p>"
               : "") +
             (s.push.dropped
-              ? "<p class=dim>" + s.push.dropped + " dropped from a full backlog.</p>"
+              ? "<p class=dim>" + s.push.dropped + " dropped from a full backlog or a paused circuit.</p>"
               : ""));
 
   el("start")?.addEventListener("click", async () => render(await api("/pairing", "POST")));
