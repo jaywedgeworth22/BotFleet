@@ -976,6 +976,15 @@ export function harnessBootstrapPlist(config, { plistExists, legacyPlistExists }
  */
 export function rollbackHarnessBootstrapPlists(config, previous, existence) {
   const plists = [];
+  // BOTFLEET_LAUNCH_AGENT_LABEL may name the legacy label itself.  Capture
+  // then reports the same job as both launchdLoaded and legacyLaunchdLoaded;
+  // treat it as one job and restore it once, from the plist startHarness
+  // would use, instead of also queueing the hardcoded legacy plist (which may
+  // be missing, or would double-bootstrap an already-loaded label).
+  if (config.label === config.legacyLabel) {
+    if (previous.launchdLoaded || previous.legacyLaunchdLoaded) plists.push(harnessBootstrapPlist(config, existence));
+    return plists;
+  }
   if (previous.launchdLoaded) plists.push(harnessBootstrapPlist(config, existence));
   if (previous.legacyLaunchdLoaded) plists.push(config.legacyPlist);
   return [...new Set(plists)];
