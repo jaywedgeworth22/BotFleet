@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { ClientHttp2Session } from "node:http2";
+import { constants as http2Constants, type ClientHttp2Session } from "node:http2";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -1532,6 +1532,7 @@ describe("createApnsHttp2Fetch", () => {
       end: (body?: string) => void;
       close: (code?: number) => void;
       closedWith?: number;
+      rstCode?: number;
     };
     stream.setEncoding = () => {};
     stream.end = () => {};
@@ -1777,6 +1778,79 @@ describe("createApnsHttp2Fetch", () => {
     expect(settled).toBe(false);
     respond200(sessions[1].streams[0]);
     expect((await onReplacement).status).toBe(200);
+  });
+
+  it("a stream reset before any response rejects as a protocol error, and the retry reuses the healthy session", async () => {
+    const sessions: ReturnType<typeof multiStreamSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = multiStreamSession(host);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const started = Date.now();
+    const first = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    // APNs sends RST_STREAM ahead of any headers: the send fails now, not
+    // after the full request deadline.
+    sessions[0].streams[0].rstCode = http2Constants.NGHTTP2_REFUSED_STREAM;
+    sessions[0].streams[0].emit("close");
+    const err = await first.catch((e) => e);
+    expect(err).toMatchObject({ code: "ERR_HTTP2_STREAM_ERROR", name: "HTTP2StreamError" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(classifyTransportError(inspectTransportError(err))).toBe("http2_protocol");
+    // An RST_STREAM kills one stream, not the connection: no eviction, no
+    // destroy, and the retry is written to this same session.
+    expect(sessions[0].raw.destroyCalls).toBe(0);
+    const retry = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].streams.length).toBe(2);
+    respond200(sessions[0].streams[1]);
+    expect((await retry).status).toBe(200);
+  });
+
+  it("a stream that closes with no response and no RST_STREAM rejects as a dropped socket", async () => {
+    const sessions: ReturnType<typeof multiStreamSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = multiStreamSession(host);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const first = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    // rstCode stays NO_ERROR: the stream went away without a reset frame.
+    sessions[0].streams[0].emit("close");
+    const err = await first.catch((e) => e);
+    expect(err).toMatchObject({ code: "ECONNRESET" });
+    expect(classifyTransportError(inspectTransportError(err))).toBe("socket_closed");
+    // No evidence the connection is dead either, so the session survives.
+    expect(sessions[0].raw.destroyCalls).toBe(0);
+  });
+
+  it("sendApnsAlert retries a pre-response reset right away on the same session", async () => {
+    const sessions: ReturnType<typeof multiStreamSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = multiStreamSession(host);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const started = Date.now();
+    const pending = sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      maxAttempts: 2,
+      sleep: async () => {},
+      http2SessionFactory: factory,
+    });
+    await waitFor(() => sessions.length > 0 && sessions[0].streams.length > 0);
+    sessions[0].streams[0].rstCode = http2Constants.NGHTTP2_REFUSED_STREAM;
+    sessions[0].streams[0].emit("close");
+    // The retry lands on the same session — the reset never evicted it.
+    await waitFor(() => sessions[0].streams.length > 1);
+    respond200(sessions[0].streams[1]);
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].raw.destroyCalls).toBe(0);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   /** A multi-stream session that also answers `ping`, running the
