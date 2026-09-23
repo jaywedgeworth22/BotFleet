@@ -29,7 +29,15 @@ import {
 import { validUpdateCredentialReceipt } from "../electron/update-credential-preparation.mjs";
 
 const EXPECTED_TEAM_ID = "CC8UTF7ATG";
-const EXPECTED_BUNDLE_ID = "com.botfleet.app";
+// Transition release: main still BUILDS com.botfleet.app (LEGACY_BUNDLE_ID).
+// This updater also accepts the renamed app.botfleet.macos candidate so that,
+// once this commit is the checkout every Mac runs its updater from, the NEXT
+// update (the bundle rename) can be applied by this code.  Candidates stay
+// restricted to these two IDs; see applicationIdentitiesCanTransition().  The
+// rename PR drops legacy candidates and keeps legacy only as a predecessor.
+const EXPECTED_BUNDLE_ID = "app.botfleet.macos";
+const LEGACY_BUNDLE_ID = "com.botfleet.app";
+const LEGACY_LAUNCH_AGENT_LABEL = "com.jay.botfleet-server";
 const PREPARED_SCHEMA_VERSION = 2;
 const EXPECTED_SIGN_IDENTITY = "Developer ID Application: Jay Wedgeworth, LLC (CC8UTF7ATG)";
 const BUILDER_SIGN_SELECTOR = "Jay Wedgeworth, LLC (CC8UTF7ATG)";
@@ -71,6 +79,7 @@ export function parseArguments(argv) {
   while (args.length) {
     const arg = args.shift();
     if (arg === "--target") parsed.target = requiredValue(arg, args.shift());
+    else if (arg.startsWith("--target=")) parsed.target = requiredValue("--target", arg.slice("--target=".length));
     else if (arg === "--source") parsed.source = resolve(requiredValue(arg, args.shift()));
     else if (arg === "--stage") parsed.stage = resolve(requiredValue(arg, args.shift()));
     else if (arg === "--bundle") parsed.bundle = resolve(requiredValue(arg, args.shift()));
@@ -797,22 +806,40 @@ export async function releaseRuntimeAdmission(config) {
   }
 }
 
-async function signatureIdentity(bundlePath) {
+async function signatureIdentity(bundlePath, { allowLegacyBundleId = false } = {}) {
   await run("codesign", ["--verify", "--deep", "--strict", bundlePath]);
   const details = await run("codesign", ["-dvv", bundlePath], { allowFailure: true });
   const text = `${details.stdout}\n${details.stderr}`;
   const teamIdentifier = text.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim();
   const identifier = text.match(/^Identifier=(.+)$/m)?.[1]?.trim();
-  if (teamIdentifier !== EXPECTED_TEAM_ID || identifier !== EXPECTED_BUNDLE_ID) {
+  const acceptedBundleIds = allowLegacyBundleId
+    ? [EXPECTED_BUNDLE_ID, LEGACY_BUNDLE_ID]
+    : [EXPECTED_BUNDLE_ID];
+  if (teamIdentifier !== EXPECTED_TEAM_ID || !acceptedBundleIds.includes(identifier)) {
     throw new Error(`BotFleet signature identity mismatch (team ${teamIdentifier || "missing"}, bundle ${identifier || "missing"})`);
   }
   const requirement = await run("codesign", ["-dr", "-", bundlePath], { allowFailure: true });
   const designatedRequirement = designatedRequirementFromOutput(`${requirement.stdout}\n${requirement.stderr}`);
-  if (!designatedRequirement.includes(`identifier "${EXPECTED_BUNDLE_ID}"`) ||
+  if (!designatedRequirement.includes(`identifier "${identifier}"`) ||
       !designatedRequirement.includes(`certificate leaf[subject.OU] = ${EXPECTED_TEAM_ID}`)) {
     throw new Error("BotFleet designated signing requirement is missing its stable bundle or team identity");
   }
   return { teamIdentifier, bundleIdentifier: identifier, designatedRequirement: sha256(designatedRequirement) };
+}
+
+export function applicationIdentitiesCanTransition(installed, candidate) {
+  if (candidate.teamIdentifier !== EXPECTED_TEAM_ID || installed.teamIdentifier !== EXPECTED_TEAM_ID) return false;
+  const sameRequirement = installed.designatedRequirement === candidate.designatedRequirement;
+  // Transition release only: a legacy-ID candidate (what main builds until the
+  // rename lands) may replace a legacy-ID install with the same designated
+  // requirement -- exactly the pre-transition rule.  It may never replace a
+  // renamed install (no identity downgrade).
+  if (candidate.bundleIdentifier === LEGACY_BUNDLE_ID) {
+    return installed.bundleIdentifier === LEGACY_BUNDLE_ID && sameRequirement;
+  }
+  return candidate.bundleIdentifier === EXPECTED_BUNDLE_ID &&
+    (installed.bundleIdentifier === EXPECTED_BUNDLE_ID || installed.bundleIdentifier === LEGACY_BUNDLE_ID) &&
+    (installed.bundleIdentifier === LEGACY_BUNDLE_ID || sameRequirement);
 }
 
 export function designatedRequirementFromOutput(outputText) {
@@ -837,7 +864,10 @@ export async function validateBuiltBundle(bundlePath, expectedCommit) {
       typeof build.uiHash !== "string" || !/^[a-f0-9]{64}$/.test(build.uiHash)) {
     throw new Error("Packaged build manifest is dirty or missing application, version, API, or UI identity");
   }
-  return { ...(await signatureIdentity(bundlePath)), version: build.version, apiVersion: build.apiVersion, uiHash: build.uiHash };
+  // Transition release: main still builds the legacy bundle ID, so a built
+  // candidate may carry either accepted ID; applicationIdentitiesCanTransition()
+  // decides which installed app it may replace.
+  return { ...(await signatureIdentity(bundlePath, { allowLegacyBundleId: true })), version: build.version, apiVersion: build.apiVersion, uiHash: build.uiHash };
 }
 
 async function exactAppPids(appPath) {
@@ -917,6 +947,58 @@ export function stableApplicationProcessError(firstPids, secondPids, openApplica
     return "Updated BotFleet application did not remain running as one exact installed-bundle process";
   }
   return null;
+}
+
+/**
+ * Which LaunchAgent plist should the post-install harness start bootstrap?
+ *
+ * The bundle rename left already-installed Macs with only the legacy
+ * com.jay.botfleet-server.plist on disk; the renamed
+ * app.botfleet.server.plist is materialized by the migration that can only
+ * run once the updated harness is up.  Bootstrapping a plist that does not
+ * exist fails the transaction, so the first automatic update on a
+ * legacy-only Mac rolled itself back.  Until the renamed plist lands, keep
+ * bootstrapping the legacy one -- it launches the same live checkout this
+ * transaction just advanced.  With neither plist present, keep the original
+ * loud failure against the renamed path rather than silently starting
+ * nothing.
+ */
+export function harnessBootstrapPlist(config, { plistExists, legacyPlistExists }) {
+  if (plistExists || !legacyPlistExists) return config.plist;
+  return config.legacyPlist;
+}
+
+/**
+ * Restore every harness that was loaded before the transaction from a plist
+ * that actually exists.  During the bundle-label migration the new launchd
+ * label can still have been bootstrapped from the legacy-named plist, so the
+ * loaded label alone does not identify the plist path to restore.
+ */
+export function rollbackHarnessBootstrapPlists(config, previous, existence) {
+  const plists = [];
+  if (previous.launchdLoaded) plists.push(harnessBootstrapPlist(config, existence));
+  if (previous.legacyLaunchdLoaded) plists.push(config.legacyPlist);
+  return [...new Set(plists)];
+}
+
+/**
+ * The launchd label a bootstrap of `plist` loads.  The legacy-named plist
+ * still carries the legacy label, so a harness started from the fallback runs
+ * as com.jay.botfleet-server, not as the renamed label.
+ */
+export function harnessLaunchdLabel(config, plist) {
+  return plist === config.legacyPlist ? config.legacyLabel : config.label;
+}
+
+/**
+ * Every label rollback has to boot out before it may restore files: the
+ * renamed label, plus whichever label startHarness() actually bootstrapped.
+ * Booting out only the renamed label would leave a legacy-label replacement
+ * loaded, and its KeepAlive would restart the failed replacement while
+ * rollback waits for ownership to clear.
+ */
+export function rollbackHarnessBootoutLabels(config, previous) {
+  return [...new Set([config.label, previous?.startedHarnessLabel].filter(Boolean))];
 }
 
 export function applicationAttachmentError(snapshot, openApplication) {
@@ -1145,8 +1227,10 @@ function createConfig(parsed) {
     checkout: resolve(process.env.BOTFLEET_CHECKOUT || join(home, "apps/botfleet-server")),
     appPath: resolve(process.env.BOTFLEET_APP_PATH || "/Applications/BotFleet.app"),
     dataDirectory: resolve(process.env.BOTFLEET_DATA_DIR || join(home, ".botfleet")),
-    plist: resolve(process.env.BOTFLEET_LAUNCH_AGENT_PLIST || join(home, "Library/LaunchAgents/com.jay.botfleet-server.plist")),
-    label: process.env.BOTFLEET_LAUNCH_AGENT_LABEL || "com.jay.botfleet-server",
+    plist: resolve(process.env.BOTFLEET_LAUNCH_AGENT_PLIST || join(home, "Library/LaunchAgents/app.botfleet.server.plist")),
+    label: process.env.BOTFLEET_LAUNCH_AGENT_LABEL || "app.botfleet.server",
+    legacyPlist: join(home, `Library/LaunchAgents/${LEGACY_LAUNCH_AGENT_LABEL}.plist`),
+    legacyLabel: LEGACY_LAUNCH_AGENT_LABEL,
     domain: `gui/${process.getuid()}`,
     lockDirectory: resolve(process.env.BOTFLEET_UPDATE_LOCK || join(home, "Library/Caches/BotFleet/update.lock")),
     updatesDirectory: resolve(process.env.BOTFLEET_UPDATE_ROOT || join(home, "Library/Caches/BotFleet/updates")),
@@ -1433,10 +1517,13 @@ function createOperations(config) {
       if (!dependencyDetails.isDirectory() || dependencyDetails.isSymbolicLink()) {
         throw new Error(`Live dependency tree must be a real directory: ${liveDependencies}`);
       }
-      const installedIdentity = await signatureIdentity(config.appPath);
+      const installedIdentity = await signatureIdentity(config.appPath, { allowLegacyBundleId: true });
       const installedCommit = await installedBuildCommit(config.appPath);
       const installedDependencyFingerprint = await dependencyFingerprint(liveDependencies);
-      const launchd = await run("launchctl", ["print", `${config.domain}/${config.label}`], { allowFailure: true });
+      const [launchd, legacyLaunchd] = await Promise.all([
+        run("launchctl", ["print", `${config.domain}/${config.label}`], { allowFailure: true }),
+        run("launchctl", ["print", `${config.domain}/${config.legacyLabel}`], { allowFailure: true }),
+      ]);
       // Every process inside the bundle, not only its main binary: the swap
       // renames the whole directory, so an embedded driver or helper app has
       // to be accounted for too.
@@ -1481,6 +1568,7 @@ function createOperations(config) {
         installedDependencyFingerprint,
         swap: {},
         launchdLoaded: launchd.code === 0,
+        legacyLaunchdLoaded: legacyLaunchd.code === 0,
         appWasRunning: appPids.length > 0,
         runtimePids,
         appPids,
@@ -1502,8 +1590,8 @@ function createOperations(config) {
       await run("ditto", [prepared.bundlePath, previous.candidatePath]);
       const identity = await validateBuiltBundle(previous.candidatePath, prepared.targetCommit);
       if (identity.designatedRequirement !== prepared.designatedRequirement ||
-          identity.designatedRequirement !== previous.installedIdentity.designatedRequirement) {
-        throw new Error("Candidate and installed app do not share the stable signing requirement");
+          !applicationIdentitiesCanTransition(previous.installedIdentity, identity)) {
+        throw new Error("Candidate and installed app do not share an accepted signing identity");
       }
       await rm(previous.candidateDependencies, { recursive: true, force: true });
       await run("/bin/cp", ["-cR", prepared.dependenciesPath, previous.candidateDependencies]);
@@ -1518,9 +1606,15 @@ function createOperations(config) {
     },
 
     quiesce: async (previous) => {
-      if (previous.launchdLoaded) {
-        const stopped = await run("launchctl", ["bootout", `${config.domain}/${config.label}`], { allowFailure: true });
-        if (stopped.code !== 0) throw new Error(`Could not boot out ${config.label} before install`);
+      for (const [loaded, label] of [
+        [previous.launchdLoaded, config.label],
+        [previous.legacyLaunchdLoaded, config.legacyLabel],
+      ]) {
+        if (!loaded) continue;
+        // BOTFLEET_LAUNCH_AGENT_LABEL may name the legacy label itself; boot it out once.
+        if (label === config.legacyLabel && label === config.label && previous.launchdLoaded) continue;
+        const stopped = await run("launchctl", ["bootout", `${config.domain}/${label}`], { allowFailure: true });
+        if (stopped.code !== 0) throw new Error(`Could not boot out ${label} before install`);
       }
       await run("osascript", ["-e", 'if application "BotFleet" is running then tell application "BotFleet" to quit'], { allowFailure: true });
       const currentHolders = await sqliteHolders(config.dataDirectory);
@@ -1600,8 +1694,18 @@ function createOperations(config) {
       }
     },
 
-    startHarness: async () => {
-      await run("launchctl", ["bootstrap", config.domain, config.plist]);
+    startHarness: async (prepared, previous) => {
+      const plist = harnessBootstrapPlist(config, {
+        plistExists: await exists(config.plist),
+        legacyPlistExists: await exists(config.legacyPlist),
+      });
+      if (plist === config.legacyPlist) {
+        console.error(`LaunchAgent ${config.label} is not installed at ${config.plist} yet; bootstrapping the legacy ${config.legacyLabel} plist until the migration materializes it.`);
+      }
+      // Recorded before the bootstrap: a bootstrap that errors can still have
+      // loaded the job, and rollback must boot out the label that is running.
+      if (previous) previous.startedHarnessLabel = harnessLaunchdLabel(config, plist);
+      await run("launchctl", ["bootstrap", config.domain, plist]);
     },
 
     verifyHarness: async (prepared) => {
@@ -1728,7 +1832,9 @@ function createOperations(config) {
       const recordStop = async (operation) => {
         try { await operation(); } catch (error) { stopErrors.push(error); }
       };
-      await recordStop(async () => { await run("launchctl", ["bootout", `${config.domain}/${config.label}`], { allowFailure: true }); });
+      for (const label of rollbackHarnessBootoutLabels(config, previous)) {
+        await recordStop(async () => { await run("launchctl", ["bootout", `${config.domain}/${label}`], { allowFailure: true }); });
+      }
       await recordStop(async () => { await run("osascript", ["-e", 'if application "BotFleet" is running then tell application "BotFleet" to quit'], { allowFailure: true }); });
       await recordStop(async () => {
         const holders = await sqliteHolders(config.dataDirectory);
@@ -1802,7 +1908,9 @@ function createOperations(config) {
       await record(async () => {
         const head = await gitOutput(config.checkout, ["rev-parse", "HEAD"]);
         if (head !== previous.checkoutCommit) throw new Error("Rollback did not restore the prior checkout commit");
-        const identity = await signatureIdentity(config.appPath);
+        const identity = await signatureIdentity(config.appPath, {
+          allowLegacyBundleId: previous.installedIdentity.bundleIdentifier === LEGACY_BUNDLE_ID,
+        });
         if (identity.designatedRequirement !== previous.installedIdentity.designatedRequirement) {
           throw new Error("Rollback did not restore the prior application identity");
         }
@@ -1813,9 +1921,15 @@ function createOperations(config) {
       });
       if (errors.length) throw new AggregateError(errors, "One or more rollback file restorations failed");
 
-      if (previous.launchdLoaded) await record(async () => { await run("launchctl", ["bootstrap", config.domain, config.plist]); });
+      const rollbackHarnessPlists = rollbackHarnessBootstrapPlists(config, previous, {
+        plistExists: await exists(config.plist),
+        legacyPlistExists: await exists(config.legacyPlist),
+      });
+      for (const plist of rollbackHarnessPlists) {
+        await record(async () => { await run("launchctl", ["bootstrap", config.domain, plist]); });
+      }
       if (previous.appWasRunning) await record(async () => { await run("open", [config.appPath]); });
-      if (previous.launchdLoaded || previous.appWasRunning) await record(async () => {
+      if (previous.launchdLoaded || previous.legacyLaunchdLoaded || previous.appWasRunning) await record(async () => {
         const deadline = Date.now() + config.startupTimeoutMs;
         let snapshot;
         while (Date.now() < deadline) {
@@ -1837,7 +1951,8 @@ export async function loadPrepared(stageDirectory) {
   await assertPrivateRegularFile(manifestPath, "Prepared update manifest");
   const manifest = await parseJsonFile(manifestPath, "Prepared update manifest");
   if (manifest?.schemaVersion !== PREPARED_SCHEMA_VERSION || !/^[a-f0-9]{40}$/.test(manifest?.sourceCommit || "") ||
-      manifest?.teamIdentifier !== EXPECTED_TEAM_ID || manifest?.bundleIdentifier !== EXPECTED_BUNDLE_ID ||
+      manifest?.teamIdentifier !== EXPECTED_TEAM_ID ||
+      (manifest?.bundleIdentifier !== EXPECTED_BUNDLE_ID && manifest?.bundleIdentifier !== LEGACY_BUNDLE_ID) ||
       !Number.isInteger(manifest?.apiVersion) || !/^[a-f0-9]{64}$/.test(manifest?.uiHash || "") ||
       typeof manifest?.designatedRequirement !== "string" || manifest?.bundleName !== "BotFleet.app" ||
       manifest?.dependenciesName !== "node_modules" ||
@@ -1964,3 +2079,4 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
     process.exitCode = 1;
   });
 }
+
