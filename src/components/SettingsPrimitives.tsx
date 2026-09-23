@@ -4,16 +4,29 @@ import { Check, Copy } from "lucide-react";
 export function Card({
   title,
   subtitle,
+  actions,
   children,
 }: {
   title?: string;
   subtitle?: string;
+  /** Optional right-aligned control area on the header row — used by the
+   *  Usage card's "Expand all / Collapse all" toggle.  Slot comes AFTER
+   *  title+subtitle so wrapping a long subtitle never pushes the button
+   *  off-screen. */
+  actions?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
     <div className="rounded-xl bg-card p-4">
-      {title && <div className="text-[15px] font-medium text-ink">{title}</div>}
-      {subtitle && <div className={title ? "mt-0.5 text-[13px] leading-relaxed text-ink-secondary" : "text-[13px] leading-relaxed text-ink-secondary"}>{subtitle}</div>}
+      {(title || actions) && (
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {title && <div className="text-[15px] font-medium text-ink">{title}</div>}
+            {subtitle && <div className={title ? "mt-0.5 text-[13px] leading-relaxed text-ink-secondary" : "text-[13px] leading-relaxed text-ink-secondary"}>{subtitle}</div>}
+          </div>
+          {actions && <div className="shrink-0 pt-0.5">{actions}</div>}
+        </div>
+      )}
       {children && <div className={title || subtitle ? "mt-4" : undefined}>{children}</div>}
     </div>
   );

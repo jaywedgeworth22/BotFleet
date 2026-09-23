@@ -69,6 +69,10 @@ import {
   stopAntigravityQuotaPoller,
 } from "./antigravity-quota.ts";
 import {
+  lastGrokQuotaSnapshot,
+  startGrokQuotaPoller,
+} from "./grok-quota.ts";
+import {
   AUTO_FALLBACK_PRIORITY,
   enableQuotaCooldownPersist,
   lastTurnStartIndex,
@@ -9434,6 +9438,7 @@ const server = createServer(async (req, res) => {
         ok: true,
         cooldowns: quotaCooldowns.list(),
         antigravity: lastAntigravityQuotaSnapshot(),
+        grok: lastGrokQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
         // Why the local windows are missing, so Settings can name the
         // native app — and any provider it could not read — instead of
@@ -10935,6 +10940,17 @@ resourceTriggers.start();
 if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
   startAntigravityQuotaPoller();
+}
+
+// Grok quota poller: today the local `grok` CLI has no quota subcommand,
+// so the poller returns a no-source stub every tick (see server/grok-quota.ts
+// for the reasoning).  Wiring it here means the Settings panel, the
+// UsageMonitorQuotaGrid, and the /api/quotas endpoint all surface a
+// Grok quota card with an honest "no quota source available yet" line
+// instead of dropping the engine from the grid entirely.  When xAI
+// ships a quota endpoint the swap is a single-file change.
+if (!process.env.OMB_DISABLE_GROK_QUOTA) {
+  startGrokQuotaPoller();
 }
 
 // Post-update resumption: If an update quiesced active work and rebooted successfully,
