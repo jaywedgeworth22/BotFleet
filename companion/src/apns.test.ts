@@ -18,6 +18,7 @@ import {
   resetProviderTokens,
   retryAfterMs,
   sendApnsAlert,
+  startHttp2PingKeepalive,
   tokenIsDead,
   watchHarnessNotifications,
   type ApnsConfig,
@@ -1776,6 +1777,147 @@ describe("createApnsHttp2Fetch", () => {
     expect(settled).toBe(false);
     respond200(sessions[1].streams[0]);
     expect((await onReplacement).status).toBe(200);
+  });
+
+  /** A multi-stream session that also answers `ping`, running the
+   * production PING keepalive on short timers.  Each PING's callback is
+   * held so the test decides whether it succeeds, fails, or never returns. */
+  const pingingSession = (host: string, deadlineMs: number) => {
+    const s = multiStreamSession(host);
+    const pings: Array<(err: Error | null, duration?: number, payload?: Buffer) => void> = [];
+    (s.raw as unknown as { ping: (cb: (err: Error | null) => void) => boolean }).ping = (cb) => {
+      pings.push(cb);
+      return true;
+    };
+    const stop = startHttp2PingKeepalive(host, s.raw as unknown as ClientHttp2Session, {
+      intervalMs: 10,
+      deadlineMs,
+    });
+    return { ...s, pings, stop };
+  };
+
+  const waitFor = async (cond: () => boolean, ms = 2_000) => {
+    const started = Date.now();
+    while (!cond() && Date.now() - started < ms) await new Promise((r) => setTimeout(r, 5));
+  };
+
+  it("an error delivered to the PING callback evicts and destroys the session and fails its pending sends", async () => {
+    const sessions: ReturnType<typeof pingingSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = pingingSession(host, 5_000);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const started = Date.now();
+    const pending = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    await waitFor(() => sessions[0].pings.length > 0);
+    expect(sessions[0].pings.length).toBe(1);
+    sessions[0].pings[0](Object.assign(new Error("ping failed"), { code: "ERR_HTTP2_PING_CANCEL" }));
+    // The send on the dead session fails now, not after its 5s deadline.
+    await expect(pending).rejects.toMatchObject({ code: "ERR_HTTP2_PING_CANCEL" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(sessions[0].raw.destroyCalls).toBe(1);
+    // The next send opens a fresh session instead of reusing the dead one.
+    const next = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(2);
+    respond200(sessions[1].streams[0]);
+    expect((await next).status).toBe(200);
+    sessions[1].stop();
+  });
+
+  it("an unanswered PING hits its deadline: the idle session is evicted and destroyed before the next send", async () => {
+    const sessions: ReturnType<typeof pingingSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = pingingSession(host, 20);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const first = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    respond200(sessions[0].streams[0]);
+    expect((await first).status).toBe(200);
+    // The session is idle and cached.  Its PING never comes back.
+    await waitFor(() => sessions[0].raw.destroyCalls > 0);
+    expect(sessions[0].raw.destroyCalls).toBe(1);
+    // One PING at a time: the keepalive did not stack PINGs while one was out.
+    expect(sessions[0].pings.length).toBe(1);
+    // The next send goes straight to a fresh session instead of burning a
+    // full request deadline on the half-open one.
+    const started = Date.now();
+    const next = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(2);
+    expect(sessions[0].streams.length).toBe(1);
+    respond200(sessions[1].streams[0]);
+    expect((await next).status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    sessions[1].stop();
+  });
+
+  it("a PING deadline fails only that session's pending sends, as a timeout", async () => {
+    const sessions: ReturnType<typeof pingingSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = pingingSession(host, 20);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const pending = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    await expect(pending).rejects.toMatchObject({ code: "ETIMEDOUT", name: "TimeoutError" });
+    expect(classifyTransportError(inspectTransportError(await pending.catch((e) => e)))).toBe("timeout");
+    // The replacement is untouched, including by the destroyed session's late close.
+    const onReplacement = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(2);
+    sessions[1].stop();
+    sessions[0].raw.emit("close");
+    let settled = false;
+    void onReplacement.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBe(false);
+    respond200(sessions[1].streams[0]);
+    expect((await onReplacement).status).toBe(200);
+  });
+
+  it("an answered PING keeps the session cached and the keepalive running", async () => {
+    const sessions: ReturnType<typeof pingingSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = pingingSession(host, 50);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const first = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    respond200(sessions[0].streams[0]);
+    expect((await first).status).toBe(200);
+    for (let i = 0; i < 3; i += 1) {
+      await waitFor(() => sessions[0].pings.length > i);
+      sessions[0].pings[i](null, 1, Buffer.alloc(8));
+    }
+    expect(sessions[0].pings.length).toBeGreaterThanOrEqual(3);
+    expect(sessions[0].raw.destroyCalls).toBe(0);
+    const next = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(1);
+    respond200(sessions[0].streams[1]);
+    expect((await next).status).toBe(200);
+    sessions[0].stop();
+  });
+
+  it("the PING keepalive stops when the session closes", async () => {
+    const s = pingingSession("api.push.apple.com", 5_000);
+    await waitFor(() => s.pings.length > 0);
+    s.pings[0](null, 1, Buffer.alloc(8));
+    s.raw.emit("close");
+    const count = s.pings.length;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(s.pings.length).toBe(count);
+    expect(s.raw.destroyCalls).toBe(0);
   });
 });
 
