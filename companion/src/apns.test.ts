@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
+import type { ClientHttp2Session } from "node:http2";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -23,6 +24,7 @@ import {
   type ApnsPayload,
   type Http2ApnsSession,
   type Http2SessionFactory,
+  watchHttp2SessionLifecycle,
 } from "./apns.ts";
 
 function testP8(): string {
@@ -1380,6 +1382,19 @@ describe("classifyTransportError", () => {
     });
     expect(kind).toBe("transport");
   });
+
+  it("buckets the request deadline (ETIMEDOUT / TimeoutError) as timeout, not transport", () => {
+    expect(classifyTransportError({ name: "TimeoutError", code: "ETIMEDOUT", message: "deadline" })).toBe("timeout");
+    expect(classifyTransportError({ name: "Error", code: "ETIMEDOUT", message: "connect ETIMEDOUT" })).toBe("timeout");
+    expect(classifyTransportError({ name: "TimeoutError", code: "", message: "timed out" })).toBe("timeout");
+  });
+
+  it("buckets a cancelled PING and a session EOF as timeout, not http2_protocol", () => {
+    expect(classifyTransportError({ name: "Error", code: "ERR_HTTP2_PING_CANCEL", message: "ping cancelled" })).toBe("timeout");
+    expect(classifyTransportError({ name: "Error", code: "ERR_HTTP2_SESSION_EOF", message: "session closed" })).toBe("timeout");
+    // Real protocol errors still land in the protocol bucket.
+    expect(classifyTransportError({ name: "Error", code: "ERR_HTTP2_STREAM_ERROR", message: "stream error" })).toBe("http2_protocol");
+  });
 });
 
 describe("classifyHttpResponse", () => {
@@ -1590,6 +1605,84 @@ describe("createApnsHttp2Fetch", () => {
     // The factory received the signing key id, never the device token.
     expect(seenKeyId).toBe("ABC123");
   });
+
+  /** A fake session that emits error / goaway / close like a real one and
+   * runs the production lifecycle wiring, so the per-session pending sweep
+   * is exercised end to end. */
+  const lifecycleSession = (host: string, stream: ReturnType<typeof fakeStream>) => {
+    const raw = new EventEmitter() as EventEmitter & {
+      closed: boolean;
+      destroyed: boolean;
+      close: () => void;
+      destroy: () => void;
+      request: () => ReturnType<typeof fakeStream>;
+    };
+    raw.closed = false;
+    raw.destroyed = false;
+    raw.close = () => {};
+    raw.destroy = () => {
+      raw.destroyed = true;
+    };
+    raw.request = () => stream;
+    watchHttp2SessionLifecycle(host, raw as unknown as ClientHttp2Session);
+    return raw;
+  };
+
+  const DEVICE_URL = `https://api.push.apple.com/3/device/${"aa".repeat(32)}`;
+
+  it("a replacement session's failure does not reject the evicted session's draining streams", async () => {
+    const streamA = fakeStream();
+    const streamB = fakeStream();
+    const sessions: ReturnType<typeof lifecycleSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const raw = lifecycleSession(host, sessions.length === 0 ? streamA : streamB);
+      sessions.push(raw);
+      return { raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const onA = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    // Apple sends GOAWAY on A: evicted, but its stream keeps draining.
+    sessions[0].emit("goaway");
+    const onB = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(2);
+    // The replacement dies.  Only its own send may reject.
+    sessions[1].emit("error", Object.assign(new Error("boom"), { code: "ECONNRESET" }));
+    await expect(onB).rejects.toMatchObject({ code: "ECONNRESET" });
+    let settledA = false;
+    void onA.then(() => {
+      settledA = true;
+    }, () => {
+      settledA = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settledA).toBe(false);
+    // A's stream then finishes normally — one delivery, no retry.
+    respond200(streamA);
+    expect((await onA).status).toBe(200);
+  });
+
+  it("an evicted session's own close still rejects its pending streams", async () => {
+    const streamA = fakeStream();
+    const streamB = fakeStream();
+    const sessions: ReturnType<typeof lifecycleSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const raw = lifecycleSession(host, sessions.length === 0 ? streamA : streamB);
+      sessions.push(raw);
+      return { raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const onA = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    sessions[0].emit("goaway");
+    // A replacement is now cached and serving; A is no longer the cached session.
+    const onB = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    // A closes with its stream still open: that send must fail now, not
+    // wait out the deadline.
+    sessions[0].emit("close");
+    await expect(onA).rejects.toMatchObject({ code: "ERR_HTTP2_SESSION_EOF" });
+    // B is untouched and still completes.
+    respond200(streamB);
+    expect((await onB).status).toBe(200);
+  });
 });
 
 describe("watchHarnessNotifications — circuit breaker", () => {
@@ -1628,7 +1721,7 @@ describe("watchHarnessNotifications — circuit breaker", () => {
     }
     const h = watch.health();
     // After the 20th consecutive transport failure the circuit opens; from
-    // there on every drain iteration skips the send and increments `dropped`.
+    // there on every drain iteration skips the send and increments `circuitDropped`.
     expect(sent.length).toBeGreaterThanOrEqual(20);
     expect(h.consecutiveTransportFailures).toBeGreaterThanOrEqual(20);
     expect(h.circuitOpenUntil).not.toBeNull();
@@ -1636,18 +1729,68 @@ describe("watchHarnessNotifications — circuit breaker", () => {
     expect(h.lastErrorCode).toBe("ECONNRESET");
 
     // The drain keeps processing queued items, but every call now skips the
-    // send and only bumps `dropped`.  Wait for the queue to drain, then
+    // send and only bumps `circuitDropped`.  Wait for the queue to drain, then
     // verify the drop count is at least the size of the post-circuit queue.
     const dropWait = Date.now();
-    while (watch.health().dropped + sent.length < 30 && Date.now() - dropWait < 3000) {
+    while (watch.health().circuitDropped + sent.length < 30 && Date.now() - dropWait < 3000) {
       await new Promise((r) => setTimeout(r, 10));
     }
     const final = watch.health();
     // Every item past the threshold of 20 went through the skip path:
-    // total `dropped` should equal `frames - sends`.
-    expect(final.dropped).toBeGreaterThanOrEqual(30 - sent.length);
+    // total `circuitDropped` should equal `frames - sends`.
+    expect(final.circuitDropped).toBeGreaterThanOrEqual(30 - sent.length);
+    // An open circuit is Apple being unreachable, not a full local queue:
+    // none of those skips may land on the queue-full counter.
+    expect(final.dropped).toBe(0);
     // The skip path does not increment `failed` — `sent.length` did.
     expect(final.failed).toBe(sent.length);
+    watch.stop();
+  });
+
+  const failingWatch = (count: number, failureKind: "timeout" | "http2_protocol", errorCode: string) => {
+    const frames = Array.from({ length: count }, (_, i) => moduleNotifyFrame("done", String(i))).join("");
+    let sends = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "aa".repeat(32) }],
+      config: testConfig(),
+      maxQueuedPerDevice: 32,
+      fetchImpl: async () =>
+        new Response(frames, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async () => {
+        sends += 1;
+        return { ok: false, status: 0, reason: "SendFailed", attempts: 1, failureKind, errorCode };
+      },
+    });
+    return { watch, sends: () => sends };
+  };
+
+  it("timeouts do not trip the 5-strike HTTP/2 protocol breaker", async () => {
+    const { watch, sends } = failingWatch(8, "timeout", "ERR_HTTP2_PING_CANCEL");
+    const started = Date.now();
+    while (watch.health().failed + watch.health().circuitDropped < 8 && Date.now() - started < 3000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const h = watch.health();
+    expect(sends()).toBe(8);
+    expect(h.failureKind).toBe("timeout");
+    expect(h.circuitOpenUntil).toBeNull();
+    expect(h.circuitDropped).toBe(0);
+    watch.stop();
+  });
+
+  it("five HTTP/2 protocol errors in a row still trip the protocol breaker", async () => {
+    const { watch, sends } = failingWatch(8, "http2_protocol", "ERR_HTTP2_STREAM_ERROR");
+    const started = Date.now();
+    while (watch.health().failed + watch.health().circuitDropped < 8 && Date.now() - started < 3000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const h = watch.health();
+    expect(sends()).toBe(5);
+    expect(h.circuitOpenUntil).not.toBeNull();
+    expect(h.circuitDropped).toBe(3);
+    expect(h.dropped).toBe(0);
     watch.stop();
   });
 
