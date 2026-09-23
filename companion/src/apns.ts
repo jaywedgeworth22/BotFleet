@@ -1,7 +1,7 @@
 // Closed-app wake: when a paired phone has no live SSE stream, the sidecar
 // sends an APNs alert so iOS can relaunch the companion.  The .p8 never
 // leaves this process; tests inject sendImpl.
-import { connect as http2Connect, constants as http2Constants, type ClientHttp2Session } from "node:http2";
+import { connect as http2Connect, constants as http2Constants, type ClientHttp2Session, type ClientHttp2Stream } from "node:http2";
 import { createHash, createPrivateKey, sign as cryptoSign } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -810,6 +810,47 @@ export function createApnsHttp2Fetch(options: ApnsHttp2FetchOptions): ApnsHttp2F
   };
 }
 
+/** Names for the HTTP/2 error codes `req.rstCode` can carry, so a reset
+ * rejection records the reason Apple gave instead of a bare number. */
+const NGHTTP2_ERROR_NAMES: Record<number, string> = {
+  [http2Constants.NGHTTP2_NO_ERROR]: "NO_ERROR",
+  [http2Constants.NGHTTP2_PROTOCOL_ERROR]: "PROTOCOL_ERROR",
+  [http2Constants.NGHTTP2_INTERNAL_ERROR]: "INTERNAL_ERROR",
+  [http2Constants.NGHTTP2_FLOW_CONTROL_ERROR]: "FLOW_CONTROL_ERROR",
+  [http2Constants.NGHTTP2_SETTINGS_TIMEOUT]: "SETTINGS_TIMEOUT",
+  [http2Constants.NGHTTP2_STREAM_CLOSED]: "STREAM_CLOSED",
+  [http2Constants.NGHTTP2_FRAME_SIZE_ERROR]: "FRAME_SIZE_ERROR",
+  [http2Constants.NGHTTP2_REFUSED_STREAM]: "REFUSED_STREAM",
+  [http2Constants.NGHTTP2_CANCEL]: "CANCEL",
+  [http2Constants.NGHTTP2_COMPRESSION_ERROR]: "COMPRESSION_ERROR",
+  [http2Constants.NGHTTP2_CONNECT_ERROR]: "CONNECT_ERROR",
+  [http2Constants.NGHTTP2_ENHANCE_YOUR_CALM]: "ENHANCE_YOUR_CALM",
+  [http2Constants.NGHTTP2_INADEQUATE_SECURITY]: "INADEQUATE_SECURITY",
+  [http2Constants.NGHTTP2_HTTP_1_1_REQUIRED]: "HTTP_1_1_REQUIRED",
+};
+
+/** The rejection for a stream that closed before its response settled.
+ * `rstCode` is the HTTP/2 error code from the RST_STREAM frame, or
+ * NGHTTP2_NO_ERROR when the stream closed without one.  A real RST_STREAM
+ * is Apple speaking HTTP/2 at us and classifies as `http2_protocol`; a
+ * close with no reset means the socket went away and classifies as
+ * `socket_closed`, like any mid-request drop. */
+function streamClosedError(req: ClientHttp2Stream): Error {
+  // Test doubles and older Node leaves may not carry rstCode at all.
+  const rstCode = typeof req.rstCode === "number" ? req.rstCode : http2Constants.NGHTTP2_NO_ERROR;
+  if (rstCode === http2Constants.NGHTTP2_NO_ERROR) {
+    return Object.assign(new Error("APNs http2 stream closed before a response, with no RST_STREAM"), {
+      code: "ECONNRESET",
+      name: "Error",
+    });
+  }
+  const rstName = NGHTTP2_ERROR_NAMES[rstCode] ?? `code ${rstCode}`;
+  return Object.assign(new Error(`APNs http2 stream reset before a response (RST_STREAM ${rstName})`), {
+    code: "ERR_HTTP2_STREAM_ERROR",
+    name: "HTTP2StreamError",
+  });
+}
+
 function sendOver(
   entry: SessionCacheEntry,
   url: URL,
@@ -921,6 +962,18 @@ function sendOver(
   });
   req.on("frameError", (type, code) => {
     settle(() => reject(Object.assign(new Error(`HTTP/2 frameError type=${type} code=${code}`), { code: "ERR_HTTP2_PROTOCOL_ERROR", name: "HTTP2FrameError" })));
+  });
+  // A close with no response settled means the stream ended before APNs
+  // answered — almost always an RST_STREAM ahead of any headers.  Reject
+  // right away: waiting out the request deadline would turn a retry-now
+  // reset into a 30s stall, and the deadline path would evict and destroy
+  // a session that just proved it is alive.  settle() clears the deadline
+  // timer, so this path never runs the eviction: an RST_STREAM kills one
+  // stream, not the connection, and the retry belongs on this same
+  // session.  A close after a settled response — or after the deadline's
+  // own CANCEL — is a no-op through the settled guard.
+  req.on("close", () => {
+    settle(() => reject(streamClosedError(req)));
   });
   // Write the body and end the stream.  An empty body is fine — APNs allows
   // it for keepalive probes.
