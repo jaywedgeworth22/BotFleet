@@ -2390,7 +2390,9 @@ bus.subscribe((event: RuntimeEvent) => {
           cachedInput: tokens?.cachedInput,
           costUsd: event.cost ?? null,
           billingMode: event.billingMode,
-        });
+          // actualSelection, not the configured selection: a turn that
+          // fell over to another engine is that engine's spend.
+        }, actualSelection.instanceId);
         if (typeof event.cost === "number" && event.cost > 0) {
           rollingSpendTracker.recordTurn({
             at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
@@ -2472,10 +2474,11 @@ bus.subscribe((event: RuntimeEvent) => {
           clearVpsTurn();
         }
       } else if (group && speaker) {
-        // A room turn spends real money too, and until now none of it reached
-        // Usage Monitor.  It goes out tagged with the room, so shared spend
-        // can be told apart from a 1:1 task turn; the per-bot task ledger
-        // above stays 1:1 on purpose.
+        // A room turn spends real money too.  It goes to telemetry tagged
+        // with the room so shared spend can be told apart from a 1:1 task
+        // turn, and it banks per engine on the speaking bot below so the
+        // Usage tab and the what-if projection see it; the per-bot TASK
+        // ledger above stays 1:1 on purpose.
         const roomBot = store.bot(speaker.botId);
         if (roomBot) {
           telemetry.trackTurn({
@@ -2496,6 +2499,13 @@ bus.subscribe((event: RuntimeEvent) => {
             success: event.ok !== false,
             roomId: group.id,
             roomName: group.name,
+          });
+          store.addRoomUsage(roomBot.id, actualSelection.instanceId, {
+            input: tokens?.input,
+            output: tokens?.output,
+            cachedInput: tokens?.cachedInput,
+            costUsd: event.cost ?? null,
+            billingMode: event.billingMode,
           });
           if (typeof event.cost === "number" && event.cost > 0) {
             rollingSpendTracker.recordTurn({
