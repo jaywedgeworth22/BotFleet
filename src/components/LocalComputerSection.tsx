@@ -27,6 +27,8 @@ import { Card } from "./SettingsPrimitives";
 import { ComputerProviderToggle } from "./ComputerProviderToggle";
 import { VpsModeToggle } from "./VpsModeToggle";
 import { BotComputerMatrix, providersForBot } from "./BotComputerMatrix";
+import { useDesktopCapabilities } from "./DesktopCapabilities";
+import { engineReachKnown, instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { ComputerImpactConfirmModal, type ImpactedBot } from "./ComputerImpactConfirmModal";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
@@ -124,6 +126,7 @@ function currentSelectionFor(bot: Bot): string[] {
 
 export function LocalComputerSection() {
   const { state, dispatch } = useStore();
+  const { capabilities } = useDesktopCapabilities();
   const resolved = useMemo(() => resolveWorkspaceProviders(state.config), [state.config?.botDefaults]);
   const providers = resolved.providers;
   const vpsMode = resolved.vpsMode;
@@ -152,19 +155,29 @@ export function LocalComputerSection() {
   // the workspace default, so disabling a provider does effectively
   // remove a leg of their grant, and the modal must list them so the
   // operator confirms before that change ships.
+  // The Auto This Computer fallback only mounts on macOS with an
+  // engine that has a local approval channel
+  // (`shouldMountLocalComputer({ requested: undefined, ... })` on the
+  // server).  Resolving the same gate here keeps the matrix and this
+  // impact list from naming bots the runtime would never mount — a
+  // Linux/Windows host or an engine without local reach means no
+  // fallback, so no leg of the grant is lost when the provider turns
+  // off.  While the instance list is still hydrating the engine side
+  // stays fail-open (`undefined`), matching the picker.
+  const hostPlatform = capabilities.host.platform;
+  const instances = state.instances ?? [];
+  const reachKnown = engineReachKnown({ instances, hydrationStatus: state.hydration.status });
+  const autoLocalFor = useCallback(
+    (bot: Bot) => ({
+      hostPlatform,
+      engineSupportsLocal: reachKnown ? instanceSupportsLocalComputer(instances, bot) : undefined,
+    }),
+    [hostPlatform, instances, reachKnown],
+  );
   const botsUsingProvider = useCallback(
     (provider: ComputerProviderId): ImpactedBot[] =>
       bots
-        .filter((bot) => {
-          if (bot.computers !== undefined && bot.computers.length === 0) return false;
-          const botProviders = providersForBot(
-            bot,
-            providers,
-            state.config?.botDefaults?.cloudBackend,
-            state.config?.botDefaults?.computers,
-          );
-          return botProviders[provider] === true;
-        })
+        .filter((bot) => !(bot.computers !== undefined && bot.computers.length === 0))
         .map((bot) => ({
           id: bot.id,
           name: bot.name,
@@ -174,9 +187,11 @@ export function LocalComputerSection() {
             providers,
             state.config?.botDefaults?.cloudBackend,
             state.config?.botDefaults?.computers,
+            autoLocalFor(bot),
           ),
-        })),
-    [bots, providers, state.config?.botDefaults?.cloudBackend, state.config?.botDefaults?.computers],
+        }))
+        .filter((bot) => bot.providers[provider] === true),
+    [bots, providers, state.config?.botDefaults?.cloudBackend, state.config?.botDefaults?.computers, autoLocalFor],
   );
 
   // Persist a new providers shape.  Always writes both the new key and
@@ -355,6 +370,9 @@ export function LocalComputerSection() {
           workspaceProviders={providers}
           workspaceDefaultComputers={state.config?.botDefaults?.computers}
           workspaceCloudBackend={state.config?.botDefaults?.cloudBackend}
+          hostPlatform={hostPlatform}
+          instances={instances}
+          instancesReady={reachKnown}
           busy={applying || saving}
           onApplyToAll={applyToAll}
         />
