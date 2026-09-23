@@ -21,6 +21,7 @@ import {
   type CustomRoomLabels,
   type RoomTerminology,
 } from "../shared/terminology.ts";
+import { DEFAULT_VPS_MODE, migrateAllowedComputersToProviders } from "../shared/local-auto-consent.ts";
 
 const optionalText = z.string().optional();
 const externalCredentialStorage = z.literal("external").optional();
@@ -882,13 +883,12 @@ export function migrateLegacyElevenLabsTtsProvider(cfg: AppConfig): boolean {
  * Cross-field invariants the new shape enforces (handled here, not by the
  * zod schema, because the schema does not cross-validate):
  * - `vpsMode === null` is only legal when `selfHostedVps` is false.  A
- *   stored `null` alongside `selfHostedVps: true` falls back to "shared"
- *   rather than throwing, so an upgrade cannot break a fleet that was
+ *   stored `null` alongside `selfHostedVps: true` falls back to
+ *   `DEFAULT_VPS_MODE` (per-bot) rather than throwing, so an upgrade cannot break a fleet that was
  *   operating a VPS in shared mode before the schema was tightened.
- * - The legacy `["cloud"]` entry was always backed by a single VPS
- *   container the operator did not pick a mode for, so the migrator
- *   pins it to "shared" — the behavior that the rest of the server has
- *   always assumed. */
+ * - The legacy `["cloud"]` entry never picked a VPS mode; the runtime
+ *   has always run one VPS container per bot, so the migrator pins it
+ *   to `DEFAULT_VPS_MODE` (per-bot). */
 export function migrateComputerProvidersConfig(cfg: AppConfig): boolean {
   const defaults = cfg.botDefaults;
   if (!defaults) return false;
@@ -899,7 +899,7 @@ export function migrateComputerProvidersConfig(cfg: AppConfig): boolean {
     // repair is a single default and a single repair is cheaper than a
     // hard refusal at boot.
     if (defaults.computerProviders.selfHostedVps && defaults.vpsMode === null) {
-      defaults.vpsMode = "shared";
+      defaults.vpsMode = DEFAULT_VPS_MODE;
       return true;
     }
     if (!defaults.computerProviders.selfHostedVps && defaults.vpsMode !== null && defaults.vpsMode !== undefined) {
@@ -908,36 +908,19 @@ export function migrateComputerProvidersConfig(cfg: AppConfig): boolean {
     }
     return false;
   }
-  // No new-shape key.  Compute from the legacy `allowedComputers`
-  // (null / undefined / empty -> the shipped default).
-  let allowed: Array<"cloud" | "vm" | "local"> | null | undefined = defaults.allowedComputers;
-  if (allowed === undefined || allowed === null) {
-    // A fresh install with no legacy key still wants the shipped
-    // defaults, so the new UI sees a populated shape on first read.
-    defaults.computerProviders = { asciiBox: true, selfHostedVps: true, localVm: false, localMac: false };
-    defaults.vpsMode = "shared";
-    return true;
-  }
-  if (!Array.isArray(allowed) || allowed.length === 0) {
-    defaults.computerProviders = { asciiBox: true, selfHostedVps: true, localVm: false, localMac: false };
-    defaults.vpsMode = "shared";
-    return true;
-  }
-  const providers = { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false };
-  let hasCloud = false;
-  for (const dest of allowed) {
-    if (dest === "cloud") {
-      providers.asciiBox = true;
-      providers.selfHostedVps = true;
-      hasCloud = true;
-    } else if (dest === "vm") {
-      providers.localVm = true;
-    } else if (dest === "local") {
-      providers.localMac = true;
-    }
-  }
-  defaults.computerProviders = providers;
-  defaults.vpsMode = hasCloud ? "shared" : null;
+  // No new-shape key.  Compute from the legacy `allowedComputers` with
+  // the one shared mapping, so the server, the desktop boot migration
+  // and the renderer agree:
+  //   null / undefined -> every provider on (legacy "no allowlist")
+  //   []               -> every provider off (explicit deny-all)
+  //   [...]            -> each named destination's providers on
+  // Getting either of the first two wrong is not cosmetic: the next
+  // provider save back-fills `allowedComputers` from this shape, so a
+  // deny-all would silently re-enable cloud and an unrestricted install
+  // would silently lose its Local VM and host grants.
+  const migrated = migrateAllowedComputersToProviders(defaults.allowedComputers);
+  defaults.computerProviders = migrated.providers;
+  defaults.vpsMode = migrated.vpsMode;
   return true;
 }
 
