@@ -375,6 +375,9 @@ export interface Http2ConnectOptions {
   keepAliveInitialDelay: number;
   /** HTTP/2 PING keepalive cadence in milliseconds. */
   pingIntervalMs: number;
+  /** How long one PING may go unanswered before the session is treated as
+   * half-open, evicted, and destroyed.  Node puts no deadline on a PING. */
+  pingDeadlineMs: number;
 }
 
 /** Apple's recommended dial for long-lived APNs HTTP/2 senders.  Pulled from
@@ -389,6 +392,7 @@ export const DEFAULT_HTTP2_OPTIONS: Http2ConnectOptions = {
   keepAlive: true,
   keepAliveInitialDelay: 30_000,
   pingIntervalMs: 30_000,
+  pingDeadlineMs: 10_000,
 };
 
 /** One transport session: the http2 client + a notifier for the call site. */
@@ -457,26 +461,101 @@ export const defaultHttp2SessionFactory: Http2SessionFactory = (host, _keyId) =>
     },
   );
   watchHttp2SessionLifecycle(host, session);
-  // The PING keepalive Apple asks long-lived senders for.  Node has no
-  // connect option for it, so run `session.ping` on a cadence; the timer is
-  // unref'd so it never keeps the process alive, and it stops with the
-  // session.
-  const ping = setInterval(() => {
-    if (session.closed || session.destroyed) {
-      clearInterval(ping);
-      return;
-    }
-    try {
-      session.ping(() => {
-        /* a failed PING surfaces as the session 'error' handled above */
-      });
-    } catch {
-      clearInterval(ping);
-    }
-  }, DEFAULT_HTTP2_OPTIONS.pingIntervalMs);
-  ping.unref?.();
+  startHttp2PingKeepalive(host, session);
   return { raw: session };
 };
+
+export interface Http2PingKeepaliveOptions {
+  /** Cadence in ms; defaults to DEFAULT_HTTP2_OPTIONS.pingIntervalMs. */
+  intervalMs?: number;
+  /** Per-PING deadline in ms; defaults to DEFAULT_HTTP2_OPTIONS.pingDeadlineMs. */
+  deadlineMs?: number;
+}
+
+/** The PING keepalive Apple asks long-lived senders for.  Node has no
+ * connect option for it, so run `session.ping` on a cadence.  A PING is
+ * the only probe an idle session gets, so it has to act on what it learns:
+ * an error delivered to the PING callback, or no answer inside the
+ * deadline, means the connection is dead or half-open.  Either one evicts
+ * the session from the cache, fails every send still pending on it, and
+ * destroys it, so the next send opens a fresh session instead of waiting
+ * out the full request deadline on a dead socket.  One PING is in flight at
+ * a time; the timers are unref'd so they never keep the process alive, and
+ * everything stops with the session.  Exported so tests can drive it on a
+ * fake session; returns a stop function. */
+export function startHttp2PingKeepalive(
+  host: string,
+  session: ClientHttp2Session,
+  options: Http2PingKeepaliveOptions = {},
+): () => void {
+  const intervalMs = options.intervalMs ?? DEFAULT_HTTP2_OPTIONS.pingIntervalMs;
+  const deadlineMs = options.deadlineMs ?? DEFAULT_HTTP2_OPTIONS.pingDeadlineMs;
+  let stopped = false;
+  let inFlight: ReturnType<typeof setTimeout> | null = null;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    if (inFlight) clearTimeout(inFlight);
+    inFlight = null;
+  };
+  const kill = (err: unknown) => {
+    stop();
+    failCachedSession(host, session, err);
+    try {
+      session.destroy();
+    } catch {
+      /* already gone, or a test double with no destroy() */
+    }
+  };
+  const timer = setInterval(() => {
+    if (session.closed || session.destroyed) {
+      stop();
+      return;
+    }
+    // The previous PING is still out; its own deadline decides its fate.
+    if (inFlight) return;
+    let answered = false;
+    const deadline = setTimeout(() => {
+      if (answered) return;
+      answered = true;
+      inFlight = null;
+      kill(
+        Object.assign(new Error(`APNs http2 PING went unanswered for ${deadlineMs}ms`), {
+          code: "ETIMEDOUT",
+          name: "TimeoutError",
+        }),
+      );
+    }, deadlineMs);
+    deadline.unref?.();
+    inFlight = deadline;
+    try {
+      const sent = session.ping((err) => {
+        if (answered) return;
+        answered = true;
+        clearTimeout(deadline);
+        inFlight = null;
+        if (err) kill(err);
+      });
+      if (sent === false && !answered) {
+        // Node refused to queue the PING (too many outstanding); nothing
+        // was written, so there is nothing to wait for this cycle.
+        answered = true;
+        clearTimeout(deadline);
+        inFlight = null;
+      }
+    } catch (err) {
+      // `ping` throws only on a session that is already unusable.
+      answered = true;
+      clearTimeout(deadline);
+      inFlight = null;
+      kill(err);
+    }
+  }, intervalMs);
+  timer.unref?.();
+  session.once("close", stop);
+  return stop;
+}
 
 /** Read every field Node attaches to a thrown error in a single helper, so
  * the caller can stash them on `ApnsSendResult` verbatim and the health
@@ -794,8 +873,8 @@ function sendOver(
     // A stream that got no answer at all means the connection under it is
     // most likely half-open, and cancelling the stream does not fix that:
     // left cached, the retry and every later send would be written to the
-    // same dead socket.  The PING keepalive does not catch it either — its
-    // callback ignores errors and Node puts no timeout on a PING.  So evict
+    // same dead socket.  The PING keepalive would only catch it on its next
+    // cycle, up to a full interval plus the PING deadline later.  So evict
     // the session, fail every other send still waiting on it (they are on
     // the same dead connection and would each wait out their own deadline),
     // and destroy it.  Only this session's pending set is swept; a
