@@ -162,28 +162,15 @@ export function UsageWhatIfProjection(props: UsageWhatIfProjectionProps): React.
             const apiCost = apiEquivalentCost(usage, entry.pricing);
             // Saved = apiCost - actualCost, signed.  Negative values
             // mean the subscription cost MORE than PAYG (e.g. a bot
-            // with low usage on Claude Max at $213.20/mo).  The footer
-            // sums these correctly by re-using apiCost/actualCost.
-            // The per-row "Saved by plan" cell still clamps to zero so
-            // a reader does not see a negative number that the totals
-            // row would not reflect.  Codex flagged the previous
-            // always-positive clamping as producing an impossible
-            // total when plans varied.
-            // Saved = apiCost - actualCostProrated, signed.  Negative values
-            // mean the subscription cost MORE than PAYG (e.g. a bot
-            // with low usage on Claude Max at $213.20/mo).  The footer
-            // sums these correctly by re-using apiCost/actualCost.
-            // The per-row "Saved by plan" cell still clamps to zero so
-            // a reader does not see a negative number that the totals
-            // row would not reflect.  Codex flagged the previous
-            // always-positive clamping as producing an impossible
-            // total when plans varied.  Prorate the actual cost for
-            // sub-30-day windows so the row and the totals stay in
-            // sync — without this the row displayed $55 while the
-            // totals row displayed $27.50 for a 15-day window.
+            // Saved = apiCost - actualCostProrated, SIGNED per row.  A
+            // negative value means the subscription cost MORE than PAYG
+            // for the period (e.g. low usage on Claude Max at
+            // $213.20/mo); clamping the row to $0 while the totals row
+            // went negative made the card contradict itself, which the
+            // review flagged.  Prorating the actual cost keeps the row
+            // and the totals in sync for sub-30-day windows.
             const actualCostProrated = usage.actualCostUsd * prorationFactor;
-            const rawSaved = apiCost - actualCostProrated;
-            const saved = Math.max(0, rawSaved);
+            const saved = apiCost - actualCostProrated;
             const savedPct = apiCost > 0 ? (saved / apiCost) * 100 : 0;
             const displayName = entry.displayName;
             // Pricing kind is already narrowed to subscription+api or
@@ -206,8 +193,15 @@ export function UsageWhatIfProjection(props: UsageWhatIfProjectionProps): React.
                 </div>
                 <span className="text-right tabular-nums text-ink" title={isBundled ? "Bundled into another plan" : "What you actually paid this period"}>{actualCostLabel}</span>
                 <span className="text-right tabular-nums text-ink" title="Pay-as-you-go equivalent">{formatUsd(apiCost)}</span>
-                <span className="text-right tabular-nums text-emerald-700 dark:text-emerald-300" title={saved > 0 ? "Your subscription saved you this much" : undefined}>{formatUsd(saved)}</span>
-                <span className="text-right tabular-nums text-ink-secondary">{savedPct > 0 ? `${savedPct.toFixed(1)}%` : "—"}</span>
+                <span
+                  className={saved >= 0
+                    ? "text-right tabular-nums text-emerald-700 dark:text-emerald-300"
+                    : "text-right tabular-nums text-rose-700 dark:text-rose-300"}
+                  title={saved >= 0 ? "Your subscription saved you this much" : "This plan cost more than the equivalent PAYG volume this period"}
+                >
+                  {saved >= 0 ? formatUsd(saved) : `−${formatUsd(Math.abs(saved))}`}
+                </span>
+                <span className="text-right tabular-nums text-ink-secondary">{apiCost > 0 ? `${savedPct.toFixed(1)}%` : "—"}</span>
               </div>
             );
           })}
