@@ -402,4 +402,91 @@ describe("computerProviders matrix rendering", () => {
       localMac: true,
     });
   });
+
+  it("gates the true-Auto This Computer fallback on the host platform and engine reach", () => {
+    // The server's Auto host fallback mounts only on macOS and only for
+    // an engine with a local approval channel
+    // (`shouldMountLocalComputer({ requested: undefined, ... })`).  The
+    // matrix must not list a grant — and the disable-impact modal must
+    // not list a bot — the runtime would never mount.
+    const bot = makeBot("a", undefined);
+    const workspaceProviders = {
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    };
+    // macOS host + local-capable engine: the fallback can mount.
+    expect(
+      providersForBot(bot, workspaceProviders, undefined, undefined, {
+        hostPlatform: "darwin",
+        engineSupportsLocal: true,
+      }),
+    ).toEqual({ asciiBox: true, selfHostedVps: false, localVm: false, localMac: true });
+    // Linux host: local control is an explicit-only beta, so the Auto
+    // path never falls back to the host.
+    expect(
+      providersForBot(bot, workspaceProviders, undefined, undefined, {
+        hostPlatform: "linux",
+        engineSupportsLocal: true,
+      }),
+    ).toEqual({ asciiBox: true, selfHostedVps: false, localVm: false, localMac: false });
+    // Windows host: no local driver.
+    expect(
+      providersForBot(bot, workspaceProviders, undefined, undefined, {
+        hostPlatform: "win32",
+        engineSupportsLocal: true,
+      }),
+    ).toEqual({ asciiBox: true, selfHostedVps: false, localVm: false, localMac: false });
+    // macOS host, but the bot's engine has no local approval channel.
+    expect(
+      providersForBot(bot, workspaceProviders, undefined, undefined, {
+        hostPlatform: "darwin",
+        engineSupportsLocal: false,
+      }),
+    ).toEqual({ asciiBox: true, selfHostedVps: false, localVm: false, localMac: false });
+  });
+
+  it("keeps the true-Auto fallback lit while the engine side is unknown (fail-open)", () => {
+    const bot = makeBot("a", undefined);
+    const workspaceProviders = {
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    };
+    // Instance list still hydrating: an unknown engine lets the server
+    // have the last word rather than flashing the column dark.
+    expect(
+      providersForBot(bot, workspaceProviders, undefined, undefined, {
+        hostPlatform: "darwin",
+        engineSupportsLocal: undefined,
+      }).localMac,
+    ).toBe(true);
+    // A caller without host/engine information keeps the historical
+    // optimistic answer.
+    expect(providersForBot(bot, workspaceProviders).localMac).toBe(true);
+  });
+
+  it("does not gate explicit or inherited 'local' grants on the host hint", () => {
+    // An explicit ["local"] grant is the operator's own choice: the
+    // server honors it on macOS AND Linux (requested: "local"), so the
+    // host hint gates only the Auto fallback.
+    expect(
+      providersForBot(makeBot("a", ["local"]), undefined, undefined, undefined, {
+        hostPlatform: "linux",
+        engineSupportsLocal: true,
+      }).localMac,
+    ).toBe(true);
+    // An inherited workspace default of ["local"] resolves as an
+    // explicit grant on the server (auto: false), so it is not the
+    // Auto fallback either.
+    const all = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+    expect(
+      providersForBot(makeBot("b", undefined), all, undefined, ["local"], {
+        hostPlatform: "linux",
+        engineSupportsLocal: true,
+      }).localMac,
+    ).toBe(true);
+  });
 });
