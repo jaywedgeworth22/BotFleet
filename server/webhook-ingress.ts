@@ -103,12 +103,39 @@ function eventName(req: IncomingMessage): string | undefined {
   )?.trim() || undefined;
 }
 
+/** A fixed-path POST receiver mounted on the webhook-only listener, for
+ * partners (e.g. Linq) that sign their own deliveries instead of using a
+ * `/hooks/<endpoint>/<secret>` capability URL.  The handler owns body
+ * reading, signature checks, and the response. */
+export type WebhookIngressRoute = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+
 export function createWebhookIngressHandler(
   manager: WebhookManager,
   beginAdmission: () => (() => void) | null = () => () => {},
+  routes: Readonly<Record<string, WebhookIngressRoute>> = {},
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
+    const route = Object.prototype.hasOwnProperty.call(routes, url.pathname) ? routes[url.pathname] : undefined;
+    if (route) {
+      if (req.method !== "POST") return json(res, 405, { error: "Webhooks accept POST requests" });
+      const release = beginAdmission();
+      if (!release) return json(res, 503, { error: "BotFleet is quiescing for an update" });
+      try {
+        await route(req, res);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isSentryActive()) {
+          getSentry()?.captureException(error instanceof Error ? error : new Error(message), {
+            tags: { component: "webhook-ingress", route: url.pathname },
+          });
+        }
+        if (!res.headersSent) json(res, 500, { error: "Webhook receiver failed" });
+      } finally {
+        release();
+      }
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { app: "botfleet-webhooks", ready: true });
     }
@@ -186,10 +213,15 @@ export function createWebhookIngressHandler(
 
 export async function listenWebhookIngress(
   manager: WebhookManager,
-  options: { host?: string; port: number; beginAdmission?: () => (() => void) | null },
+  options: {
+    host?: string;
+    port: number;
+    beginAdmission?: () => (() => void) | null;
+    routes?: Readonly<Record<string, WebhookIngressRoute>>;
+  },
 ): Promise<WebhookIngress> {
   const host = options.host ?? "127.0.0.1";
-  const server = createServer(createWebhookIngressHandler(manager, options.beginAdmission));
+  const server = createServer(createWebhookIngressHandler(manager, options.beginAdmission, options.routes));
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
     server.once("error", onError);
