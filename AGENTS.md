@@ -4,6 +4,8 @@ This file is the **authoritative coordination manifest for AI agent fleets** wor
 
 GitHub: `jaywedgeworth22/BotFleet`.  Integration tree: `/Users/jay/Code/BotFleet` (read-only for every seat; never a working lane).  Seat worktrees: `~/apps/botfleet-<seat>[-<lane>]`.  Slack `repo:` name: **`BotFleet`**.  Acronym: **`BF`**.
 
+> **2026-09-22 [INSTINCT]:** Updater transition release — must ship and be applied to every Mac BEFORE the bundle rename (PR #524).  It ports the target-bootstrapping wrapper and the updater's legacy-identity acceptance with no bundle ID change, so the old updater can apply it and the rename update is then judged by transition-capable code.  See `docs/rollouts/2026-09-22-updater-transition-bootstrap.md` for the rollout order.
+
 ## Seat Identity And Branches
 
 Post and claim as your own seat tag — `[CLAUDE]`, `[MONET]`, `[CODEX]`, `[AG]`, `[GROK]`, `[CURSOR]`, `[PRODUCER]`, `[GROK-BOT]` — never a hardcoded one.  Branch prefixes follow the seat (`claude/*`, `monet/*`, `codex/*`, `grok/*`, `ag/*`, `producer/*`).  Being inside another seat's worktree does not change your identity; do not claim or land that lane's work from there.  Canonical: `/Users/jay/apps/AGENT-SYNC.md` § Overview and § Message Structure.
