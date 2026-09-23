@@ -995,10 +995,29 @@ export function harnessLaunchdLabel(config, plist) {
  * renamed label, plus whichever label startHarness() actually bootstrapped.
  * Booting out only the renamed label would leave a legacy-label replacement
  * loaded, and its KeepAlive would restart the failed replacement while
- * rollback waits for ownership to clear.
+ * rollback waits for ownership to clear.  A quiesce that fails before
+ * startHarness runs leaves startedHarnessLabel unset, so the labels the
+ * capture found loaded are retried from the recorded launchd state too.
  */
 export function rollbackHarnessBootoutLabels(config, previous) {
-  return [...new Set([config.label, previous?.startedHarnessLabel].filter(Boolean))];
+  const labels = [config.label];
+  if (previous?.launchdLoaded) labels.push(config.label);
+  if (previous?.legacyLaunchdLoaded) labels.push(config.legacyLabel);
+  labels.push(previous?.startedHarnessLabel);
+  return [...new Set(labels.filter(Boolean))];
+}
+
+/**
+ * Labels quiesce must boot out before install, deduplicated: the renamed
+ * label and the legacy label, each once.  BOTFLEET_LAUNCH_AGENT_LABEL may
+ * name the legacy label itself; deduping first keeps that configuration
+ * from matching the skip condition on every pass and never booting out.
+ */
+export function quiesceBootoutLabels(config, previous) {
+  const labels = new Set();
+  if (previous?.launchdLoaded) labels.add(config.label);
+  if (previous?.legacyLaunchdLoaded) labels.add(config.legacyLabel);
+  return [...labels];
 }
 
 export function applicationAttachmentError(snapshot, openApplication) {
@@ -1606,13 +1625,9 @@ function createOperations(config) {
     },
 
     quiesce: async (previous) => {
-      for (const [loaded, label] of [
-        [previous.launchdLoaded, config.label],
-        [previous.legacyLaunchdLoaded, config.legacyLabel],
-      ]) {
-        if (!loaded) continue;
-        // BOTFLEET_LAUNCH_AGENT_LABEL may name the legacy label itself; boot it out once.
-        if (label === config.legacyLabel && label === config.label && previous.launchdLoaded) continue;
+      // BOTFLEET_LAUNCH_AGENT_LABEL may name the legacy label itself; the
+      // deduplicated list boots each loaded label out exactly once.
+      for (const label of quiesceBootoutLabels(config, previous)) {
         const stopped = await run("launchctl", ["bootout", `${config.domain}/${label}`], { allowFailure: true });
         if (stopped.code !== 0) throw new Error(`Could not boot out ${label} before install`);
       }
