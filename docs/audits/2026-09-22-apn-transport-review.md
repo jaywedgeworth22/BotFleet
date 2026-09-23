@@ -1,6 +1,6 @@
 # 2026-09-22 — APNs HTTP/2 Transport Hardening
 
-> Author: MM ([MINIMAX]), seat-tag pinned.  Continuation of the
+> Authors: original branch work by MM ([MINIMAX]); review-fix rounds by Instinct lanes.  Continuation of the
 > 2026-09-20 MiniMax inspection; this pass finishes the APNs leg that
 > surfaced as board `851f6868afc748d78ac2da02fa0541f9` (P2) and the
 > "failed keeps climbing" symptom Jay flagged on 2026-09-22.
@@ -48,7 +48,9 @@ session that:
   rotation builds a fresh session;
 - sets TCP keepalive (`keepAlive: true`, `keepAliveInitialDelay:
   30000` ms) and runs an HTTP/2 PING every 30s via `session.ping`
-  (`pingIntervalMs: 30000`) per Apple's APNs HTTP/2 reference;
+  (`pingIntervalMs: 30000`) per Apple's APNs HTTP/2 reference; a PING
+  that fails or goes unanswered for `pingDeadlineMs` (10s) evicts and
+  destroys the session and fails its pending sends;
 - configures `settings.maxConcurrentStreams: 500`,
   `settings.initialWindowSize: 1 MiB`, `maxSessionMemory: 10` (MB);
 - closes the session cleanly when no peer stream is open and rebuilds
@@ -81,7 +83,8 @@ actually went wrong (`ECONNRESET` vs `ERR_HTTP2_PROTOCOL_ERROR`).
 Twenty consecutive transport-or-socket failures, or five consecutive
 HTTP/2 protocol errors, opens a 60-second circuit breaker.
 `sendOne` short-circuits while the breaker is open, increments
-`dropped` (so it shows up on the health page), and skips the network
+`circuitDropped` (so it shows up on the health page apart from
+queue-full `dropped`), and skips the network
 round-trip.  This stops a hot loop from burning CPU and provider-token
 re-signs against an unreachable gateway.  A single successful send
 resets the run and closes the circuit.
@@ -106,7 +109,8 @@ when present:
 - `failureKind` plus the consecutive run count;
 - a "pushes are paused until HH:MM:SS" line while the circuit is
   open;
-- the existing `dropped` line now mentions a paused circuit.
+- circuit-breaker skips (`circuitDropped`) on their own line, apart
+  from the queue-full `dropped` line.
 
 ## Verification
 
@@ -138,8 +142,8 @@ Test additions in `companion/src/apns.test.ts`:
 - HTTP/2 session cache — same keyId reuses the session; a different
   keyId forces a rebuild.
 - Circuit breaker — 30 transport failures queued for one phone open
-  the circuit at 20 and skip the remaining 10 (`dropped` ≥ 10,
-  `failed` = 20).
+  the circuit at 20 and skip the remaining 10 (`circuitDropped` ≥ 10,
+  `dropped` = 0, `failed` = 20).
 - Reset on success — a single successful send zeroes
   `consecutiveTransportFailures` and clears `circuitOpenUntil`.
 - Timestamp on key fault — `health.lastError` renders
