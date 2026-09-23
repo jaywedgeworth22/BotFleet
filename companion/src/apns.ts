@@ -402,23 +402,11 @@ export interface Http2ApnsSession {
  * fake the wire without standing up a real socket. */
 export type Http2SessionFactory = (host: string, keyId: string) => Http2ApnsSession;
 
-/** Default factory — `node:http2` with Apple's recommended settings. */
-export const defaultHttp2SessionFactory: Http2SessionFactory = (host, _keyId) => {
-  const session = http2Connect(
-    `https://${host}`,
-    {
-      settings: DEFAULT_HTTP2_OPTIONS.settings,
-      maxSessionMemory: DEFAULT_HTTP2_OPTIONS.maxSessionMemory,
-    },
-    (_session, socket) => {
-      // TCP keepalive: `http2.connect` exposes no typed option for it, so
-      // set it on the underlying socket the moment the connection is up.
-      socket.setKeepAlive(
-        DEFAULT_HTTP2_OPTIONS.keepAlive,
-        DEFAULT_HTTP2_OPTIONS.keepAliveInitialDelay,
-      );
-    },
-  );
+/** Wire a session's own error / goaway / close events to the cache and to
+ * the sends in flight on it.  Pulled out of the default factory so tests
+ * can drive the same wiring on a fake session; a custom factory that wants
+ * the production failure handling calls it too. */
+export function watchHttp2SessionLifecycle(host: string, session: ClientHttp2Session): void {
   // A session-level 'error' with no listener is an uncaught exception: one
   // DNS/TCP/TLS failure would take the whole companion process down.
   // Handle it, drop the session from the cache, and reject everything still
@@ -449,6 +437,26 @@ export const defaultHttp2SessionFactory: Http2SessionFactory = (host, _keyId) =>
       }),
     );
   });
+}
+
+/** Default factory — `node:http2` with Apple's recommended settings. */
+export const defaultHttp2SessionFactory: Http2SessionFactory = (host, _keyId) => {
+  const session = http2Connect(
+    `https://${host}`,
+    {
+      settings: DEFAULT_HTTP2_OPTIONS.settings,
+      maxSessionMemory: DEFAULT_HTTP2_OPTIONS.maxSessionMemory,
+    },
+    (_session, socket) => {
+      // TCP keepalive: `http2.connect` exposes no typed option for it, so
+      // set it on the underlying socket the moment the connection is up.
+      socket.setKeepAlive(
+        DEFAULT_HTTP2_OPTIONS.keepAlive,
+        DEFAULT_HTTP2_OPTIONS.keepAliveInitialDelay,
+      );
+    },
+  );
+  watchHttp2SessionLifecycle(host, session);
   // The PING keepalive Apple asks long-lived senders for.  Node has no
   // connect option for it, so run `session.ping` on a cadence; the timer is
   // unref'd so it never keeps the process alive, and it stops with the
@@ -503,6 +511,13 @@ export function inspectTransportError(err: unknown): TransportErrorInfo {
 export function classifyTransportError(info: TransportErrorInfo): Exclude<ApnsFailureKind, "none"> {
   const code = info.code.toUpperCase();
   const name = info.name.toUpperCase();
+  // Timeouts first: the request deadline raises ETIMEDOUT / TimeoutError, a
+  // PING that never came back is ERR_HTTP2_PING_CANCEL, and a session that
+  // ended under a live stream is ERR_HTTP2_SESSION_EOF.  The last two start
+  // with ERR_HTTP2 but are a dead or stalled link, not Apple speaking bad
+  // HTTP/2, so they must not feed the protocol breaker.
+  if (name === "TIMEOUTERROR" || code === "ETIMEDOUT" || code === "ERR_HTTP2_PING_CANCEL" ||
+      code === "ERR_HTTP2_SESSION_EOF") return "timeout";
   // HTTP/2 protocol-level: GOAWAY, RST_STREAM, INTERNAL_ERROR, PROTOCOL_ERROR,
   // FRAME_SIZE_ERROR, FLOW_CONTROL_ERROR, COMPRESSION_ERROR.  Node raises
   // these as a `DOMException` whose `code` carries one of the magic strings
@@ -516,13 +531,11 @@ export function classifyTransportError(info: TransportErrorInfo): Exclude<ApnsFa
   // Anything below the TLS layer — DNS, TCP handshake, TLS handshake —
   // gets the generic "transport" bucket.  Err.code is normally enough.
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
-      code === "ETIMEDOUT" || code === "EHOSTUNREACH" || code === "ENETUNREACH" ||
+      code === "EHOSTUNREACH" || code === "ENETUNREACH" ||
       code === "ECONNRESET" || code === "EPIPE" || code === "CERT_HAS_EXPIRED" ||
       code === "DEPTH_ZERO_SELF_SIGNED_CERT" || code === "SELF_SIGNED_CERT_IN_CHAIN" ||
       code === "ERR_TLS_CERT_ALTNAME_INVALID" || code.startsWith("ERR_SSL"))
     return "transport";
-  if (name === "TIMEOUTERROR" || code === "ETIMEDOUT" || code === "ERR_HTTP2_PING_CANCEL" ||
-      code === "ERR_HTTP2_SESSION_EOF") return "timeout";
   // Fall-through: still a transport error — we never saw a Response, so
   // "transport" is the honest default.
   return "transport";
@@ -563,13 +576,25 @@ interface SessionCacheEntry {
   factory: Http2SessionFactory;
   session: Http2ApnsSession | null;
   lastKeyId: string | null;
-  /** Reject callbacks for the sends in flight on `session`.  A fatal
-   * session event drains this set so those sends reject instead of
-   * hanging forever on a dead connection. */
-  pending: Set<(err: unknown) => void>;
 }
 
 const sessionCache = new Map<string, SessionCacheEntry>();
+
+/** Reject callbacks for the sends in flight, keyed by the session they were
+ * written to.  Scoped per session, not per host: after a GOAWAY evicts a
+ * session, its streams keep draining while the replacement serves new
+ * sends, and a failure on either one must reject only its own streams.
+ * A WeakMap so a session that is gone takes its set with it. */
+const pendingBySession = new WeakMap<ClientHttp2Session, Set<(err: unknown) => void>>();
+
+function pendingFor(session: ClientHttp2Session): Set<(err: unknown) => void> {
+  let pending = pendingBySession.get(session);
+  if (!pending) {
+    pending = new Set();
+    pendingBySession.set(session, pending);
+  }
+  return pending;
+}
 
 /** Build (or reuse) the cache entry for `(host, keyId)`.  Pulled out so
  * tests can inject a factory that counts how many times a fresh session
@@ -581,7 +606,7 @@ function getOrOpenEntry(
 ): SessionCacheEntry {
   let entry = sessionCache.get(host);
   if (!entry) {
-    entry = { factory, session: null, lastKeyId: null, pending: new Set() };
+    entry = { factory, session: null, lastKeyId: null };
     sessionCache.set(host, entry);
   }
   // Always replace a session whose key changed — a rotated .p8 should never
@@ -622,14 +647,18 @@ function evictCachedSession(host: string, session: ClientHttp2Session): void {
 }
 
 /** A session died underneath its sends (error or close).  Drop it from the
- * cache and reject every send still waiting on it — a dead session must
- * fail its queue, never hang it. */
+ * cache if it is still the cached one, and reject every send still waiting
+ * on THIS session — a dead session must fail its queue, never hang it.
+ * The sweep runs even when the session was already evicted (GOAWAY), so a
+ * draining session's own close/error still settles its streams, and it
+ * never touches the replacement session's sends. */
 function failCachedSession(host: string, session: ClientHttp2Session, err: unknown): void {
   const entry = sessionCache.get(host);
-  if (!entry || !entry.session || entry.session.raw !== session) return;
-  entry.session = null;
-  const pending = [...entry.pending];
-  entry.pending.clear();
+  if (entry && entry.session && entry.session.raw === session) entry.session = null;
+  const set = pendingBySession.get(session);
+  if (!set || set.size === 0) return;
+  const pending = [...set];
+  set.clear();
   for (const reject of pending) {
     try {
       reject(err);
@@ -723,15 +752,16 @@ function sendOver(
   headers["host"] = url.host;
   let settled = false;
   let deadline: ReturnType<typeof setTimeout> | null = null;
-  // Registered on the cache entry: when the session itself fails, its
-  // handler drains the entry's pending set and this send rejects instead
+  // Registered on the session this send is written to: when that session
+  // fails, its handler drains its pending set and this send rejects instead
   // of hanging on a dead connection.
+  const pending = pendingFor(raw);
   const onSessionFailure = (err: unknown) => settle(() => reject(err));
   const settle = (fn: () => void) => {
     if (settled) return;
     settled = true;
     if (deadline) clearTimeout(deadline);
-    entry.pending.delete(onSessionFailure);
+    pending.delete(onSessionFailure);
     fn();
   };
   let req: ReturnType<ClientHttp2Session["request"]>;
@@ -742,7 +772,7 @@ function sendOver(
     return;
   }
   req.setEncoding("utf8");
-  entry.pending.add(onSessionFailure);
+  pending.add(onSessionFailure);
   // Bound the request: a stalled stream never settles on its own, and an
   // unbounded wait would park this phone's queue and starve the circuit
   // breaker of the failures it counts.  On expiry, cancel the stream and
@@ -951,11 +981,16 @@ export interface PushSenderHealth {
   keyRejected: string | null;
   /** Notifications dropped because a device's queue was already full. */
   dropped: number;
+  /** Notifications skipped because the circuit breaker was open — Apple's
+   * push service was unreachable, not a full queue on this computer.  Kept
+   * apart from `dropped` so the phone can say which one happened. */
+  circuitDropped: number;
   /** The bucketed shape of the last failure — Apple vs transport vs key.
    * "none" when the last attempt succeeded or no attempt has happened yet.
    * This is the field that tells the owner which fix to read next. */
   failureKind: ApnsFailureKind;
-  /** Transport failures in a row (DNS / TCP / TLS / HTTP/2 socket drop).
+  /** Transport failures in a row (DNS / TCP / TLS / HTTP/2 socket drop,
+   * request timeout).
    * Resets to zero the moment a send lands at Apple with a 2xx, regardless
    * of how many transport failures came before — a recovered network
    * should not carry an old run's bad luck forward. */
@@ -966,7 +1001,7 @@ export interface PushSenderHealth {
   lastErrorCode: string | null;
   /** Epoch ms; non-null means we are intentionally not sending because
    * transport failures exceeded the threshold.  The watcher's
-   * `recordOutcome` short-circuits and increments `dropped` while this is
+   * `recordOutcome` short-circuits and increments `circuitDropped` while this is
    * in the future.  Null when the circuit is closed. */
   circuitOpenUntil: number | null;
 }
@@ -985,6 +1020,11 @@ interface HealthTracker {
     errorTimestamp?: number,
   ): void;
   recordDropped(): void;
+  /** A send skipped because the circuit is open. */
+  recordCircuitDropped(): void;
+  /** HTTP/2 protocol errors in a row — only `http2_protocol` failures, so
+   * timeouts and socket drops never trip the tighter protocol breaker. */
+  protocolFailureRun(): number;
   /** True iff `circuitOpenUntil` is in the future — the next send must
    * be skipped without incrementing `failed`. */
   circuitIsOpen(at: number): boolean;
@@ -1007,6 +1047,8 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
   let lastError: string | null = null;
   let keyRejected: string | null = null;
   let dropped = 0;
+  let circuitDropped = 0;
+  let consecutiveProtocolFailures = 0;
   let failureKind: ApnsFailureKind = "none";
   let consecutiveTransportFailures = 0;
   let lastErrorCode: string | null = null;
@@ -1023,6 +1065,7 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       lastError,
       keyRejected,
       dropped,
+      circuitDropped,
       failureKind,
       consecutiveTransportFailures,
       lastErrorCode,
@@ -1056,6 +1099,7 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       // circuit.  Even a 200 against the test seam means the round trip
       // worked, which is the only signal the circuit should react to.
       consecutiveTransportFailures = 0;
+      consecutiveProtocolFailures = 0;
       failureKind = "none";
       lastErrorCode = null;
       circuitOpenUntil = null;
@@ -1067,11 +1111,12 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       // A transport-layer failure increments the run; an HTTP-layer Apple
       // verdict does not.  Apple's `lastError`/`lastErrorCode` describe
       // the bucket either way.
-      if (failureKind === "transport" || failureKind === "http2_protocol" || failureKind === "socket_closed") {
+      if (failureKind === "transport" || failureKind === "http2_protocol" || failureKind === "socket_closed" || failureKind === "timeout") {
         consecutiveTransportFailures += 1;
       } else {
         consecutiveTransportFailures = 0;
       }
+      consecutiveProtocolFailures = failureKind === "http2_protocol" ? consecutiveProtocolFailures + 1 : 0;
       lastErrorCode = code ?? null;
       let formatted: string;
       if (reason) {
@@ -1095,6 +1140,10 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
     recordDropped: () => {
       dropped += 1;
     },
+    recordCircuitDropped: () => {
+      circuitDropped += 1;
+    },
+    protocolFailureRun: () => consecutiveProtocolFailures,
     circuitIsOpen: (at) => circuitOpenUntil !== null && circuitOpenUntil > at,
     openCircuit: (at, ms) => {
       circuitOpenUntil = at + ms;
@@ -1317,8 +1366,9 @@ export function watchHarnessNotifications(options: {
       // The circuit is open: do not call `send` at all.  Skipping keeps
       // the http2 session idle so PING keepalives can recover it, and
       // avoids burning provider-token re-signs against an unreachable
-      // gateway.
-      health.recordDropped();
+      // gateway.  Counted apart from queue-full drops: this is Apple being
+      // unreachable, and the phone must not call it a full queue.
+      health.recordCircuitDropped();
       if (!loggedCircuitOpen.has("circuit-skip")) {
         loggedCircuitOpen.add("circuit-skip");
         console.warn(`companion: APNs circuit is open — dropping notifications until ${new Date(health.snapshot().circuitOpenUntil ?? at).toISOString()}`);
@@ -1366,12 +1416,12 @@ export function watchHarnessNotifications(options: {
     // tripped it.
     const h = health.snapshot();
     if (
-      (result.failureKind === "transport" || result.failureKind === "socket_closed") &&
+      (result.failureKind === "transport" || result.failureKind === "socket_closed" || result.failureKind === "timeout") &&
       h.consecutiveTransportFailures >= APNS_TRANSPORT_THRESHOLD
     ) {
       tripCircuit(host, `${h.consecutiveTransportFailures} transport failures in a row`);
-    } else if (result.failureKind === "http2_protocol" && h.consecutiveTransportFailures >= APNS_HTTP2_PROTOCOL_THRESHOLD) {
-      tripCircuit(host, `${h.consecutiveTransportFailures} HTTP/2 protocol errors in a row`);
+    } else if (result.failureKind === "http2_protocol" && health.protocolFailureRun() >= APNS_HTTP2_PROTOCOL_THRESHOLD) {
+      tripCircuit(host, `${health.protocolFailureRun()} HTTP/2 protocol errors in a row`);
     }
 
     // The key, not the phone: every device is about to fail the same way.
