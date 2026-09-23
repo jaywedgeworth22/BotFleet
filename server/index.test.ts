@@ -6610,6 +6610,52 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     await api("DELETE", `/api/bots/${lin.id}`);
   });
 
+  it("intersects the applied set with each bot's resolved cloud provider", async () => {
+    // The apply-to-all client sends the legacy destination list, where
+    // "cloud" collapses hosted Box and the self-hosted VPS into one entry.
+    // Filtering only through the legacy allowlist would write "cloud" to a
+    // bot whose real backend's provider toggle is off — a grant the runtime
+    // strips again on the bot's next turn.  The apply must store the same
+    // answer the runtime computes.
+    expect((await api("PUT", "/api/config", {
+      botDefaults: {
+        allowedComputers: null,
+        cloudBackend: "box",
+        computerProviders: { asciiBox: false, selfHostedVps: true, localVm: true, localMac: true },
+      },
+    })).status).toBe(200);
+    const boxBot = (await api("POST", "/api/bots", { name: "Box Off Apply" })).body.bot;
+    const vpsBot = (await api("POST", "/api/bots", { name: "Vps On Apply" })).body.bot;
+    expect((await api("PATCH", `/api/bots/${vpsBot.id}`, { cloudBackend: "vps" })).status).toBe(200);
+    try {
+      const apply = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"] },
+      });
+      expect(apply.status).toBe(200);
+      const bots = (await api("GET", "/api/bots")).body.bots;
+      // Box-backed bot with Box off: every destination this apply would
+      // grant is provider-disabled, so its own choice is left alone rather
+      // than overwritten with a disabled provider or stripped to Off.
+      expect(bots.find((b: { id: string }) => b.id === boxBot.id).computers ?? []).toEqual([]);
+      // VPS-backed bot takes the grant: its resolved provider is on.
+      expect(bots.find((b: { id: string }) => b.id === vpsBot.id).computers).toEqual(["cloud"]);
+    } finally {
+      await api("DELETE", `/api/bots/${boxBot.id}`);
+      await api("DELETE", `/api/bots/${vpsBot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: {
+          allowedComputers: null,
+          cloudBackend: "box",
+          computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+        },
+      })).status).toBe(200);
+      // Leave the workspace default harmless for the suites that follow.
+      expect((await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"] },
+      })).status).toBe(200);
+    }
+  });
+
   it("rejects a non-array destination list and an unknown destination", async () => {
     const notArray = await api("POST", "/api/bots/apply-defaults", { botDefaults: { computers: "cloud" } });
     expect(notArray.status).toBe(400);
