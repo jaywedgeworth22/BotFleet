@@ -3778,7 +3778,16 @@ const webhooks = new WebhookManager({
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
-  webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT, beginAdmission: beginUpdateAdmission });
+  webhookIngress = await listenWebhookIngress(webhooks, {
+    port: WEBHOOK_PORT,
+    beginAdmission: beginUpdateAdmission,
+    // Linq posts to a fixed path and signs with X-Linq-Signature.  It lives
+    // on the webhook-only listener (8800) because that is what the public
+    // tunnel forwards to; the app server (8799) stays loopback-only.
+    routes: {
+      "/api/webhooks/linq": (req, res) => readLinqWebhook(req, res, { getBots: () => store.bots.slice() }),
+    },
+  });
   console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
 } catch (error) {
   webhookIngressError = isListenInUse(error)
@@ -6889,17 +6898,9 @@ const server = createServer(async (req, res) => {
         : json(res, 404, { error: "no such webhook" });
     }
 
-    // Linq partner-API webhook.  Receives `message.received`,
-    // `message.sent`, and `message.delivered` events, verifies the
-    // HMAC-SHA256 signature when a workspace secret is configured, and
-    // dispatches inbound messages to the bot bound to the recipient
-    // number.  See `server/routes/linq-webhook.ts`.
-    if (path === "/api/webhooks/linq" && method === "POST") {
-      await readLinqWebhook(req, res, {
-        getBots: () => store.bots.slice(),
-      });
-      return;
-    }
+    // The Linq partner-API webhook (`POST /api/webhooks/linq`) is mounted on
+    // the webhook-only ingress listener next to `listenWebhookIngress`, not
+    // here: the public tunnel reaches that listener, never this app server.
 
     if (path === "/api/test/linq-self-message" && method === "POST") {
       const cfg = loadConfig();
