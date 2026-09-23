@@ -28,6 +28,7 @@ interface DispatchCall {
 }
 
 const dispatchCalls: DispatchCall[] = [];
+let nextDispatch: { dispatched: boolean; reason?: string } = { dispatched: true };
 
 vi.mock("../linq/dispatch.ts", async () => {
   const actual = await vi.importActual<typeof import("../linq/dispatch.ts")>(
@@ -37,13 +38,14 @@ vi.mock("../linq/dispatch.ts", async () => {
     ...actual,
     handleLinqInbound: async (msg: unknown, bots: unknown) => {
       dispatchCalls.push({ msg, bots });
-      return { dispatched: true };
+      return nextDispatch;
     },
   };
 });
 
 afterEach(() => {
   dispatchCalls.length = 0;
+  nextDispatch = { dispatched: true };
   delete process.env.LINQ_WEBHOOK_SECRET;
   delete process.env.LINQ_API_TOKEN;
 });
@@ -140,5 +142,40 @@ describe("readLinqWebhook", () => {
     expect(res.status).toBe(200);
     expect(res.body.lifecycle).toBe("message.delivered");
     expect(dispatchCalls).toHaveLength(0);
+  });
+
+  it("answers 503 when the message never reached the bot, so Linq retries", async () => {
+    nextDispatch = { dispatched: false, reason: "http_500" };
+    const body = JSON.stringify({ type: "message.received", chat_id: "c", message_id: "m", from: "+1", to: "+2", body: "hi" });
+    const res = await run(body);
+    expect(res.status).toBe(503);
+    expect(res.body.retry).toBe(true);
+  });
+
+  it("answers 200 for a deliberate policy drop, so Linq does not redeliver", async () => {
+    nextDispatch = { dispatched: false, reason: "sender_blocked" };
+    const body = JSON.stringify({ type: "message.received", chat_id: "c", message_id: "m", from: "+1", to: "+2", body: "hi" });
+    const res = await run(body);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it("verifies the HMAC over raw bytes when a multibyte character spans two chunks", async () => {
+    const secret = "the-real-secret";
+    process.env.LINQ_WEBHOOK_SECRET = secret;
+    const body = JSON.stringify({ type: "message.received", chat_id: "c", message_id: "m", from: "+1", to: "+2", body: "caf\u00e9 \u{1F600}" });
+    const bytes = Buffer.from(body, "utf8");
+    const split = bytes.indexOf(Buffer.from("\u{1F600}", "utf8")) + 2;
+    const sig = createHmac("sha256", secret).update(bytes).digest("hex");
+    const req = Readable.from([bytes.subarray(0, split), bytes.subarray(split)]) as Parameters<typeof readLinqWebhook>[0];
+    req.headers = { "x-linq-signature": sig };
+    let status = 0;
+    const res = {
+      writeHead(s: number) { status = s; },
+      end() { return res; },
+    } as unknown as Parameters<typeof readLinqWebhook>[1];
+    await readLinqWebhook(req, res, { getBots: () => [] });
+    expect(status).toBe(200);
+    expect((dispatchCalls[0].msg as { text: string }).text).toBe("caf\u00e9 \u{1F600}");
   });
 });
