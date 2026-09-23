@@ -81,8 +81,8 @@ the same question through the cut-over.
   that maps every legacy shape onto the new shape, raises if a
   migrated `selfHostedVps: true` would land a `vpsMode === null`,
   and pins `DEFAULT_COMPUTER_PROVIDERS = { asciiBox: true,
-  selfHostedVps: true, localVm: false, localMac: false }` plus
-  `DEFAULT_VPS_MODE = "shared"` for fresh installs.
+  selfHostedVps: true, localVm: true, localMac: true }` plus
+  `DEFAULT_VPS_MODE = "per-bot"` for fresh installs.
 - New `COMPUTER_PROVIDER_LABEL`, `COMPUTER_PROVIDER_DISABLE_IMPACT`,
   and `COMPUTER_PROVIDER_ORDER` constants so the toggle row, the
   matrix header, and any future tooltip stay in sync from one source.
