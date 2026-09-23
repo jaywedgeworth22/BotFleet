@@ -357,6 +357,61 @@ test("the stable wrapper rejects an unmerged --target before running any of its 
   assert.equal(await readFile(marker, "utf8"), "main", "the archived updater from the merged target ran");
 });
 
+test("unquiesce ignores update targets and bootstraps the recovery from origin/main", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
+  const fixture = await mkdtemp(join(tmpdir(), "ubf-unquiesce-target-"));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const remote = join(fixture, "remote");
+  const checkout = join(fixture, "checkout");
+  const marker = join(fixture, "executed.json");
+  await mkdir(remote, { recursive: true });
+  const git = (cwd, args) => run("git", ["-C", cwd, ...args]);
+  const writeUpdater = async (cwd, label) => {
+    for (const path of [
+      "scripts/update-botfleet-mac.mjs",
+      "scripts/mac-update-transaction.mjs",
+      "scripts/update-progress.mjs",
+      "electron/update-credential-preparation.mjs",
+    ]) {
+      await mkdir(dirname(join(cwd, path)), { recursive: true });
+      await writeFile(join(cwd, path), path.endsWith("update-botfleet-mac.mjs")
+        ? `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, JSON.stringify({ label: ${JSON.stringify(label)}, args: process.argv.slice(2) }));\n`
+        : "// placeholder\n");
+    }
+  };
+  await git(fixture, ["init", "-b", "main", "remote"]);
+  await git(remote, ["config", "user.email", "test@example.com"]);
+  await git(remote, ["config", "user.name", "Test"]);
+  await writeUpdater(remote, "main");
+  await git(remote, ["add", "."]);
+  await git(remote, ["commit", "-m", "main"]);
+  // An unmerged ref, left over as BOTFLEET_UPDATE_TARGET from an interrupted
+  // targeted update; the ancestry check refuses its updater code.
+  await git(remote, ["checkout", "-b", "fenced"]);
+  await writeUpdater(remote, "fenced");
+  await git(remote, ["add", "."]);
+  await git(remote, ["commit", "-m", "fenced"]);
+  await git(remote, ["checkout", "main"]);
+  await git(fixture, ["clone", "remote", "checkout"]);
+
+  const wrapper = join(scripts, "update-botfleet.sh");
+  const env = { BOTFLEET_CHECKOUT: checkout, BOTFLEET_FORCE: "1", BOTFLEET_UPDATE_TARGET: "origin/fenced" };
+  // The recovery action must release admission even while the environment
+  // names the unmerged ref: it bootstraps origin/main's updater instead.
+  const recovered = await run("bash", [wrapper, "unquiesce"], { env, allowFailure: true });
+  assert.equal(recovered.code, 0, `unquiesce recovers: ${recovered.stderr}`);
+  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), {
+    label: "main",
+    args: ["unquiesce"],
+  }, "unquiesce bootstraps origin/main's updater and stays option-free");
+
+  // The same env target still gates a plain update run.
+  await rm(marker, { force: true });
+  const rejected = await run("bash", [wrapper], { env, allowFailure: true });
+  assert.equal(rejected.code, 1, "an unmerged env target is still refused for updates");
+  assert.match(rejected.stderr, /not reachable from origin\/main/);
+  assert.equal(await readFile(marker, "utf8").catch(() => null), null, "no updater code ran for the refused target");
+});
+
 
 test("the stable wrapper resolves env and equals-form targets to the pinned validated commit", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
   const fixture = await mkdtemp(join(tmpdir(), "ubf-target-passthrough-"));
@@ -1018,6 +1073,44 @@ test("rollback restores an aliased legacy-label harness once, from its configure
   assert.deepEqual(
     rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: false }, { plistExists: true, legacyPlistExists: true }),
     [],
+  );
+});
+
+test("rollback restores a legacy-label harness from a configured custom plist", () => {
+  // BOTFLEET_LAUNCH_AGENT_PLIST points at a custom plist on a pre-transition
+  // Mac: the only job runs under the legacy label while config.label keeps
+  // the renamed default, so the job used to be restored from the hardcoded
+  // legacy path -- a file this Mac never had, leaving the harness down.
+  const config = {
+    label: "app.botfleet.server",
+    plist: "/Users/test/custom/botfleet-server.plist",
+    customPlist: true,
+    legacyLabel: "com.jay.botfleet-server",
+    legacyPlist: "/Users/test/Library/LaunchAgents/com.jay.botfleet-server.plist",
+  };
+  // The legacy job comes back from the configured plist it was loaded from,
+  // not the missing hardcoded legacy path.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: false }),
+    [config.plist],
+  );
+  // Both flags recorded: the configured plist still restores only once.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, { launchdLoaded: true, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: true }),
+    [config.plist],
+  );
+  // A configured plist that vanished mid-transaction falls back to the
+  // legacy path that does exist.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: false, legacyPlistExists: true }),
+    [config.legacyPlist],
+  );
+  // Without a configured plist the legacy job still comes from the hardcoded
+  // legacy path, exactly as before.
+  const stock = { ...config, customPlist: false };
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(stock, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: false }),
+    [stock.legacyPlist],
   );
 });
 
