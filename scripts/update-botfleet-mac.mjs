@@ -1032,6 +1032,21 @@ export function harnessLaunchdLabel(config, plist) {
 }
 
 /**
+ * The label startHarness() is about to bootstrap from `plist`.  A custom
+ * BOTFLEET_LAUNCH_AGENT_PLIST can declare any Label, including the legacy
+ * com.jay.botfleet-server, so the path alone does not say which job launchctl
+ * starts: read the Label the plist declares, as the rollback restore does,
+ * and fall back to the path mapping only when it cannot be read.
+ */
+export async function startedHarnessLabel(config, plist, readLabel = launchAgentPlistLabel) {
+  if (config.customPlist && plist === config.plist) {
+    const declared = await readLabel(plist);
+    if (declared) return declared;
+  }
+  return harnessLaunchdLabel(config, plist);
+}
+
+/**
  * Every label rollback has to boot out before it may restore files: the
  * renamed label, plus whichever label startHarness() actually bootstrapped.
  * Booting out only the renamed label would leave a legacy-label replacement
@@ -1782,7 +1797,7 @@ function createOperations(config) {
       }
       // Recorded before the bootstrap: a bootstrap that errors can still have
       // loaded the job, and rollback must boot out the label that is running.
-      if (previous) previous.startedHarnessLabel = harnessLaunchdLabel(config, plist);
+      if (previous) previous.startedHarnessLabel = await startedHarnessLabel(config, plist);
       await run("launchctl", ["bootstrap", config.domain, plist]);
     },
 
