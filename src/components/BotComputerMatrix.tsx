@@ -55,9 +55,9 @@ export function providersForBot(
   // Auto (computers undefined): the bot inherits the workspace
   // default destinations, intersected with the per-provider allowlist.
   // `cloud` in the default lights the resolved backend only — same
-  // rule as the explicit-selection branch below.  Without a
-  // workspaceDefaultComputers hint we fall back to "all enabled
-  // providers" so installs that pre-date the new shape still render.
+  // rule as the explicit-selection branch below.  With no workspace
+  // default the bot is on true Auto, which lights only what the auto
+  // path can mount.
   if (bot.computers === undefined) {
     const defaultComputers = workspaceDefaultComputers ?? [];
     const fromDefault = {
@@ -66,13 +66,18 @@ export function providersForBot(
       localVm: false,
       localMac: false,
     };
+    // Auto bots route through the bot's own cloudBackend first, same as
+    // `resolveCloudBackend` on the server.
+    const resolvedCloud: "box" | "vps" = bot.cloudBackend ?? workspaceCloudBackend ?? "box";
     if (defaultComputers.length === 0) {
-      fromDefault.asciiBox = Boolean(workspaceProviders?.asciiBox);
-      fromDefault.selfHostedVps = Boolean(workspaceProviders?.selfHostedVps);
-      fromDefault.localVm = Boolean(workspaceProviders?.localVm);
-      fromDefault.localMac = Boolean(workspaceProviders?.localMac);
+      // No workspace default: the server's auto path (`AUTO_DESTINATIONS`
+      // in server/computer-grants.ts) looks for the resolved cloud backend
+      // and falls back to this computer.  It never reaches the Local VM or
+      // the other cloud backend, so those columns stay dark.
+      if (resolvedCloud === "box") fromDefault.asciiBox = true;
+      else fromDefault.selfHostedVps = true;
+      fromDefault.localMac = true;
     } else {
-      const resolvedCloud: "box" | "vps" = workspaceCloudBackend ?? "box";
       for (const dest of defaultComputers) {
         if (dest === "cloud") {
           if (resolvedCloud === "box") fromDefault.asciiBox = true;
