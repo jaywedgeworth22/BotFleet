@@ -13,8 +13,10 @@
 //
 // This card is the LEGACY editor for the workspace default — the
 // redesigned Computer settings UI (`<LocalComputerSection>`) is the
-// primary view.  This card still edits the same on-disk shape; to keep
-// both editors consistent we mirror every write onto the new
+// primary view.  Its Allowed Computers row is read-only: the primary
+// view owns that allowlist and confirms affected bots before a provider
+// turns off.  The New Bots row still edits the same on-disk shape; to
+// keep both editors consistent we mirror every write onto the new
 // `botDefaults.computerProviders` and `botDefaults.vpsMode` fields the
 // primary view owns.  A future lane (see audit doc) will delete this
 // card once every install has had a release to migrate.
@@ -103,6 +105,52 @@ function allowedForWire(value: Destination[] | null | undefined): Destination[] 
   return value;
 }
 
+const DESTINATIONS: Destination[] = ["cloud", "vm", "local"];
+
+/** Read-only view of the workspace allowlist in the legacy card.
+ *
+ * The Providers card (`<LocalComputerSection>`) owns this state and gates
+ * every disable behind `<ComputerImpactConfirmModal>`, which lists the bots
+ * that would lose a leg of their grant.  An editable copy here would let an
+ * operator turn Cloud, Local VM or This Computer off with no such
+ * confirmation, so this card only mirrors what the Providers card saved. */
+export function AllowedComputersSummary({ allowed }: { allowed: Destination[] | null }) {
+  const isAllowed = (d: Destination) => allowed === null || allowed.includes(d);
+  return (
+    <Card
+      title="Allowed Computers"
+      subtitle="The destinations any bot in this workspace is allowed to use.  This mirrors the Providers card above; change it there, where turning a provider off first shows which bots it affects."
+    >
+      <div className="flex overflow-hidden rounded-lg border border-hairline/40" role="list">
+        {DESTINATIONS.map((mode, i) => {
+          const enabled = isAllowed(mode);
+          return (
+            <div
+              key={mode}
+              role="listitem"
+              aria-label={`${DESTINATION_LABEL[mode]}: ${enabled ? "allowed" : "not allowed"}`}
+              className={cn(
+                "flex-1 py-1.5 text-center text-[13px]",
+                i > 0 && "border-l border-hairline/40",
+                enabled ? "bg-control text-ink font-medium" : "text-ink-secondary",
+              )}
+            >
+              {DESTINATION_LABEL[mode]}
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 text-[11.5px] text-ink-secondary">
+        {allowed === null
+          ? "Every destination is allowed — the shipped default."
+          : allowed.length === 0
+            ? "No destination is allowed.  Every bot is locked to its current choice (or auto) until you re-enable one."
+            : `${allowed.length} of 3 destinations allowed.  A bot that picked a disabled destination keeps that choice, but the run is refused.`}
+      </div>
+    </Card>
+  );
+}
+
 export function BotComputerDefaults() {
   const { state, dispatch } = useStore();
   const saved = state.config?.botDefaults;
@@ -169,15 +217,16 @@ export function BotComputerDefaults() {
       });
   };
 
-  const save = (
-    next: { computers?: Destination[]; backend?: Backend; allowed?: Destination[] | null },
-  ) => {
+  // The allowlist is read-only in this legacy card (see
+  // AllowedComputersSummary): turning a provider off must go through the
+  // Providers card's affected-bot confirmation, so a save here only ever
+  // re-sends the allowlist the primary editor last wrote.
+  const save = (next: { computers?: Destination[]; backend?: Backend }) => {
     const nextComputers = [...(next.computers ?? computers)];
     const nextBackend = next.backend ?? backend;
-    const nextAllowed = next.allowed === undefined ? allowed : next.allowed;
+    const nextAllowed = allowed;
     setComputers(nextComputers);
     setBackend(nextBackend);
-    setAllowed(nextAllowed);
     // Mirror the legacy allowlist onto the new `computerProviders`
     // shape so the redesigned primary editor renders the same state.
     // The Box/VPS split and the VPS mode are owned by the primary view;
@@ -211,9 +260,7 @@ export function BotComputerDefaults() {
     });
   };
 
-  const destinations: Destination[] = ["cloud", "vm", "local"];
-  const options: Array<[Destination, string]> = destinations.map((d) => [d, DESTINATION_LABEL[d]]);
-  const isAllowed = (d: Destination) => allowed === null || allowed.includes(d);
+  const options: Array<[Destination, string]> = DESTINATIONS.map((d) => [d, DESTINATION_LABEL[d]]);
   // When the allowlist disables every destination, the workspace default
   // picker is showing the operator what would be applied if they ever
   // re-enabled a destination — and "Set all bots to default" will save it
@@ -224,53 +271,7 @@ export function BotComputerDefaults() {
 
   return (
     <>
-      <Card
-        title="Allowed Computers"
-        subtitle="The destinations any bot in this workspace is allowed to use.  Disabling a destination here keeps every bot off it, no matter what a bot's own settings say.  Leave everything on to keep the shipped behavior."
-      >
-        <div className="flex overflow-hidden rounded-lg border border-hairline/40">
-          {options.map(([mode, label], i) => {
-            const enabled = isAllowed(mode);
-            return (
-              <button
-                key={mode}
-                disabled={saving}
-                onClick={() => {
-                  // The allowlist is either "everything" (null) or an array.
-                  // Clicking the one ON in an everything-allowed state turns
-                  // it into "everywhere except this one"; clicking a disabled
-                  // destination back on adds it back.
-                  if (allowed === null) {
-                    save({ allowed: destinations.filter((d) => d !== mode) });
-                  } else {
-                    const next = enabled
-                      ? allowed.filter((d) => d !== mode)
-                      : [...allowed, mode];
-                    save({ allowed: next.length === destinations.length ? null : next });
-                  }
-                }}
-                className={cn(
-                  "flex-1 py-1.5 text-[13px]",
-                  i > 0 && "border-l border-hairline/40",
-                  saving && "opacity-60",
-                  enabled
-                    ? "bg-control text-ink font-medium"
-                    : "text-ink-secondary hover:bg-control/60 hover:text-ink",
-                )}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-2 text-[11.5px] text-ink-secondary">
-          {allowed === null
-            ? "Every destination is allowed — the shipped default."
-            : allowed.length === 0
-              ? "No destination is allowed.  Every bot is locked to its current choice (or auto) until you re-enable one."
-              : `${allowed.length} of 3 destinations allowed.  A bot that picked a disabled destination keeps that choice, but the run is refused.`}
-        </div>
-      </Card>
+      <AllowedComputersSummary allowed={allowed} />
 
       <Card
         title="New Bots"
