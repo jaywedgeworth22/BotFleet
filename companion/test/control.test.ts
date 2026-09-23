@@ -302,3 +302,47 @@ describe("originIsLoopback", () => {
     expect(originIsLoopback("https://localhost.evil.example")).toBe(false);
   });
 });
+
+describe("pairing page push drop lines", () => {
+  /** Pull the page's own `pushDropLines` out of the served HTML and run it,
+   * so the test checks the copy the browser actually renders. */
+  const loadPushDropLines = async (): Promise<(push: Record<string, unknown>) => string> => {
+    const page = await ask("GET", "/");
+    expect(page.status).toBe(200);
+    const source = /const pushDropLines = (\(push\) => \{[\s\S]*?\n\});/.exec(String(page.body))?.[1];
+    if (!source) throw new Error("pushDropLines not found in the pairing page");
+    return new Function(`return ${source};`)() as (push: Record<string, unknown>) => string;
+  };
+
+  it("shows a circuit-breaker skip on its own, with no queue overflow", async () => {
+    const lines = await loadPushDropLines();
+    const html = lines({ dropped: 0, circuitDropped: 4 });
+    expect(html).toContain("4 skipped (Apple push service unreachable)");
+    expect(html).not.toContain("queue full");
+  });
+
+  it("blames a queue drop on the queue only", async () => {
+    const lines = await loadPushDropLines();
+    const html = lines({ dropped: 3, circuitDropped: 0 });
+    expect(html).toContain("3 dropped (queue full)");
+    expect(html).not.toContain("unreachable");
+  });
+
+  it("renders both counters separately when both happened", async () => {
+    const lines = await loadPushDropLines();
+    const html = lines({ dropped: 2, circuitDropped: 5 });
+    expect(html).toContain("2 dropped (queue full)");
+    expect(html).toContain("5 skipped (Apple push service unreachable)");
+  });
+
+  it("shows nothing when neither counter moved, including an older sidecar with no circuitDropped", async () => {
+    const lines = await loadPushDropLines();
+    expect(lines({ dropped: 0, circuitDropped: 0 })).toBe("");
+    expect(lines({ dropped: 0 })).toBe("");
+  });
+
+  it("no longer uses the shared either-cause wording", async () => {
+    const page = await ask("GET", "/");
+    expect(String(page.body)).not.toContain("full backlog or a paused circuit");
+  });
+});
