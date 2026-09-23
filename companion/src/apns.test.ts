@@ -1452,6 +1452,23 @@ describe("sendApnsAlert — transport error capture", () => {
     expect(result.errorCode).toBe("ERR_HTTP2_GOAWAY");
   });
 
+  it("clears a stale transport code once an HTTP response arrives", async () => {
+    let calls = 0;
+    const result = await sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      sleep: async () => {},
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET", name: "Error" });
+        }
+        return new Response(JSON.stringify({ reason: "ServiceUnavailable" }), { status: 503 });
+      },
+    });
+    expect(result.status).toBe(503);
+    expect(result.failureKind).toBe("rate_limit");
+    expect(result.errorCode).toBeUndefined();
+  });
+
   it("parses Apple's timestamp field from a 403 InvalidProviderToken body", async () => {
     const result = await sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
       maxAttempts: 1,
