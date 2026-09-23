@@ -986,15 +986,40 @@ export function rollbackHarnessBootstrapPlists(config, previous, existence) {
     return plists;
   }
   if (previous.launchdLoaded) plists.push(harnessBootstrapPlist(config, existence));
-  // BOTFLEET_LAUNCH_AGENT_PLIST may point at a custom plist whose job runs
-  // under the legacy label on a pre-transition Mac.  The hardcoded legacy
-  // path was never written there, so restoring from it bootstraps nothing
-  // and the harness never comes back; the configured plist is the file the
-  // job was loaded from.
-  if (previous.legacyLaunchdLoaded) {
-    plists.push(config.customPlist && existence.plistExists ? config.plist : config.legacyPlist);
-  }
+  if (previous.legacyLaunchdLoaded) plists.push(legacyJobRollbackPlist(config, previous, existence));
   return [...new Set(plists)];
+}
+
+/**
+ * The plist the legacy-label job is restored from when config.label is the
+ * renamed label.  BOTFLEET_LAUNCH_AGENT_PLIST may point at a custom plist
+ * whose job runs under the legacy label on a pre-transition Mac; the
+ * hardcoded legacy path was never written there, so restoring from it
+ * bootstraps nothing and the harness never comes back.  But a plist carries
+ * exactly one Label: when the renamed and legacy jobs were both loaded, the
+ * custom plist cannot be the source of both, and restoring both from it
+ * collapses into a single bootstrap that leaves one job down.  So the custom
+ * plist restores the legacy job only when it actually carries the legacy
+ * label -- read from the file when available, otherwise inferred from the
+ * renamed job not also having been loaded.
+ */
+function legacyJobRollbackPlist(config, previous, { plistExists, plistLabel }) {
+  if (!config.customPlist || !plistExists) return config.legacyPlist;
+  if (plistLabel) return plistLabel === config.legacyLabel ? config.plist : config.legacyPlist;
+  return previous.launchdLoaded ? config.legacyPlist : config.plist;
+}
+
+/**
+ * The launchd Label a plist declares, or null when it cannot be read.
+ */
+export async function launchAgentPlistLabel(plist, runCommand = run) {
+  try {
+    const result = await runCommand("plutil", ["-extract", "Label", "raw", "-o", "-", plist], { allowFailure: true });
+    const label = result.code === 0 ? result.stdout.trim() : "";
+    return label || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1983,9 +2008,11 @@ function createOperations(config) {
       });
       if (errors.length) throw new AggregateError(errors, "One or more rollback file restorations failed");
 
+      const rollbackPlistExists = await exists(config.plist);
       const rollbackHarnessPlists = rollbackHarnessBootstrapPlists(config, previous, {
-        plistExists: await exists(config.plist),
+        plistExists: rollbackPlistExists,
         legacyPlistExists: await exists(config.legacyPlist),
+        plistLabel: config.customPlist && rollbackPlistExists ? await launchAgentPlistLabel(config.plist) : null,
       });
       for (const plist of rollbackHarnessPlists) {
         await record(async () => { await run("launchctl", ["bootstrap", config.domain, plist]); });
