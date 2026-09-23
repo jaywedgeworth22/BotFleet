@@ -58,14 +58,16 @@ export function findBotForInbound(
   bots: BotRecord[],
   msg: LinqInboundMessage,
 ): { bot: BotRecord; binding: ResolvedLinqBinding } | null {
-  const wantedNumber = msg.toNumber ?? "";
+  const bound: Array<{ bot: BotRecord; binding: ResolvedLinqBinding }> = [];
   for (const bot of bots) {
     const binding = resolveLinqBinding(cfg, bot.id);
-    if (!binding) continue;
-    if (binding.botNumber !== wantedNumber) continue;
-    return { bot, binding };
+    if (binding) bound.push({ bot, binding });
   }
-  return null;
+  const wantedNumber = msg.toNumber?.trim();
+  if (wantedNumber) return bound.find((entry) => entry.binding.botNumber === wantedNumber) ?? null;
+  // `to` is optional on message.received.  With exactly one Linq-bound bot
+  // there is only one place the message can go; with several we cannot tell.
+  return bound.length === 1 ? bound[0] : null;
 }
 
 /** Decide whether to accept this inbound by sender allow/deny lists.  Per-bot
