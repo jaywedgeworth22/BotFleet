@@ -10134,7 +10134,12 @@ const server = createServer(async (req, res) => {
         if (changedConsent) {
           return json(res, 409, { error: LOCAL_AUTO_ACK_ERROR, needsAcknowledgement: changedConsent });
         }
+        // Bots whose `computers` is the explicit empty array are
+        // deliberately turned off; the apply would silently undo that,
+        // so skip them.  Auto bots (`computers === undefined`) inherit
+        // the default on every run and ARE patched.
         for (const bot of store.bots) {
+          if (bot.computers !== undefined && bot.computers.length === 0) continue;
           const patched = store.patchBot(bot.id, { computers: next });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
         }

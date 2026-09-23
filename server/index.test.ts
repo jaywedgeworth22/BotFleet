@@ -6529,6 +6529,34 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     expect(reopen.body.botDefaults.allowedComputers ?? null).toBeNull();
   });
 
+  it("preserves a bot that has been deliberately turned off (computers: [])", async () => {
+    const off = (await api("POST", "/api/bots", { name: "Off Bot" })).body.bot;
+    const on = (await api("POST", "/api/bots", { name: "On Bot" })).body.bot;
+
+    // Turn the first bot off explicitly.  Empty `computers` array
+    // means "Off", distinct from `undefined` (Auto) which inherits
+    // the workspace default.
+    const set = await api("PATCH", `/api/bots/${off.id}`, { computers: [] });
+    expect(set.status).toBe(200);
+    expect(set.body.bot.computers).toEqual([]);
+
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud"] },
+    });
+    expect(apply.status).toBe(200);
+
+    const after = (await api("GET", "/api/bots")).body.bots;
+    const offAfter = after.find((b: { id: string }) => b.id === off.id);
+    const onAfter = after.find((b: { id: string }) => b.id === on.id);
+    // Off bot stays off (apply skips bots with explicit `[]`).
+    expect(offAfter.computers).toEqual([]);
+    // On bot is patched to the workspace default.
+    expect(onAfter.computers).toEqual(["cloud"]);
+
+    await api("DELETE", `/api/bots/${off.id}`);
+    await api("DELETE", `/api/bots/${on.id}`);
+  });
+
   it("persists the operator's default unfiltered, and applies the filtered set", async () => {
     // Two different questions with two different answers.  The stored default
     // is what the operator asked for; the applied set is that intersected
