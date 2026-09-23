@@ -1683,6 +1683,100 @@ describe("createApnsHttp2Fetch", () => {
     respond200(streamB);
     expect((await onB).status).toBe(200);
   });
+
+  /** Like `lifecycleSession`, but every request gets its own stream so
+   * several sends can be in flight on one session at once. */
+  const multiStreamSession = (host: string) => {
+    const streams: ReturnType<typeof fakeStream>[] = [];
+    const raw = new EventEmitter() as EventEmitter & {
+      closed: boolean;
+      destroyed: boolean;
+      destroyCalls: number;
+      close: () => void;
+      destroy: () => void;
+      request: () => ReturnType<typeof fakeStream>;
+    };
+    raw.closed = false;
+    raw.destroyed = false;
+    raw.destroyCalls = 0;
+    raw.close = () => {};
+    raw.destroy = () => {
+      raw.destroyCalls += 1;
+      raw.destroyed = true;
+    };
+    raw.request = () => {
+      const stream = fakeStream();
+      streams.push(stream);
+      return stream;
+    };
+    watchHttp2SessionLifecycle(host, raw as unknown as ClientHttp2Session);
+    return { raw, streams };
+  };
+
+  it("evicts and destroys a session whose request hit the deadline, so the next send opens a fresh one", async () => {
+    const sessions: ReturnType<typeof multiStreamSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = multiStreamSession(host);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 20 });
+    // Half-open connection: the stream never answers.
+    await expect(fetchImpl(DEVICE_URL, { method: "POST", body: "{}" })).rejects.toMatchObject({
+      code: "ETIMEDOUT",
+      name: "TimeoutError",
+    });
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].raw.destroyCalls).toBe(1);
+    // The retry must not be written to the dead session.
+    const retry = fetchImpl(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(2);
+    expect(sessions[0].streams.length).toBe(1);
+    respond200(sessions[1].streams[0]);
+    expect((await retry).status).toBe(200);
+  });
+
+  it("a deadline expiry fails the other sends pending on that session, never the replacement's", async () => {
+    const sessions: ReturnType<typeof multiStreamSession>[] = [];
+    const factory: Http2SessionFactory = (host) => {
+      const s = multiStreamSession(host);
+      sessions.push(s);
+      return { raw: s.raw } as unknown as Http2ApnsSession;
+    };
+    // Same key and factory, so both transports share the cached session;
+    // only the deadlines differ.
+    const slow = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 5_000 });
+    const fast = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 20 });
+    const started = Date.now();
+    const bystander = slow(DEVICE_URL, { method: "POST", body: "{}" });
+    const expiring = fast(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].streams.length).toBe(2);
+    await expect(expiring).rejects.toMatchObject({ code: "ETIMEDOUT" });
+    // The bystander is on the same dead connection: it fails now, with the
+    // eviction, instead of waiting out its own 5s deadline.
+    await expect(bystander).rejects.toMatchObject({ code: "ETIMEDOUT", name: "TimeoutError" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(sessions[0].raw.destroyCalls).toBe(1);
+    // A send on the replacement is untouched by the old session's sweep,
+    // including the late close the destroyed session emits.
+    const onReplacement = slow(DEVICE_URL, { method: "POST", body: "{}" });
+    expect(sessions.length).toBe(2);
+    sessions[0].raw.emit("close");
+    let settled = false;
+    void onReplacement.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBe(false);
+    respond200(sessions[1].streams[0]);
+    expect((await onReplacement).status).toBe(200);
+  });
 });
 
 describe("watchHarnessNotifications — circuit breaker", () => {
