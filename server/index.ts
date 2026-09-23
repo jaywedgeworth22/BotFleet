@@ -3,6 +3,7 @@
 // folds one SSE event stream; every provider process runs here.
 import {
   COMPUTER_PROVIDER_LABEL,
+  hostAwareAllowedComputers,
   matchesLocalAutoConsent,
   requiresLocalAutoConsent,
   type LocalAutoConsentCapability,
@@ -789,6 +790,19 @@ function storedComputerGrants(
 
 const LOCAL_AUTO_ACK_ERROR =
   "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)";
+
+/** The allowlist exactly as `resolveGrants` enforces it for host control:
+ * the legacy `allowedComputers` array narrowed by the per-provider
+ * `computerProviders.localMac` toggle.  The consent guard has to read the
+ * same answer the runtime does.  Fed the legacy array alone, a save that
+ * only flipped "This Computer" back on (legacy allowlist unrestricted)
+ * looked like "no change" and silently handed host control back to every
+ * auto-approved Auto bot with no acknowledgement. */
+function consentAllowedComputers(
+  config: Pick<typeof cfg, "botDefaults">,
+): Array<"cloud" | "vm" | "local"> | null {
+  return hostAwareAllowedComputers(allowedBotComputers(config), config.botDefaults?.computerProviders);
+}
 
 /** "Auto on this Mac" hands a bot the user's real desktop session with no
  * per-tool approval, so creating that combination has to prove a human saw
@@ -8274,8 +8288,8 @@ const server = createServer(async (req, res) => {
         {
           currentDefault: cfg.botDefaults?.computers,
           nextDefault: cfg.botDefaults?.computers,
-          currentAllowed: allowedBotComputers(cfg),
-          nextAllowed: allowedBotComputers(cfg),
+          currentAllowed: consentAllowedComputers(cfg),
+          nextAllowed: consentAllowedComputers(cfg),
         },
       );
       if (ackError) return json(res, 400, { error: ackError });
@@ -10134,8 +10148,8 @@ const server = createServer(async (req, res) => {
             localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, false, {
               currentDefault: cfg.botDefaults?.computers,
               nextDefault: cfg.botDefaults?.computers,
-              currentAllowed: allowedBotComputers(cfg),
-              nextAllowed: allowedBotComputers(cfg),
+              currentAllowed: consentAllowedComputers(cfg),
+              nextAllowed: consentAllowedComputers(cfg),
             }) !== null,
         )
         .map((bot) => ({ id: bot.id, name: bot.name }));
@@ -10318,11 +10332,21 @@ const server = createServer(async (req, res) => {
         if (aliasError) return json(res, 409, { error: aliasError });
       }
       const currentDefaultComputers = cfg.botDefaults?.computers;
-      const currentAllowedComputers = allowedBotComputers(cfg);
+      const currentAllowedComputers = consentAllowedComputers(cfg);
       const nextDefaultComputers = patch.botDefaults?.computers ?? currentDefaultComputers;
-      const nextAllowedComputers = patch.botDefaults && Object.hasOwn(patch.botDefaults, "allowedComputers")
-        ? patch.botDefaults.allowedComputers ?? null
-        : currentAllowedComputers;
+      // Host availability after this save, the way the runtime will read it:
+      // the legacy allowlist AND the "This Computer" provider toggle.  The
+      // section merge replaces `computerProviders` whole, so the patch's
+      // object (when present) is the next state, not a delta.
+      const nextAllowedComputers = consentAllowedComputers({
+        botDefaults: {
+          ...cfg.botDefaults,
+          allowedComputers: patch.botDefaults && Object.hasOwn(patch.botDefaults, "allowedComputers")
+            ? patch.botDefaults.allowedComputers ?? null
+            : allowedBotComputers(cfg),
+          computerProviders: patch.botDefaults?.computerProviders ?? cfg.botDefaults?.computerProviders,
+        },
+      });
       const consentRelevantConfigSave =
         JSON.stringify(nextDefaultComputers) !== JSON.stringify(currentDefaultComputers) ||
         JSON.stringify(nextAllowedComputers) !== JSON.stringify(currentAllowedComputers);
