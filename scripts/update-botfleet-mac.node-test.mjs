@@ -29,6 +29,7 @@ import {
   run,
   settledRunOutcome,
   stableApplicationProcessError,
+  startedHarnessLabel,
   swapPreparedFiles,
   validateBuiltBundle,
   waitForLaunchdBootout,
@@ -356,6 +357,57 @@ test("the stable wrapper rejects an unmerged --target before running any of its 
   const accepted = await run("bash", [join(scripts, "update-botfleet.sh"), "--target", "origin/main"], { env, allowFailure: true });
   assert.equal(accepted.code, 0, `a merged --target still bootstraps: ${accepted.stderr}`);
   assert.equal(await readFile(marker, "utf8"), "main", "the archived updater from the merged target ran");
+});
+
+test("the stable wrapper resolves a revision-expression --target instead of fetching it as a refspec", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
+  const fixture = await mkdtemp(join(tmpdir(), "ubf-revexpr-"));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const remote = join(fixture, "remote");
+  const checkout = join(fixture, "checkout");
+  const marker = join(fixture, "executed.json");
+  await mkdir(remote, { recursive: true });
+  const git = (cwd, args) => run("git", ["-C", cwd, ...args]);
+  const writeUpdater = async (cwd, label) => {
+    for (const path of [
+      "scripts/update-botfleet-mac.mjs",
+      "scripts/mac-update-transaction.mjs",
+      "scripts/update-progress.mjs",
+      "electron/update-credential-preparation.mjs",
+    ]) {
+      await mkdir(dirname(join(cwd, path)), { recursive: true });
+      await writeFile(join(cwd, path), path.endsWith("update-botfleet-mac.mjs")
+        ? `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, JSON.stringify({ label: ${JSON.stringify(label)}, args: process.argv.slice(2) }));\n`
+        : "// placeholder\n");
+    }
+  };
+  await git(fixture, ["init", "-b", "main", "remote"]);
+  await git(remote, ["config", "user.email", "test@example.com"]);
+  await git(remote, ["config", "user.name", "Test"]);
+  await writeUpdater(remote, "older");
+  await git(remote, ["add", "."]);
+  await git(remote, ["commit", "-m", "older"]);
+  await writeUpdater(remote, "newer");
+  await git(remote, ["add", "."]);
+  await git(remote, ["commit", "-m", "newer"]);
+  await git(fixture, ["clone", "remote", "checkout"]);
+  const olderCommit = (await git(remote, ["rev-parse", "main~1"])).stdout.trim();
+  const newerCommit = (await git(remote, ["rev-parse", "main"])).stdout.trim();
+
+  const wrapper = join(scripts, "update-botfleet.sh");
+  const env = { BOTFLEET_CHECKOUT: checkout, BOTFLEET_FORCE: "1" };
+  // origin/main~1 is not a fetchable refspec.  Fetching it verbatim fails and
+  // falls through to the checkout's installed (newer) updater; the wrapper must
+  // instead fetch main and run the target's own (older) updater policy.
+  const parent = await run("bash", [wrapper, "--target", "origin/main~1"], { env, allowFailure: true });
+  assert.equal(parent.code, 0, `origin/main~1 bootstraps: ${parent.stderr}`);
+  assert.doesNotMatch(parent.stderr, /using the installed implementation/);
+  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), { label: "older", args: ["--target", olderCommit] });
+
+  await rm(marker, { force: true });
+  const peeled = await run("bash", [wrapper, "--target=origin/main^{commit}"], { env, allowFailure: true });
+  assert.equal(peeled.code, 0, `origin/main^{commit} bootstraps: ${peeled.stderr}`);
+  assert.doesNotMatch(peeled.stderr, /using the installed implementation/);
+  assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), { label: "newer", args: ["--target", newerCommit] });
 });
 
 test("unquiesce ignores update targets and bootstraps the recovery from origin/main", { skip: process.platform === "win32" ? "the stable wrapper requires bash" : false }, async (t) => {
@@ -827,6 +879,42 @@ test("rollback boots out the legacy label when startHarness bootstrapped the leg
   );
 });
 
+test("startHarness records the Label a custom startup plist declares, not the path mapping", async () => {
+  const config = {
+    label: "app.botfleet.server",
+    plist: "/Users/test/custom/botfleet.plist",
+    customPlist: true,
+    legacyLabel: "com.jay.botfleet-server",
+    legacyPlist: "/Users/test/Library/LaunchAgents/com.jay.botfleet-server.plist",
+  };
+  const reads = [];
+  const declares = (label) => async (plist) => { reads.push(plist); return label; };
+  // A custom BOTFLEET_LAUNCH_AGENT_PLIST carrying the legacy Label starts
+  // com.jay.botfleet-server even though its path maps to the renamed label.
+  assert.equal(harnessLaunchdLabel(config, config.plist), config.label);
+  const started = await startedHarnessLabel(config, config.plist, declares(config.legacyLabel));
+  assert.equal(started, config.legacyLabel);
+  assert.deepEqual(reads, [config.plist]);
+  // With that label not loaded at capture, rollback must still boot it out,
+  // or its KeepAlive restarts the failed replacement mid-rollback.
+  assert.deepEqual(
+    rollbackHarnessBootoutLabels(config, { launchdLoaded: false, legacyLaunchdLoaded: false, startedHarnessLabel: started }),
+    [config.label, config.legacyLabel],
+  );
+  // A custom plist declaring the renamed label records the renamed label.
+  assert.equal(await startedHarnessLabel(config, config.plist, declares(config.label)), config.label);
+  // An unreadable Label falls back to the path mapping.
+  assert.equal(await startedHarnessLabel(config, config.plist, declares(null)), config.label);
+  // The legacy fallback plist is not custom; it keeps the legacy label without a read.
+  reads.length = 0;
+  assert.equal(await startedHarnessLabel(config, config.legacyPlist, declares("unexpected")), config.legacyLabel);
+  assert.deepEqual(reads, []);
+  // Without a custom plist the path mapping stands and nothing is read.
+  const defaults = { ...config, customPlist: false, plist: "/Users/test/Library/LaunchAgents/app.botfleet.server.plist" };
+  assert.equal(await startedHarnessLabel(defaults, defaults.plist, declares(config.legacyLabel)), config.label);
+  assert.deepEqual(reads, []);
+});
+
 test("quiesce boots out each loaded label exactly once, even when the renamed label is the legacy label", () => {
   const config = { label: "app.botfleet.server", legacyLabel: "com.jay.botfleet-server" };
   assert.deepEqual(quiesceBootoutLabels(config, { launchdLoaded: true, legacyLaunchdLoaded: true }), [config.label, config.legacyLabel]);
@@ -884,7 +972,7 @@ test("startHarness records the started label before bootstrap and rollback boots
   const source = await readFile(join(scripts, "update-botfleet-mac.mjs"), "utf8");
   const start = source.indexOf("startHarness: async (prepared, previous) => {");
   assert.ok(start >= 0, "startHarness receives the transaction's previous state");
-  const recordLabel = source.indexOf("previous.startedHarnessLabel = harnessLaunchdLabel(config, plist)", start);
+  const recordLabel = source.indexOf("previous.startedHarnessLabel = await startedHarnessLabel(config, plist)", start);
   const bootstrap = source.indexOf('run("launchctl", ["bootstrap", config.domain, plist])', start);
   assert.ok(recordLabel > start && recordLabel < bootstrap, "the started label is recorded before the bootstrap can fail");
   const rollback = source.indexOf("rollback: async (prepared, previous, originalError) => {");
