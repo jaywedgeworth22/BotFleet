@@ -873,6 +873,45 @@ test("rollback restores a new-label harness from its legacy-named plist", () => 
   );
 });
 
+test("rollback restores an aliased legacy-label harness once, from its configured plist", () => {
+  // BOTFLEET_LAUNCH_AGENT_LABEL names the legacy label and
+  // BOTFLEET_LAUNCH_AGENT_PLIST points at a custom plist: capture sees one
+  // job as both launchdLoaded and legacyLaunchdLoaded.
+  const config = {
+    label: "com.jay.botfleet-server",
+    plist: "/Users/test/custom/botfleet-server.plist",
+    legacyLabel: "com.jay.botfleet-server",
+    legacyPlist: "/Users/test/Library/LaunchAgents/com.jay.botfleet-server.plist",
+  };
+  const both = { launchdLoaded: true, legacyLaunchdLoaded: true };
+  // Custom plist present, legacy plist missing: restore only the custom one,
+  // never the missing legacy path.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, both, { plistExists: true, legacyPlistExists: false }),
+    [config.plist],
+  );
+  // Both present: one bootstrap of the configured plist, not a second
+  // bootstrap of the already-loaded label from the legacy path.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, both, { plistExists: true, legacyPlistExists: true }),
+    [config.plist],
+  );
+  // Custom plist missing: fall back to the legacy plist exactly once.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, both, { plistExists: false, legacyPlistExists: true }),
+    [config.legacyPlist],
+  );
+  // Only the legacy flag recorded still restores the one job.
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: true }, { plistExists: true, legacyPlistExists: false }),
+    [config.plist],
+  );
+  assert.deepEqual(
+    rollbackHarnessBootstrapPlists(config, { launchdLoaded: false, legacyLaunchdLoaded: false }, { plistExists: true, legacyPlistExists: true }),
+    [],
+  );
+});
+
 test("desktop attachment requires a static harness or a second same-owner UI endpoint", () => {
   assert.equal(applicationAttachmentError({ health: [{ port: 8799, static: true }] }, true), null);
   assert.equal(applicationAttachmentError({ health: [{ port: 8799 }, { port: 18799 }] }, true), null);
