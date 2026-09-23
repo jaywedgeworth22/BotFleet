@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -7,6 +8,7 @@ import {
   apnsPayload,
   classifyHttpResponse,
   classifyTransportError,
+  createApnsHttp2Fetch,
   deliveryForKind,
   dropHttp2Sessions,
   getOrOpenSession,
@@ -1454,6 +1456,17 @@ describe("sendApnsAlert — transport error capture", () => {
     });
     expect(result.errorTimestamp).toBeUndefined();
   });
+
+  it("parses Apple's invalidation timestamp from a 410 Unregistered body", async () => {
+    const result = await sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      maxAttempts: 1,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ reason: "Unregistered", timestamp: 1_700_000_000_000 }), { status: 410 }),
+    });
+    expect(result.status).toBe(410);
+    expect(result.failureKind).toBe("bad_token");
+    expect(result.errorTimestamp).toBe(1_700_000_000_000);
+  });
 });
 
 describe("HTTP/2 session cache", () => {
@@ -1486,6 +1499,96 @@ describe("HTTP/2 session cache", () => {
     const sessionB = getOrOpenSession("api.push.apple.com", "K2", f);
     expect(sessionA).not.toBe(sessionB);
     dropHttp2Sessions();
+  });
+});
+
+describe("createApnsHttp2Fetch", () => {
+  beforeEach(() => {
+    dropHttp2Sessions();
+  });
+
+  /** A fake ClientHttp2Stream: an EventEmitter with the methods `sendOver`
+   * calls.  It emits nothing unless the test drives it, which is exactly
+   * the stalled-stream shape the request deadline exists for. */
+  const fakeStream = () => {
+    const stream = new EventEmitter() as EventEmitter & {
+      setEncoding: (enc: string) => void;
+      end: (body?: string) => void;
+      close: (code?: number) => void;
+      closedWith?: number;
+    };
+    stream.setEncoding = () => {};
+    stream.end = () => {};
+    stream.close = (code?: number) => {
+      stream.closedWith = code;
+    };
+    return stream;
+  };
+
+  const fakeSessionFor = (stream: ReturnType<typeof fakeStream>): Http2ApnsSession =>
+    ({
+      raw: {
+        closed: false,
+        destroyed: false,
+        close() {},
+        request: () => stream,
+      },
+    }) as unknown as Http2ApnsSession;
+
+  const respond200 = (stream: ReturnType<typeof fakeStream>) => {
+    stream.emit("response", { ":status": 200 });
+    stream.emit("data", "");
+    stream.emit("end");
+  };
+
+  it("keys sessions by keyId, not by the device token in the URL", async () => {
+    let factoryCalls = 0;
+    const stream = fakeStream();
+    const factory: Http2SessionFactory = () => {
+      factoryCalls += 1;
+      return fakeSessionFor(stream);
+    };
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory });
+    const first = fetchImpl(`https://api.push.apple.com/3/device/${"aa".repeat(32)}`, { method: "POST", body: "{}" });
+    respond200(stream);
+    expect((await first).status).toBe(200);
+    const second = fetchImpl(`https://api.push.apple.com/3/device/${"bb".repeat(32)}`, { method: "POST", body: "{}" });
+    respond200(stream);
+    expect((await second).status).toBe(200);
+    // One session served both phones; the device token in the URL must not
+    // force a fresh TLS handshake per push.
+    expect(factoryCalls).toBe(1);
+  });
+
+  it("cancels a stalled stream at the request deadline and rejects as a timeout", async () => {
+    const stream = fakeStream(); // never responds
+    const factory: Http2SessionFactory = () => fakeSessionFor(stream);
+    const fetchImpl = createApnsHttp2Fetch({ keyId: "K1", factory, requestDeadlineMs: 20 });
+    await expect(
+      fetchImpl(`https://api.push.apple.com/3/device/${"aa".repeat(32)}`, { method: "POST", body: "{}" }),
+    ).rejects.toMatchObject({ code: "ETIMEDOUT", name: "TimeoutError" });
+    expect(stream.closedWith).not.toBeUndefined();
+  });
+
+  it("sendApnsAlert opens its default transport through options.http2SessionFactory", async () => {
+    let factoryCalls = 0;
+    let seenKeyId = "";
+    const stream = fakeStream();
+    const factory: Http2SessionFactory = (_host, keyId) => {
+      factoryCalls += 1;
+      seenKeyId = keyId;
+      return fakeSessionFor(stream);
+    };
+    const pending = sendApnsAlert(testConfig(), "aa".repeat(32), { title: "t", body: "b" }, {
+      maxAttempts: 1,
+      http2SessionFactory: factory,
+    });
+    respond200(stream);
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(factoryCalls).toBe(1);
+    // The factory received the signing key id, never the device token.
+    expect(seenKeyId).toBe("ABC123");
   });
 });
 
