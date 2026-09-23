@@ -251,12 +251,36 @@ if [[ "$BOTFLEET_CHECKOUT_IS_GIT" == "1" ]]; then
         echo "BotFleet updater: refusing to bootstrap from $BOOTSTRAP_REF: target ${BOOTSTRAP_COMMIT:0:12} is not reachable from origin/main." >&2
         exit 1
       fi
-      if git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_REF" -- \
+      # Archive the validated commit itself, never the symbolic ref, and pin
+      # the candidate to that same commit: origin/main can advance between
+      # this fetch and the updater's own resolveTarget() fetch, and policy
+      # archived from the older commit must not build the newer one.  apply
+      # takes its immutable target from prepared.json and unquiesce accepts
+      # no options, so only commands that resolve a candidate get --target.
+      if git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_COMMIT" -- \
           scripts/update-botfleet-mac.mjs \
           scripts/mac-update-transaction.mjs \
           scripts/update-progress.mjs \
           electron/update-credential-preparation.mjs | tar -x -C "$BOOTSTRAP_DIR"; then
-        "$NODE_BIN" "$BOOTSTRAP_DIR/scripts/update-botfleet-mac.mjs" ${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"} </dev/null
+        PINNED_ARGS=()
+        if [[ "${1:-update}" != "apply" && "${1:-update}" != "unquiesce" ]]; then
+          SKIP_TARGET_VALUE=0
+          for arg in ${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"}; do
+            if [[ "$SKIP_TARGET_VALUE" == "1" ]]; then
+              SKIP_TARGET_VALUE=0
+              continue
+            fi
+            case "$arg" in
+              --target) SKIP_TARGET_VALUE=1 ;;
+              --target=*) ;;
+              *) PINNED_ARGS+=("$arg") ;;
+            esac
+          done
+          PINNED_ARGS+=(--target "$BOOTSTRAP_COMMIT")
+        else
+          PINNED_ARGS=(${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"})
+        fi
+        "$NODE_BIN" "$BOOTSTRAP_DIR/scripts/update-botfleet-mac.mjs" ${PINNED_ARGS[@]+"${PINNED_ARGS[@]}"} </dev/null
         exit $?
       fi
     fi
@@ -281,4 +305,5 @@ fi
 
 echo "BotFleet updater implementation is missing.  Expected $TRACKED_IMPL" >&2
 exit 1
+
 
