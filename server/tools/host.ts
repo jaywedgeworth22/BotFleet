@@ -129,23 +129,24 @@ export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
     ...(ctx.localComputer ? Object.entries(createGithubTools(ctx.botId)) : []),
     ...(ctx.linq
       ? Object.entries(
-          createLinqTools({
-            botId: ctx.botId,
-            threadId: ctx.threadId,
-            // `ctx.linq === true` only when the dispatch actually mounted the
-            // voice tool, which it does by binding this dep via the
-            // production synthesizer in `server/index.ts`.  Throwing here
-            // surfaces a misconfiguration loud and early; the audit doc
-            // lists this as a deliberate one-edge dependency across the
-            // `server/tools/` import-cycle fence.
-            synthesize:
-              ctx.linqDeps?.synthesize ??
-              (() => {
-                throw new Error(
-                  "send_voice_message fired without a synthesizer dep; the dispatch must inject one",
-                );
-              }),
-          }),
+          createLinqTools(
+            { botId: ctx.botId, threadId: ctx.threadId },
+            {
+              // `ctx.linq === true` only when the dispatch actually mounted the
+              // voice tool, which it does by binding this dep via the
+              // production synthesizer in `server/index.ts`.  Throwing here
+              // surfaces a misconfiguration loud and early; the audit doc
+              // lists this as a deliberate one-edge dependency across the
+              // `server/tools/` import-cycle fence.
+              synthesize:
+                ctx.linqDeps?.synthesize ??
+                (() => {
+                  throw new Error(
+                    "send_voice_message fired without a synthesizer dep; the dispatch must inject one",
+                  );
+                }),
+            },
+          ),
         )
       : []),
   ]);
