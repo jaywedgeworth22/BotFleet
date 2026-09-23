@@ -1050,6 +1050,7 @@ export async function sendApnsAlert(
 
     const { reason, timestamp } = await readErrorBody(res);
     lastStatus = res.status;
+    lastErrorCode = undefined;
     lastReason = reason;
     lastErrorTimestamp = timestamp;
     lastFailureKind = classifyHttpResponse(res.status, reason);
