@@ -1000,7 +1000,10 @@ export function UsageSection() {
             let inputForEngine = 0;
             let outputForEngine = 0;
             for (const bot of state.bots) {
-              if (bot.hidden) continue;
+              // Archived (hidden) bots are NOT skipped: their in-window
+              // usage still ran on the engine, and the subscription fee
+              // on the other side of the comparison still counts — dropping
+              // them understated the API-equivalent (review flagged it).
               const botInstanceId = bot.modelSelection?.instanceId;
               for (const task of bot.tasks ?? []) {
                 if ((task.lastActivity ?? task.createdAt) < periodStartMs) continue;
@@ -1012,13 +1015,39 @@ export function UsageSection() {
                   ? Object.entries(task.usageByInstance)
                   : null;
                 if (buckets) {
+                  let bucketedTurns = 0;
+                  let bucketedInput = 0;
+                  let bucketedOutput = 0;
+                  let bucketedCached = 0;
                   for (const [bucketInstanceId, bucketUsage] of buckets) {
+                    bucketedTurns += bucketUsage.turns ?? 0;
+                    bucketedInput += bucketUsage.input;
+                    bucketedOutput += bucketUsage.output;
+                    bucketedCached += cachedInput(bucketUsage);
                     if ((bucketUsage.turns ?? 0) <= 0) continue;
                     if (engineFor(bucketInstanceId) !== id) continue;
                     tokensForEngine += bucketUsage.input + bucketUsage.output;
                     cachedForEngine += cachedInput(bucketUsage);
                     inputForEngine += bucketUsage.input;
                     outputForEngine += bucketUsage.output;
+                  }
+                  // The first post-upgrade turn banks only ITSELF into
+                  // usageByInstance; the task's pre-upgrade aggregate still
+                  // lives in `usage`.  Attribute the un-bucketed remainder
+                  // through the legacy configured-selection path so the
+                  // projection does not drop that history.
+                  const legacy = task.usage;
+                  if (legacy && (legacy.turns ?? 0) - bucketedTurns > 0) {
+                    const legacyInstanceId = task.modelSelection?.instanceId ?? botInstanceId;
+                    if (legacyInstanceId && engineFor(legacyInstanceId) === id) {
+                      const rInput = Math.max(0, legacy.input - bucketedInput);
+                      const rOutput = Math.max(0, legacy.output - bucketedOutput);
+                      const rCached = Math.max(0, cachedInput(legacy) - bucketedCached);
+                      tokensForEngine += rInput + rOutput;
+                      cachedForEngine += rCached;
+                      inputForEngine += rInput;
+                      outputForEngine += rOutput;
+                    }
                   }
                   continue;
                 }
@@ -1282,7 +1311,7 @@ function UsageRow({
   open,
   onToggle,
 }: {
-  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike };
+  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }> };
   usage: TaskUsage;
   open: boolean;
   onToggle: () => void;
@@ -1290,7 +1319,25 @@ function UsageRow({
   // Local state for the "expand all" / "collapse all" toggle.  When the
   // parent flips `open` true or false the row expands/collapses — no
   // local override needed.
-  const tasks = (bot.tasks ?? []).filter((task) => (task.usage?.turns ?? 0) > 0 || (task.usage?.input ?? 0) + (task.usage?.output ?? 0) > 0);
+  // Shared-room turns bank per engine on the speaking bot, not on a task
+  // thread — without them the expanded detail disagreed with the header
+  // totals, which count the room buckets via botUsage.  Each engine bucket
+  // becomes one "Shared rooms" row, slotted into the chronological run by
+  // its lastAt.
+  const roomRows: TaskLike[] = Object.entries(bot.roomUsageByInstance ?? {})
+    .filter(([, u]) => (u.turns ?? 0) > 0 || u.input + u.output > 0)
+    .map(([instanceId, u]) => ({
+      threadId: `room:${instanceId}`,
+      title: "Shared rooms",
+      createdAt: u.lastAt,
+      lastActivity: u.lastAt,
+      usage: u,
+      modelSelection: { instanceId, model: "" },
+    }));
+  const tasks: TaskLike[] = [
+    ...(bot.tasks ?? []).filter((task) => (task.usage?.turns ?? 0) > 0 || (task.usage?.input ?? 0) + (task.usage?.output ?? 0) > 0),
+    ...roomRows,
+  ];
   // Sort newest first so the most recent turn sits at the top of the list
   // for the user.  The cumulative-cost and cumulative-tokens columns
   // run oldest-first so the values grow monotonically down the page —
@@ -1311,8 +1358,11 @@ function UsageRow({
   const modelSet = new Set<string>();
   const cumulative = tasks.map((task) => {
     const taskUsage = task.usage ?? { input: 0, output: 0, costUsd: null, turns: 0 };
-    const model = task.modelSelection?.model ?? bot.modelSelection.model;
-    if (model) modelSet.add(model);
+    const isRoomRow = task.threadId.startsWith("room:");
+    const model = isRoomRow
+      ? task.modelSelection?.instanceId ?? "room"
+      : task.modelSelection?.model ?? bot.modelSelection.model;
+    if (model && !isRoomRow) modelSet.add(model);
     const running = cumulativeByThread.get(task.threadId) ?? { tokens: 0, cost: 0 };
     return {
       task,
