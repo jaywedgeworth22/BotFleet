@@ -170,16 +170,26 @@ export function LocalComputerSection() {
       bots
         .filter((bot) => {
           if (bot.computers !== undefined && bot.computers.length === 0) return false;
-          const botProviders = providersForBot(bot, providers);
+          const botProviders = providersForBot(
+            bot,
+            providers,
+            state.config?.botDefaults?.cloudBackend,
+            state.config?.botDefaults?.computers,
+          );
           return botProviders[provider] === true;
         })
         .map((bot) => ({
           id: bot.id,
           name: bot.name,
           currentSelection: currentSelectionFor(bot),
-          providers: providersForBot(bot, providers),
+          providers: providersForBot(
+            bot,
+            providers,
+            state.config?.botDefaults?.cloudBackend,
+            state.config?.botDefaults?.computers,
+          ),
         })),
-    [bots, providers],
+    [bots, providers, state.config?.botDefaults?.cloudBackend, state.config?.botDefaults?.computers],
   );
 
   // Persist a new providers shape.  Always writes both the new key and
@@ -265,17 +275,22 @@ export function LocalComputerSection() {
   // Apply workspace defaults to every bot.  Mirrors the existing
   // `BotComputerDefaults.tsx` consent handshake: the server may refuse
   // with `needsAcknowledgement` if any bot would gain This Computer +
-  // Auto with nobody having seen the warning.
-  const submitApply = (
-    body: { botDefaults: { computerProviders: ComputerProviders; vpsMode: VpsMode; allowedComputers: Array<"cloud" | "vm" | "local"> | null } },
+  // Auto with nobody having seen the warning.  The handler stores the
+  // original request (path + method + body) so the acknowledgement
+  // dialog can resubmit to the SAME endpoint — a `PUT /api/config`
+  // toggle must not accidentally route through `/api/bots/apply-defaults`.
+  const submitRequest = (
+    request: { path: "/api/config" | "/api/bots/apply-defaults"; method: "PUT" | "POST"; body: unknown },
     acknowledgedBots?: { id: string; name: string }[],
+    busySignal?: "apply" | "save",
   ) => {
-    setApplying(true);
+    if (busySignal === "apply") setApplying(true);
+    else if (busySignal === "save") setSaving(true);
     setError(null);
-    api("/api/bots/apply-defaults", {
-      method: "POST",
+    api(request.path, {
+      method: request.method,
       body: JSON.stringify({
-        ...body,
+        ...(request.body as Record<string, unknown>),
         ...(acknowledgedBots ? { acknowledgeLocalAuto: true, acknowledgedBots } : {}),
       }),
     })
@@ -286,22 +301,33 @@ export function LocalComputerSection() {
       })
       .catch((e) => {
         if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
-          setPendingAck({ bots: e.body.needsAcknowledgement, request: { path: "/api/bots/apply-defaults", method: "POST", body } });
+          setPendingAck({ bots: e.body.needsAcknowledgement, request });
         } else {
           setError(e.message);
         }
       })
-      .finally(() => setApplying(false));
+      .finally(() => {
+        if (busySignal === "apply") setApplying(false);
+        else if (busySignal === "save") setSaving(false);
+      });
   };
 
   const applyToAll = () => {
-    submitApply({
-      botDefaults: {
-        computerProviders: providers,
-        vpsMode,
-        allowedComputers: allowedComputersFromProviders(providers),
+    submitRequest(
+      {
+        path: "/api/bots/apply-defaults",
+        method: "POST",
+        body: {
+          botDefaults: {
+            computerProviders: providers,
+            vpsMode,
+            allowedComputers: allowedComputersFromProviders(providers),
+          },
+        },
       },
-    });
+      undefined,
+      "apply",
+    );
   };
 
   return (
@@ -339,6 +365,8 @@ export function LocalComputerSection() {
         <BotComputerMatrix
           bots={bots}
           workspaceProviders={providers}
+          workspaceDefaultComputers={state.config?.botDefaults?.computers}
+          workspaceCloudBackend={state.config?.botDefaults?.cloudBackend}
           busy={applying || saving}
           onApplyToAll={applyToAll}
         />
@@ -368,10 +396,15 @@ export function LocalComputerSection() {
         open={pendingAck !== null}
         onCancel={() => setPendingAck(null)}
         bots={pendingAck?.bots}
-        busy={applying}
+        busy={applying || saving}
         onConfirm={() => {
           if (!pendingAck) return;
-          submitApply(pendingAck.request.body as { botDefaults: { computerProviders: ComputerProviders; vpsMode: VpsMode; allowedComputers: Array<"cloud" | "vm" | "local"> | null } }, pendingAck.bots);
+          // Resubmit to the SAME endpoint the original request went to.
+          // The acknowledgement dialog is a single consent handshake;
+          // routing a provider toggle through /api/bots/apply-defaults
+          // would unexpectedly reconfigure every bot on confirm.
+          const busySignal = pendingAck.request.path === "/api/bots/apply-defaults" ? "apply" : "save";
+          submitRequest(pendingAck.request, pendingAck.bots, busySignal);
         }}
       />
     </>

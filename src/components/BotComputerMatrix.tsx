@@ -32,27 +32,66 @@ import { ConfirmDialog } from "./ConfirmDialog";
  * else the workspace default, else `"box"`.  This matches
  * `server/computer-grants.ts:resolveCloudBackend` so the matrix
  * reflects what the bot actually has, not a fictional "cloud as
- * either backend" superset.  Keeping the mapping in one place means a
- * future server-side change to the grant shape only touches this
- * helper, not the cell render. */
+ * either backend" superset.
+ *
+ * For Auto bots (`computers === undefined`), the bot inherits the
+ * workspace default destinations (`botDefaults.computers`); we
+ * intersect those with the per-provider allowlist so an Auto bot whose
+ * workspace default is `["local"]` only lights up the Local Mac
+ * column, not every enabled provider.  This matches
+ * `server/computer-grants.ts:resolveGrants`.  Keeping the mapping in
+ * one place means a future server-side change to the grant shape only
+ * touches this helper, not the cell render. */
 export function providersForBot(
   bot: Bot,
   workspaceProviders: ComputerProviders | undefined,
   workspaceCloudBackend?: "box" | "vps",
+  workspaceDefaultComputers?: readonly ("cloud" | "vm" | "local")[],
 ): ComputerProviders {
   // "off" means the operator disabled the bot — no providers light up.
   if (bot.computers !== undefined && bot.computers.length === 0) {
     return { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false };
   }
-  // Auto (computers undefined): the bot inherits whatever the workspace
-  // default enables.  A bot with no cloudBackend and no workspace
-  // default falls back to "box", matching server-side resolveCloudBackend.
+  // Auto (computers undefined): the bot inherits the workspace
+  // default destinations, intersected with the per-provider allowlist.
+  // `cloud` in the default lights the resolved backend only — same
+  // rule as the explicit-selection branch below.  Without a
+  // workspaceDefaultComputers hint we fall back to "all enabled
+  // providers" so installs that pre-date the new shape still render.
   if (bot.computers === undefined) {
+    const defaultComputers = workspaceDefaultComputers ?? [];
+    const fromDefault = {
+      asciiBox: false,
+      selfHostedVps: false,
+      localVm: false,
+      localMac: false,
+    };
+    if (defaultComputers.length === 0) {
+      fromDefault.asciiBox = Boolean(workspaceProviders?.asciiBox);
+      fromDefault.selfHostedVps = Boolean(workspaceProviders?.selfHostedVps);
+      fromDefault.localVm = Boolean(workspaceProviders?.localVm);
+      fromDefault.localMac = Boolean(workspaceProviders?.localMac);
+    } else {
+      const resolvedCloud: "box" | "vps" = workspaceCloudBackend ?? "box";
+      for (const dest of defaultComputers) {
+        if (dest === "cloud") {
+          if (resolvedCloud === "box") fromDefault.asciiBox = true;
+          else fromDefault.selfHostedVps = true;
+        } else if (dest === "vm") {
+          fromDefault.localVm = true;
+        } else if (dest === "local") {
+          fromDefault.localMac = true;
+        }
+      }
+    }
+    // Intersect with the per-provider allowlist so a workspace default
+    // that lists `cloud` does NOT light up the Box column when the
+    // operator has since turned the Box provider off.
     return {
-      asciiBox: Boolean(workspaceProviders?.asciiBox),
-      selfHostedVps: Boolean(workspaceProviders?.selfHostedVps),
-      localVm: Boolean(workspaceProviders?.localVm),
-      localMac: Boolean(workspaceProviders?.localMac),
+      asciiBox: fromDefault.asciiBox && Boolean(workspaceProviders?.asciiBox),
+      selfHostedVps: fromDefault.selfHostedVps && Boolean(workspaceProviders?.selfHostedVps),
+      localVm: fromDefault.localVm && Boolean(workspaceProviders?.localVm),
+      localMac: fromDefault.localMac && Boolean(workspaceProviders?.localMac),
     };
   }
   // Explicit selection: map each legacy destination back onto the
@@ -82,6 +121,15 @@ export function providersForBot(
 export type BotComputerMatrixProps = {
   bots: Bot[];
   workspaceProviders: ComputerProviders | undefined;
+  /** Workspace default destinations (`botDefaults.computers`) — used
+   * to compute the inherited grant for Auto bots (`computers ===
+   * undefined`).  Without this hint, an Auto bot whose workspace
+   * default is `["local"]` would light up every enabled provider in
+   * the matrix, overstating the bot's actual grant. */
+  workspaceDefaultComputers?: readonly ("cloud" | "vm" | "local")[];
+  /** Workspace default cloud backend — used by Auto bots with `cloud`
+   * in their inherited default. */
+  workspaceCloudBackend?: "box" | "vps";
   /** Disabled while the apply-all-to-bots save is in flight, so the
    * button does not double-fire and the rows do not flicker. */
   busy?: boolean;
@@ -92,11 +140,15 @@ export type BotComputerMatrixProps = {
   onApplyToAll: () => void | Promise<void>;
 };
 
-export function BotComputerMatrix({ bots, workspaceProviders, busy, onApplyToAll }: BotComputerMatrixProps) {
+export function BotComputerMatrix({
+  bots,
+  workspaceProviders,
+  workspaceDefaultComputers,
+  workspaceCloudBackend,
+  busy,
+  onApplyToAll,
+}: BotComputerMatrixProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // Bots in any state (active, off, auto) are listed.  Bots without a
-  // name still get a row so an empty roster is visible; a future
-  // filter can drop them if the list grows.
   return (
     <div className="flex flex-col gap-2" data-testid="bot-computer-matrix">
       <div className="flex items-center justify-between gap-2">
@@ -137,7 +189,7 @@ export function BotComputerMatrix({ bots, workspaceProviders, busy, onApplyToAll
               </tr>
             ) : (
               bots.map((bot) => {
-                const providers = providersForBot(bot, workspaceProviders);
+                const providers = providersForBot(bot, workspaceProviders, workspaceCloudBackend, workspaceDefaultComputers);
                 const isOff = bot.computers !== undefined && bot.computers.length === 0;
                 return (
                   <tr key={bot.id} className="border-t border-hairline/40">

@@ -167,7 +167,7 @@ describe("computerProviders reducer-level toggling", () => {
     const botHasProvider = (id: string) => {
       const bot = bots.find((b) => b.id === id);
       if (!bot) return false;
-      const botProviders = providersForBot(bot, providers as any);
+      const botProviders = providersForBot(bot, providers as any, undefined, []);
       return botProviders[toggle.provider] === true;
     };
     const impactedBots = bots.filter((bot) => {
