@@ -353,7 +353,7 @@ function LinqWebhookSetupInstructions() {
         </code>
       </p>
       <p className="mt-1">
-        Local dev: <code>ngrok http 8799</code>{" "}
+        Local dev: <code>ngrok http 8800</code>{" "}
         (Cloudflare Tunnel works too). Then add the Linq partner
         webhook URL on the dashboard. See{" "}
         <a
