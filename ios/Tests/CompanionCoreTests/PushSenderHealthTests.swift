@@ -227,6 +227,69 @@ final class PushSenderHealthTests: XCTestCase {
         XCTAssertEqual(PushSenderHealthView.detail(health), "1 dropped (queue full)")
     }
 
+    /// Circuit-breaker skips are an APNs outage, not a full queue: they get
+    /// their own wording and never borrow the "queue full" copy.
+    func testDetailLabelsCircuitDropsAsAnOutageNotAFullQueue() {
+        let health = PushSenderHealth(
+            configured: true,
+            production: true,
+            tokensRegistered: 1,
+            sent: 5,
+            failed: 20,
+            lastSentAt: now.timeIntervalSince1970 * 1000,
+            lastErrorAt: nil,
+            lastError: nil,
+            keyRejected: nil,
+            dropped: 0,
+            circuitDropped: 4
+        )
+        XCTAssertEqual(
+            PushSenderHealthView.detail(health),
+            "4 skipped (Apple push service unreachable), 20 failed"
+        )
+    }
+
+    func testDetailShowsQueueFullAndCircuitDropsSeparately() {
+        let health = PushSenderHealth(
+            configured: true,
+            production: true,
+            tokensRegistered: 1,
+            sent: 5,
+            failed: 0,
+            lastSentAt: now.timeIntervalSince1970 * 1000,
+            lastErrorAt: nil,
+            lastError: nil,
+            keyRejected: nil,
+            dropped: 2,
+            circuitDropped: 3
+        )
+        XCTAssertEqual(
+            PushSenderHealthView.detail(health),
+            "2 dropped (queue full), 3 skipped (Apple push service unreachable)"
+        )
+    }
+
+    func testDecodesCircuitDroppedFromANewerSidecar() throws {
+        let json = #"""
+        {
+          "configured": true,
+          "production": true,
+          "tokensRegistered": 1,
+          "sent": 3,
+          "failed": 20,
+          "lastSentAt": null,
+          "lastErrorAt": null,
+          "lastError": null,
+          "keyRejected": null,
+          "dropped": 0,
+          "circuitDropped": 7
+        }
+        """#
+        let health = try JSONDecoder().decode(PushSenderHealth.self, from: Data(json.utf8))
+        XCTAssertEqual(health.dropped, 0)
+        XCTAssertEqual(health.circuitDropped, 7)
+    }
+
     /// Decoding the JSON the sidecar emits.  Pinned here so a future
     /// field rename on the server is a test failure, not a runtime
     /// "the row went blank" report.
@@ -256,6 +319,8 @@ final class PushSenderHealthTests: XCTestCase {
         XCTAssertNil(health.lastError)
         XCTAssertNil(health.keyRejected)
         XCTAssertEqual(health.dropped, 0)
+        // An older sidecar sends no circuitDropped field; it decodes as nil.
+        XCTAssertNil(health.circuitDropped)
     }
 
     func testDecodesASenderWithNoSends() throws {
