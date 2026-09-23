@@ -85,28 +85,200 @@ if [[ -z "${BOTFLEET_CHECKOUT:-}" ]]; then
   # failure and let the next test fall through to the updater.
   BOTFLEET_CHECKOUT="$(cd "$(dirname "$(dirname "$TRACKED_IMPL")")" 2>/dev/null && pwd)" || BOTFLEET_CHECKOUT=""
 fi
+# Detect the checkout with git itself rather than testing for a .git
+# directory: in a linked worktree (`git worktree add`) .git is a FILE that
+# points at the main repository's gitdir, so a directory test on .git
+# is false and both the up-to-date check and the bootstrap below would be
+# skipped, leaving the old installed updater to judge a renamed bundle.
+# Require the checkout to be the work tree's top level so a directory that
+# merely sits inside some other repository is not mistaken for BotFleet.
+BOTFLEET_CHECKOUT_IS_GIT=0
+if [[ -n "$BOTFLEET_CHECKOUT" ]] &&
+    git -C "$BOTFLEET_CHECKOUT" rev-parse --git-dir >/dev/null 2>&1; then
+  CHECKOUT_TOPLEVEL="$(git -C "$BOTFLEET_CHECKOUT" rev-parse --show-toplevel 2>/dev/null)" || CHECKOUT_TOPLEVEL=""
+  CHECKOUT_PHYSICAL="$(cd "$BOTFLEET_CHECKOUT" 2>/dev/null && pwd -P)" || CHECKOUT_PHYSICAL=""
+  if [[ -n "$CHECKOUT_TOPLEVEL" && -n "$CHECKOUT_PHYSICAL" &&
+        "$(cd "$CHECKOUT_TOPLEVEL" 2>/dev/null && pwd -P)" == "$CHECKOUT_PHYSICAL" ]]; then
+    BOTFLEET_CHECKOUT_IS_GIT=1
+  fi
+fi
+# The "already at origin/main" shortcut is only for a plain update to
+# origin/main.  Every other invocation must reach the updater even when the
+# checkout is current:
+#   - unquiesce is the recovery action that releases runtime admission after an
+#     interrupted run; exiting here would leave the harness fenced.
+#   - prepare and apply --stage act on a stage, not on the checkout's HEAD, so
+#     the shortcut would make them silently do nothing.
+#   - a --target (or BOTFLEET_UPDATE_TARGET) other than origin/main asks for a
+#     different commit than the one this check compares against.
+#   - --progress / --run-id is the harness's detached run
+#     (server/update-control.ts).  It waits for the progress file the updater
+#     writes and settles a run that never writes one as "never started", so
+#     that run must not end here without a record.
+# Anything not on this allowlist (including --help, --source, --stage) goes to
+# the updater unchanged.
+UP_TO_DATE_SHORTCUT=1
+case "${BOTFLEET_UPDATE_TARGET:-origin/main}" in
+  origin/main) ;;
+  *) UP_TO_DATE_SHORTCUT=0 ;;
+esac
+SHORTCUT_ARG_INDEX=0
+EXPECT_SHORTCUT_TARGET=0
+for arg in "$@"; do
+  SHORTCUT_ARG_INDEX=$((SHORTCUT_ARG_INDEX + 1))
+  if [[ "$EXPECT_SHORTCUT_TARGET" == "1" ]]; then
+    EXPECT_SHORTCUT_TARGET=0
+    [[ "$arg" == "origin/main" ]] || UP_TO_DATE_SHORTCUT=0
+    continue
+  fi
+  case "$arg" in
+    update) [[ "$SHORTCUT_ARG_INDEX" == "1" ]] || UP_TO_DATE_SHORTCUT=0 ;;
+    --force|-f|--no-open|--target=origin/main) ;;
+    --target) EXPECT_SHORTCUT_TARGET=1 ;;
+    *) UP_TO_DATE_SHORTCUT=0 ;;
+  esac
+done
+[[ "$EXPECT_SHORTCUT_TARGET" == "0" ]] || UP_TO_DATE_SHORTCUT=0
 if [[ "${BOTFLEET_FORCE:-}" == "1" ]]; then
-  echo "⚠️  BOTFLEET_FORCE=1 — running updater even if $BOTFLEET_CHECKOUT is already at origin/main."
-elif [[ -n "$BOTFLEET_CHECKOUT" && -d "$BOTFLEET_CHECKOUT/.git" ]]; then
+  echo "WARNING:  BOTFLEET_FORCE=1 - running updater even if $BOTFLEET_CHECKOUT is already at origin/main."
+elif [[ "$UP_TO_DATE_SHORTCUT" == "1" && "$BOTFLEET_CHECKOUT_IS_GIT" == "1" ]]; then
   if git -C "$BOTFLEET_CHECKOUT" fetch --quiet origin main 2>/dev/null; then
     LOCAL_HEAD=$(git -C "$BOTFLEET_CHECKOUT" rev-parse HEAD)
     REMOTE_HEAD=$(git -C "$BOTFLEET_CHECKOUT" rev-parse origin/main)
     if [[ "$LOCAL_HEAD" == "$REMOTE_HEAD" ]]; then
       CURRENT=$(git -C "$BOTFLEET_CHECKOUT" log --oneline -1)
-      echo "✅ Already at $CURRENT.  Nothing to update.  (Set BOTFLEET_FORCE=1 or pass --force to reinstall anyway.)"
+      echo "OK: Already at $CURRENT.  Nothing to update.  (Set BOTFLEET_FORCE=1 or pass --force to reinstall anyway.)"
       exit 0
     fi
   else
-    echo "⚠️  Could not fetch origin/main from $BOTFLEET_CHECKOUT; running updater anyway."
+    echo "WARNING:  Could not fetch origin/main from $BOTFLEET_CHECKOUT; running updater anyway."
   fi
 fi
 
+# Bootstrap from the target commit before importing any updater policy from the
+# live detached checkout. This is load-bearing during signing-identity or bundle
+# identifier transitions: the old updater cannot validate a candidate using
+# rules it does not know yet. Copy the small updater module graph out of the
+# fetched target and run that immutable copy instead.
+# bash 3.2 (stock macOS /bin/bash) treats expanding an EMPTY array under
+# `set -u` as an unbound-variable error, so every call site below expands
+# UPDATER_ARGS through the ${UPDATER_ARGS[@]+...} guard.
+UPDATER_ARGS=("$@")
+if [[ "$BOTFLEET_CHECKOUT_IS_GIT" == "1" ]]; then
+  # Keep the updater policy and candidate source on the same requested ref.
+  # The command-line option wins over the environment, matching the updater
+  # interface parsed by update-botfleet-mac.mjs.
+  BOOTSTRAP_REF="${BOTFLEET_UPDATE_TARGET:-origin/main}"
+  EXPECT_BOOTSTRAP_TARGET=0
+  HAS_BOOTSTRAP_TARGET=0
+  for arg in "$@"; do
+    if [[ "$EXPECT_BOOTSTRAP_TARGET" == "1" ]]; then
+      BOOTSTRAP_REF="$arg"
+      EXPECT_BOOTSTRAP_TARGET=0
+      HAS_BOOTSTRAP_TARGET=1
+    elif [[ "$arg" == "--target" ]]; then
+      EXPECT_BOOTSTRAP_TARGET=1
+    elif [[ "$arg" == --target=* ]]; then
+      BOOTSTRAP_REF="${arg#--target=}"
+      HAS_BOOTSTRAP_TARGET=1
+    fi
+  done
+  # BOTFLEET_UPDATE_TARGET is part of the wrapper interface, so forward it to
+  # commands that resolve a candidate as well as using it for bootstrap policy.
+  # apply gets its immutable target from prepared.json; unquiesce takes no options.
+  if [[ -n "${BOTFLEET_UPDATE_TARGET:-}" && "$HAS_BOOTSTRAP_TARGET" == "0" &&
+        "${1:-update}" != "apply" && "${1:-update}" != "unquiesce" ]]; then
+    UPDATER_ARGS+=(--target "$BOTFLEET_UPDATE_TARGET")
+  fi
+  # `apply --stage PATH` takes no --target: its target is the immutable commit
+  # the stage was prepared from, recorded as sourceCommit in prepared.json.
+  # Bootstrap that exact commit's updater, not whatever origin/main names now;
+  # if main advanced between prepare and apply, newer policy could reject or
+  # mishandle the prepared stage.  An unreadable manifest fails closed.
+  BOOTSTRAP_FROM_STAGE=0
+  if [[ "${1:-}" == "apply" ]]; then
+    BOOTSTRAP_STAGE=""
+    EXPECT_BOOTSTRAP_STAGE=0
+    for arg in "$@"; do
+      if [[ "$EXPECT_BOOTSTRAP_STAGE" == "1" ]]; then
+        BOOTSTRAP_STAGE="$arg"
+        EXPECT_BOOTSTRAP_STAGE=0
+      elif [[ "$arg" == "--stage" ]]; then
+        EXPECT_BOOTSTRAP_STAGE=1
+      fi
+    done
+    if [[ -n "$BOOTSTRAP_STAGE" ]]; then
+      STAGE_COMMIT="$("$NODE_BIN" -e '
+        const manifest = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        const commit = manifest && manifest.sourceCommit;
+        if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) process.exit(1);
+        process.stdout.write(commit);
+      ' "$BOOTSTRAP_STAGE/prepared.json" 2>/dev/null)" || STAGE_COMMIT=""
+      if [[ ! "$STAGE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "BotFleet updater: refusing to apply $BOOTSTRAP_STAGE: its prepared.json does not record a full source commit." >&2
+        exit 1
+      fi
+      BOOTSTRAP_REF="$STAGE_COMMIT"
+      BOOTSTRAP_FROM_STAGE=1
+    fi
+  fi
+  # Refresh the selected target even for forced updates. A forced run skips the
+  # up-to-date check above, so without this fetch origin/main (or an overridden
+  # target) may still name stale updater policy in the local checkout.  A stage
+  # commit is a bare SHA: fetching main brings in every commit that can pass
+  # the ancestry check below, so that is the ref to refresh.
+  BOOTSTRAP_FETCH_REF="${BOOTSTRAP_REF#origin/}"
+  if [[ "$BOOTSTRAP_FROM_STAGE" == "1" ]]; then
+    BOOTSTRAP_FETCH_REF="main"
+  fi
+  BOOTSTRAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/botfleet-updater.XXXXXX")"
+  cleanup_bootstrap() { rm -rf "$BOOTSTRAP_DIR"; }
+  trap cleanup_bootstrap EXIT
+  if git -C "$BOTFLEET_CHECKOUT" fetch --quiet origin "$BOOTSTRAP_FETCH_REF" 2>/dev/null; then
+    # Enforce resolveTarget()'s origin/main ancestry rule BEFORE any code from
+    # the target is archived or executed: an unmerged ref must never supply
+    # updater policy.  Refresh origin/main as resolveTarget() does so a forced
+    # run (which skips the up-to-date fetch above) is not validated against a
+    # stale main.  If that refresh fails, fall through to the installed
+    # implementation, whose resolveTarget() re-fetches and re-checks.
+    if git -C "$BOTFLEET_CHECKOUT" fetch --quiet origin main 2>/dev/null; then
+      BOOTSTRAP_COMMIT="$(git -C "$BOTFLEET_CHECKOUT" rev-parse --verify "${BOOTSTRAP_REF}^{commit}" 2>/dev/null)" || BOOTSTRAP_COMMIT=""
+      if [[ ! "$BOOTSTRAP_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "BotFleet updater: refusing to bootstrap from $BOOTSTRAP_REF: the target did not resolve to a full commit." >&2
+        exit 1
+      fi
+      if ! git -C "$BOTFLEET_CHECKOUT" merge-base --is-ancestor "$BOOTSTRAP_COMMIT" origin/main 2>/dev/null; then
+        echo "BotFleet updater: refusing to bootstrap from $BOOTSTRAP_REF: target ${BOOTSTRAP_COMMIT:0:12} is not reachable from origin/main." >&2
+        exit 1
+      fi
+      if git -C "$BOTFLEET_CHECKOUT" archive "$BOOTSTRAP_REF" -- \
+          scripts/update-botfleet-mac.mjs \
+          scripts/mac-update-transaction.mjs \
+          scripts/update-progress.mjs \
+          electron/update-credential-preparation.mjs | tar -x -C "$BOOTSTRAP_DIR"; then
+        "$NODE_BIN" "$BOOTSTRAP_DIR/scripts/update-botfleet-mac.mjs" ${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"} </dev/null
+        exit $?
+      fi
+    fi
+  fi
+  if [[ "$BOOTSTRAP_FROM_STAGE" == "1" ]]; then
+    # The installed implementation may carry newer or older policy than the
+    # stage was prepared under; never let it apply the stage in its place.
+    echo "BotFleet updater: could not bootstrap the stage's updater from ${BOOTSTRAP_REF:0:12}; refusing to apply it with a different implementation." >&2
+    exit 1
+  fi
+  echo "WARNING:  Could not bootstrap updater from $BOOTSTRAP_REF; using the installed implementation." >&2
+  cleanup_bootstrap
+  trap - EXIT
+fi
+
 if [[ -f "$LOCAL_IMPL" ]]; then
-  exec "$NODE_BIN" "$LOCAL_IMPL" "$@" </dev/null
+  exec "$NODE_BIN" "$LOCAL_IMPL" ${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"} </dev/null
 fi
 if [[ -f "$TRACKED_IMPL" ]]; then
-  exec "$NODE_BIN" "$TRACKED_IMPL" "$@" </dev/null
+  exec "$NODE_BIN" "$TRACKED_IMPL" ${UPDATER_ARGS[@]+"${UPDATER_ARGS[@]}"} </dev/null
 fi
 
 echo "BotFleet updater implementation is missing.  Expected $TRACKED_IMPL" >&2
 exit 1
+
