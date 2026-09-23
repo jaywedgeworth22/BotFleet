@@ -237,8 +237,10 @@ the file mutated twice in quick succession on the same launch.
   bot's provider" once the UX trade-off (versus the impact-
   confirm modal that would fire for every bot) is settled.
 - The legacy `BotComputerDefaults.tsx` "Allowed Computers" card
-  duplicates the new Providers card.  Once the new section has
-  been the primary view for a release, remove the legacy card.
+  duplicates the new Providers card.  It is read-only, so every
+  provider disable goes through the Providers card's impact-confirm
+  modal.  Once the new section has been the primary view for a
+  release, remove the legacy card.
 - The new section renders the `resolvedFromLegacy` notice on the
   first paint after upgrade.  That notice should disappear from
   user view once every install has the new shape on disk; the
