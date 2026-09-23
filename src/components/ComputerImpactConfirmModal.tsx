@@ -1,7 +1,7 @@
 // Confirmation modal that the redesigned Computer settings UI opens
 // before turning a provider OFF.  Lists the bots that would lose a leg
 // of their grant, names the provider they would lose, and offers two
-// buttons: "Disable anyway" (accent red) and "Cancel" (neutral).  The
+// buttons: "Disable Anyway" (accent red) and "Cancel" (neutral).  The
 // modal deliberately does NOT itself commit the change — it calls back
 // to the parent, which dispatches the toggle with the impact already
 // acknowledged.  This keeps the dispatch authoritative on the parent
@@ -14,20 +14,11 @@
 import { useEffect, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/cn";
-import type { ComputerProviderId, ComputerProviders } from "../../shared/local-auto-consent";
+import type { ImpactedBot } from "@/lib/computer-impact";
+import type { ComputerProviderId } from "../../shared/local-auto-consent";
 import { COMPUTER_PROVIDER_LABEL } from "../../shared/local-auto-consent";
 
-export type ImpactedBot = {
-  id: string;
-  name: string;
-  /** The bot's current `computers[]` value, kept verbatim so the row
-   * shows exactly what the operator saw before the toggle. */
-  currentSelection: string[];
-  /** Per-provider state the bot currently has.  Only the entry for the
-   * `disabledProvider` matters for the impact listing — the others are
-   * surfaced as context but are not about to be lost. */
-  providers: ComputerProviders;
-};
+export type { ImpactedBot };
 
 export type ComputerImpactConfirmModalProps = {
   open: boolean;
@@ -92,8 +83,8 @@ export function ComputerImpactConfirmModal({
             </h2>
             <p id="computer-impact-confirm-body" className="mt-1.5 text-[13px] leading-relaxed text-ink-secondary">
               {noOneAffected
-                ? "No bot currently uses this provider, so disabling it is a no-op."
-                : `${affected.length} bot${affected.length === 1 ? "" : "s"} currently use${affected.length === 1 ? "s" : ""} ${providerLabel}.  Disabling it removes that leg of their grant until you re-enable the provider or the bot picks a different one.`}
+                ? `No bot uses ${providerLabel} right now, so turning it off changes nothing for your bots.`
+                : `${affected.length} bot${affected.length === 1 ? "" : "s"} use${affected.length === 1 ? "s" : ""} ${providerLabel}.  Turning it off takes ${providerLabel} away from ${affected.length === 1 ? "that bot" : "them"} until you turn it back on or pick a different computer in the bot's settings.`}
             </p>
             {!noOneAffected && (
               <ul className="mt-3 max-h-[200px] overflow-y-auto rounded-lg border border-hairline/40 bg-inset">
@@ -103,8 +94,8 @@ export function ComputerImpactConfirmModal({
                     className="flex items-center justify-between gap-2 border-b border-hairline/40 px-3 py-2 text-[13px] last:border-b-0"
                   >
                     <span className="truncate text-ink">{bot.name}</span>
-                    <span className="shrink-0 font-mono text-[11.5px] text-ink-secondary" title={bot.currentSelection.join(", ")}>
-                      {bot.currentSelection.join(" · ") || "(no selection)"}
+                    <span className="min-w-0 truncate text-right text-[11.5px] text-ink-secondary" title={bot.usage}>
+                      {bot.usage}
                     </span>
                   </li>
                 ))}
@@ -132,7 +123,7 @@ export function ComputerImpactConfirmModal({
             )}
             data-testid="computer-impact-confirm-button"
           >
-            Disable anyway
+            Disable Anyway
           </button>
         </div>
       </div>
