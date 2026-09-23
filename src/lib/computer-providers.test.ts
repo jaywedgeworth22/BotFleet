@@ -368,6 +368,30 @@ describe("computerProviders matrix rendering", () => {
     });
   });
 
+  it("intersects an explicit grant with the provider toggles", () => {
+    const workspaceProviders = {
+      asciiBox: false,
+      selfHostedVps: true,
+      localVm: false,
+      localMac: true,
+    };
+    const none = { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false };
+    // Local VM is off, so an explicit ["vm"] bot lights nothing.
+    expect(providersForBot(makeBot("a", ["vm"]), workspaceProviders)).toEqual(none);
+    // Box is off, so an explicit ["cloud"] bot on the Box backend lights nothing.
+    expect(providersForBot(makeBot("b", ["cloud"]), workspaceProviders, "box")).toEqual(none);
+    // The VPS backend is on, so the same grant on VPS still lights VPS.
+    expect(providersForBot(makeBot("c", ["cloud"]), workspaceProviders, "vps")).toEqual({
+      ...none,
+      selfHostedVps: true,
+    });
+    // Only the enabled leg of a mixed grant survives.
+    expect(providersForBot(makeBot("d", ["cloud", "vm", "local"]), workspaceProviders, "box")).toEqual({
+      ...none,
+      localMac: true,
+    });
+  });
+
   it("renders the explicit selection for a bot whose computers[] is [\"local\"]", () => {
     const bot = makeBot("a", ["local"]);
     const providers = providersForBot(bot, undefined);
