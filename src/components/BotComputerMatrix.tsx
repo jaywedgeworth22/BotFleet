@@ -14,13 +14,36 @@
 import { useState } from "react";
 import { Check, Minus } from "lucide-react";
 import { cn } from "@/lib/cn";
-import type { Bot } from "@/state/store";
+import type { Bot, InstanceInfo } from "@/state/store";
+import { instanceSupportsLocalComputer } from "@/lib/local-computer";
 import type { ComputerProviders } from "../../shared/local-auto-consent";
 import {
   COMPUTER_PROVIDER_LABEL,
   COMPUTER_PROVIDER_ORDER,
 } from "../../shared/local-auto-consent";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+/** What the host and the bot's engine mean for the Auto path's This
+ * Computer fallback.  The server mounts that fallback only on macOS
+ * with an engine whose reach includes local control
+ * (`shouldMountLocalComputer({ requested: undefined, ... })` in
+ * server/local-routing.ts), so lighting the column without this
+ * information overstates the grant on Linux/Windows hosts and for
+ * engines with no approval channel — and the disable-impact modal
+ * then names bots the toggle cannot actually affect. */
+export type AutoLocalFallback = {
+  /** Platform of the host the server runs on
+   * (`capabilities.host.platform`).  The Auto host fallback mounts on
+   * macOS only: Linux local control is a beta that must be picked
+   * explicitly per bot, and Windows has no local driver. */
+  hostPlatform: DesktopCapabilities["host"]["platform"];
+  /** The bot engine's local-computer reach (`reach.local`).  Pass
+   * `undefined` while the instance list is still hydrating: an
+   * unknown engine stays fail-open here, same as the picker's "the
+   * server has the last word" rule, instead of flashing the column
+   * dark on every load. */
+  engineSupportsLocal: boolean | undefined;
+};
 
 /** Provider keys per bot.  The matrix derives this from the bot's
  * `computers[]` field (the legacy wire shape) and the workspace
@@ -47,6 +70,7 @@ export function providersForBot(
   workspaceProviders: ComputerProviders | undefined,
   workspaceCloudBackend?: "box" | "vps",
   workspaceDefaultComputers?: readonly ("cloud" | "vm" | "local")[],
+  autoLocal?: AutoLocalFallback,
 ): ComputerProviders {
   // "off" means the operator disabled the bot — no providers light up.
   if (bot.computers !== undefined && bot.computers.length === 0) {
@@ -76,7 +100,14 @@ export function providersForBot(
       // the other cloud backend, so those columns stay dark.
       if (resolvedCloud === "box") fromDefault.asciiBox = true;
       else fromDefault.selfHostedVps = true;
-      fromDefault.localMac = true;
+      // The host fallback is gated the same way the server gates it
+      // (`shouldMountLocalComputer({ requested: undefined, ... })`):
+      // macOS only, and only for an engine with a local approval
+      // channel.  A caller that cannot say keeps the historical
+      // optimistic answer; an unknown engine stays fail-open.
+      fromDefault.localMac =
+        autoLocal === undefined ||
+        (autoLocal.hostPlatform === "darwin" && autoLocal.engineSupportsLocal !== false);
     } else {
       for (const dest of defaultComputers) {
         if (dest === "cloud") {
@@ -145,6 +176,17 @@ export type BotComputerMatrixProps = {
   /** Workspace default cloud backend — used by Auto bots with `cloud`
    * in their inherited default. */
   workspaceCloudBackend?: "box" | "vps";
+  /** Platform of the host the server runs on — gates the Auto This
+   * Computer fallback so non-macOS hosts do not light a grant the
+   * runtime will never mount.  Omit to keep the optimistic answer. */
+  hostPlatform?: DesktopCapabilities["host"]["platform"];
+  /** Engine rows (`state.instances`) used to resolve each bot's
+   * local-computer reach for the same fallback. */
+  instances?: InstanceInfo[];
+  /** Whether `instances` can be believed yet (`engineReachKnown`).
+   * While false, every engine is unknown and the fallback stays
+   * fail-open instead of flashing dark during hydration. */
+  instancesReady?: boolean;
   /** Disabled while the apply-all-to-bots save is in flight, so the
    * button does not double-fire and the rows do not flicker. */
   busy?: boolean;
@@ -160,6 +202,9 @@ export function BotComputerMatrix({
   workspaceProviders,
   workspaceDefaultComputers,
   workspaceCloudBackend,
+  hostPlatform,
+  instances,
+  instancesReady,
   busy,
   onApplyToAll,
 }: BotComputerMatrixProps) {
@@ -204,7 +249,19 @@ export function BotComputerMatrix({
               </tr>
             ) : (
               bots.map((bot) => {
-                const providers = providersForBot(bot, workspaceProviders, workspaceCloudBackend, workspaceDefaultComputers);
+                const providers = providersForBot(
+                  bot,
+                  workspaceProviders,
+                  workspaceCloudBackend,
+                  workspaceDefaultComputers,
+                  hostPlatform === undefined
+                    ? undefined
+                    : {
+                        hostPlatform,
+                        engineSupportsLocal:
+                          instancesReady && instances ? instanceSupportsLocalComputer(instances, bot) : undefined,
+                      },
+                );
                 const isOff = bot.computers !== undefined && bot.computers.length === 0;
                 return (
                   <tr key={bot.id} className="border-t border-hairline/40">
