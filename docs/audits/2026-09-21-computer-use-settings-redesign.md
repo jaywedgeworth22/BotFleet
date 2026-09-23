@@ -114,9 +114,12 @@ the same question through the cut-over.
   (accent green when on, neutral grey when off) with a caption
   underneath explaining the impact of disabling it.  The toggle is
   dumb: the parent owns the enabled state and the dispatch.
-- `src/components/VpsModeToggle.tsx` — three-state control
-  (Shared / Per-Bot / Not Used) with a caption explaining what
-  shared vs per-bot means on the VPS row.
+- `src/components/VpsModeToggle.tsx` — two-state control
+  (Per-Bot / Not Used) with a caption explaining what per-bot
+  means on the VPS row.  Shared stays in the `VpsMode` type and
+  the config schema but the control hides it until it has a
+  runtime; a stored `"shared"` still loads and renders as
+  Per-Bot, which is what actually runs.
 - `src/components/ComputerImpactConfirmModal.tsx` — modal shell that
   lists the bots that would lose a leg of their grant, "Disable
   anyway" (accent red unless no bot is affected, in which case the
@@ -185,11 +188,14 @@ the file mutated twice in quick succession on the same launch.
 - reducer: toggling on a provider commits immediately, no modal
 - reducer: the impact-confirm gate commits the toggle end-to-end
   (state on disk -> next toggle-on is a no-op)
-- matrix: `[{ bot: { computers: ["cloud"] } }]` renders 2 check-
-  marks (asciiBox + selfHostedVps)
+- matrix: `[{ bot: { computers: ["cloud"] } }]` renders 1 check-
+  mark, lighting only the resolved cloud backend (`asciiBox`
+  when neither the bot nor the workspace sets `cloudBackend`)
 - matrix: a bot with `computers: []` renders 0 check-marks
-- matrix: a bot with `computers: undefined` (auto) renders the
-  workspace providers verbatim
+- matrix: a bot with `computers: undefined` (auto) lights the
+  resolved cloud backend plus This Computer (the host fallback),
+  or the inherited workspace default intersected with the
+  provider toggles when a default exists
 - matrix: a bot with `computers: ["local"]` renders `localMac`
   check-mark only
 
