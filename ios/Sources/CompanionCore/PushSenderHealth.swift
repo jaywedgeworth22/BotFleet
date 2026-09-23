@@ -26,6 +26,10 @@ public struct PushSenderHealth: Codable, Hashable, Sendable {
     public let keyRejected: String?
     /// Notifications dropped because a device's queue was already full.
     public let dropped: Int
+    /// Notifications skipped while the sidecar's circuit breaker was open —
+    /// Apple's push service was unreachable, not a full queue.  Optional so
+    /// an older sidecar that does not send the field still decodes.
+    public let circuitDropped: Int?
 
     public init(
         configured: Bool,
@@ -37,7 +41,8 @@ public struct PushSenderHealth: Codable, Hashable, Sendable {
         lastErrorAt: Double?,
         lastError: String?,
         keyRejected: String?,
-        dropped: Int
+        dropped: Int,
+        circuitDropped: Int? = nil
     ) {
         self.configured = configured
         self.production = production
@@ -49,6 +54,7 @@ public struct PushSenderHealth: Codable, Hashable, Sendable {
         self.lastError = lastError
         self.keyRejected = keyRejected
         self.dropped = dropped
+        self.circuitDropped = circuitDropped
     }
 }
 
@@ -92,12 +98,17 @@ public enum PushSenderHealthView {
         return "Closed-app notifications: configured — no pushes sent yet"
     }
 
-    /// Secondary line for `dropped` and a recent `failed` count.  Returns
-    /// nil when there is nothing worth surfacing beyond the primary line.
+    /// Secondary line for `dropped`, `circuitDropped` and a recent `failed`
+    /// count.  Returns nil when there is nothing worth surfacing beyond the
+    /// primary line.  Queue-full drops and circuit-breaker skips get their
+    /// own wording: an APNs outage must not read as a full local queue.
     public static func detail(_ health: PushSenderHealth) -> String? {
         var parts: [String] = []
         if health.dropped > 0 {
             parts.append("\(health.dropped) dropped (queue full)")
+        }
+        if let skipped = health.circuitDropped, skipped > 0 {
+            parts.append("\(skipped) skipped (Apple push service unreachable)")
         }
         if health.failed > 0 {
             parts.append("\(health.failed) failed")
