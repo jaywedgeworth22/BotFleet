@@ -6453,6 +6453,61 @@ describe("local Auto consent for inherited and discovered computers", () => {
   });
 });
 
+describe("local Auto consent follows the This Computer provider toggle", () => {
+  it("requires the acknowledgement when a config save only turns This Computer back on", async () => {
+    // The legacy allowlist stays unrestricted the whole time; only the
+    // per-provider toggle moves.  resolveGrants drops Local while
+    // computerProviders.localMac is off and mounts it again the moment the
+    // toggle flips, so the flip is a host-access widening and must be gated
+    // exactly like widening allowedComputers.
+    const providers = { asciiBox: true, selfHostedVps: false, localVm: true, localMac: false };
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { computers: ["cloud"], allowedComputers: null, computerProviders: providers },
+    })).status).toBe(200);
+    // Automatic discovery with This Computer off has no host path, so this
+    // needs no acknowledgement on any platform.
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { computers: [], allowedComputers: null, computerProviders: providers },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Provider Flip Auto" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+
+      const flip = { botDefaults: { computerProviders: { ...providers, localMac: true } } };
+      const flipped = await api("PUT", "/api/config", flip);
+      if (process.platform === "darwin") {
+        expect(flipped.status).toBe(400);
+        expect(flipped.body.needsAcknowledgement).toEqual(expect.arrayContaining([
+          { id: bot.id, name: "Provider Flip Auto" },
+        ]));
+        // Refused whole: This Computer is still off.
+        const refused = (await api("GET", "/api/config")).body;
+        expect(refused.botDefaults.computerProviders.localMac).toBe(false);
+        const acked = await api("PUT", "/api/config", {
+          ...flip,
+          acknowledgeLocalAuto: true,
+          acknowledgedBots: flipped.body.needsAcknowledgement,
+        });
+        expect(acked.status).toBe(200);
+        expect(acked.body.botDefaults.computerProviders.localMac).toBe(true);
+      } else {
+        // Only Darwin Auto mounts the host from automatic discovery.
+        expect(flipped.status).toBe(200);
+        expect(flipped.body.needsAcknowledgement).toBeUndefined();
+      }
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: {
+          computers: ["cloud"],
+          allowedComputers: null,
+          computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+        },
+      })).status).toBe(200);
+    }
+  });
+});
+
 describe("cloud computer lifecycle routes honor the provider toggles", () => {
   it("refuses to provision, join, exec or screenshot on a turned-off provider, and still lets it sleep", async () => {
     const bot = (await api("POST", "/api/bots", { name: "Bea Boxless", cloudBackend: "box" })).body.bot;
