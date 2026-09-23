@@ -42,7 +42,7 @@ export const COMPUTER_PROVIDER_LABEL: Record<ComputerProviderId, string> = {
  * explaining what turning it off would actually do to existing grants. */
 export const COMPUTER_PROVIDER_DISABLE_IMPACT: Record<ComputerProviderId, string> = {
   asciiBox: "Turning this off blocks every bot that currently uses ASCII.dev Box.  Each affected bot would need a new computer picked manually.",
-  selfHostedVps: "Turning this off drops the shared VPS container and every per-bot VPS workspace.  Affected bots lose their VPS leg until they pick another provider.",
+  selfHostedVps: "Turning this off stops new use of the VPS; existing containers and workspaces stay until removed.  Affected bots lose their VPS leg until they pick another provider.",
   localVm: "Turning this off stops the Local VM container from starting.  Affected bots lose their private or shared VM desktop.",
   localMac: "Turning this off blocks host control.  Affected bots lose their \"This Computer\" leg and Auto approvals stop working for them.",
 };
