@@ -147,7 +147,6 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## Completed
 - **2026-09-20 - MM - IN_PROGRESS - feat(tts,avatar): default to MiniMax; preserve ElevenLabs as opt-in (PR #513).** <!-- wb-agent-report:24bcc6b6036b46a1aff18579ec02fd0f -->
-- **2026-09-21 - AG - IN_PROGRESS - [BF][AG] Fix DSH MiniMax model option serialization (provider minimax).** <!-- wb-agent-report:41b6134a6e9a4c988d6bb5f952c47c48 -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Audit defect: sentence-gap regression on Bot Computer Use copy (single space after period, missing second space).** <!-- wb-agent-report:bbe48a9ae62e4c809123487486ea9c59 -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Audit defect: ASCII.dev Box defaults over self-hosted VPS, no VPS-setup hint when alias missing.** <!-- wb-agent-report:31636bd1731a4e3dacdb2518a333a1fa -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Audit defect: Settings nav 'Local VM' mislabels the computer-use section (also covers Local Mac + Cloud VPS).** <!-- wb-agent-report:ce2e419406ea4b7cb9e489f2fc89041e -->
