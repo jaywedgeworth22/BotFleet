@@ -26,10 +26,11 @@ import { ApiError, api, useStore, type Bot, type ConfigStatus } from "@/state/st
 import { Card } from "./SettingsPrimitives";
 import { ComputerProviderToggle } from "./ComputerProviderToggle";
 import { VpsModeToggle } from "./VpsModeToggle";
-import { BotComputerMatrix, providersForBot } from "./BotComputerMatrix";
+import { BotComputerMatrix } from "./BotComputerMatrix";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { engineReachKnown, instanceSupportsLocalComputer } from "@/lib/local-computer";
-import { ComputerImpactConfirmModal, type ImpactedBot } from "./ComputerImpactConfirmModal";
+import { ComputerImpactConfirmModal } from "./ComputerImpactConfirmModal";
+import { impactedBotsForProvider, type ImpactedBot } from "@/lib/computer-impact";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   COMPUTER_PROVIDER_ORDER,
@@ -114,16 +115,6 @@ function resolveWorkspaceProviders(config: ConfigStatus | null | undefined): {
   };
 }
 
-/** What a bot's `computers[]` looks like in the matrix's impact view.
- * Kept here (not in `BotComputerMatrix`) because the impact-confirm
- * modal cares about the SAME source-of-truth the server's allowlist
- * gate uses, which is `bot.computers` (the legacy wire shape). */
-function currentSelectionFor(bot: Bot): string[] {
-  if (bot.computers === undefined) return ["auto"];
-  if (bot.computers.length === 0) return ["off"];
-  return [...bot.computers];
-}
-
 export function LocalComputerSection() {
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
@@ -176,22 +167,31 @@ export function LocalComputerSection() {
   );
   const botsUsingProvider = useCallback(
     (provider: ComputerProviderId): ImpactedBot[] =>
-      bots
-        .filter((bot) => !(bot.computers !== undefined && bot.computers.length === 0))
-        .map((bot) => ({
-          id: bot.id,
-          name: bot.name,
-          currentSelection: currentSelectionFor(bot),
-          providers: providersForBot(
-            bot,
-            providers,
-            state.config?.botDefaults?.cloudBackend,
-            state.config?.botDefaults?.computers,
-            autoLocalFor(bot),
-          ),
-        }))
-        .filter((bot) => bot.providers[provider] === true),
-    [bots, providers, state.config?.botDefaults?.cloudBackend, state.config?.botDefaults?.computers, autoLocalFor],
+      impactedBotsForProvider(provider, {
+        bots,
+        workspaceProviders: providers,
+        workspaceCloudBackend: state.config?.botDefaults?.cloudBackend,
+        workspaceDefaultComputers: state.config?.botDefaults?.computers,
+        autoLocalFor,
+        // A routine, webhook or resource trigger set to run in the cloud
+        // gets the cloud destination even on a bot whose computers are
+        // off (resolveGrants), so its bot loses that backend too.
+        automations: {
+          routines: state.routines,
+          webhooks: state.webhooks,
+          resourceTriggers: state.resourceTriggers,
+        },
+      }),
+    [
+      bots,
+      providers,
+      state.config?.botDefaults?.cloudBackend,
+      state.config?.botDefaults?.computers,
+      autoLocalFor,
+      state.routines,
+      state.webhooks,
+      state.resourceTriggers,
+    ],
   );
 
   // Persist a new providers shape.  Always writes both the new key and
