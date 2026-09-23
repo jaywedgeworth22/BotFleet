@@ -758,6 +758,14 @@ function botLocalAutoCapability(bot?: ComputerGrantSubject | null): LocalAutoCon
 }
 
 /** The destinations a bot holds right now, in either spelling. */
+/** True when Computer settings turned the Local VM provider off.  An install
+ * with no `computerProviders` yet defers to the legacy allowlist, same as
+ * the cloud lifecycle routes and `server/computer-grants.ts`. */
+function localVmProviderOff(config: typeof cfg): boolean {
+  const providers = config.botDefaults?.computerProviders;
+  return Boolean(providers) && providers?.localVm !== true;
+}
+
 function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
   return storedComputerGrants(bot) ?? [];
 }
@@ -9064,6 +9072,14 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const action = z.enum(["pull", "run", "start", "stop", "remove"]).parse(m[1]);
+      // A Local VM turned off in Computer settings must not be started from
+      // the same page that turned it off.  Same rule as the cloud computer
+      // routes: stop and remove stay open because they only wind the VM down,
+      // and an install with no `computerProviders` yet defers to the legacy
+      // allowlist.
+      if ((action === "run" || action === "start") && localVmProviderOff(cfg)) {
+        return json(res, 409, { error: `${COMPUTER_PROVIDER_LABEL.localVm} is turned off in Computer settings` });
+      }
       if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(SHARED_LOCAL_VM_TARGET.key)) {
         return json(res, 409, { error: "another Local VM setup action is still running" });
       }
@@ -9178,6 +9194,10 @@ const server = createServer(async (req, res) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       const action = z.enum(["run", "stop", "remove"]).parse(m[2]);
+      // Same Local VM provider gate as the shared lifecycle route above.
+      if (action === "run" && localVmProviderOff(cfg)) {
+        return json(res, 409, { error: `${COMPUTER_PROVIDER_LABEL.localVm} is turned off in Computer settings` });
+      }
       const target = localVmTargetForBot(bot.id);
       if (target.key === SHARED_LOCAL_VM_TARGET.key) {
         return json(res, 409, { error: "Shared mode manages this desktop in App Settings → Local VM" });
