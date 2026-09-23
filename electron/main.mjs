@@ -374,6 +374,10 @@ async function secureWorkspaceConfig({ strict = false } = {}) {
 /** Upgrade encrypted custom-engine keys created before config carried the
  * nonsecret external-storage marker.  This runs before attach-or-spawn, so a
  * fresh standalone harness can gate those exact engines from its first turn. */
+/** Mirrors `DEFAULT_VPS_MODE` in shared/local-auto-consent.ts: per-bot is
+ * the only VPS mode the runtime implements. */
+const DEFAULT_VPS_MODE = "per-bot";
+
 /** Migrate the legacy `botDefaults.allowedComputers` shape onto the new
  * per-provider `botDefaults.computerProviders` + `vpsMode` fields the
  * redesigned Computer settings UI writes.  Runs once at app launch
@@ -399,7 +403,7 @@ function migrateComputerProviders({ strict = false } = {}) {
       if (defaults.computerProviders) {
         const providers = defaults.computerProviders;
         if (providers.selfHostedVps === true && defaults.vpsMode === null) {
-          defaults.vpsMode = "shared";
+          defaults.vpsMode = DEFAULT_VPS_MODE;
           return config;
         }
         if (providers.selfHostedVps !== true && defaults.vpsMode !== null && defaults.vpsMode !== undefined) {
@@ -408,33 +412,37 @@ function migrateComputerProviders({ strict = false } = {}) {
         }
         return null;
       }
-      // Compute from the legacy `allowedComputers` (null/undefined ->
-  // the shipped default).
+      // Compute from the legacy `allowedComputers`.  Mirrors
+      // `migrateAllowedComputersToProviders` in shared/local-auto-consent.ts
+      // (this file cannot import TypeScript):
+      //   null / undefined -> every provider on (legacy "no allowlist")
+      //   []               -> every provider off (explicit deny-all)
+      //   [...]            -> each named destination's providers on
+      // The next provider save back-fills `allowedComputers` from this
+      // shape, so mapping [] to anything but all-off would silently
+      // re-enable cloud, and mapping null to anything but all-on would
+      // silently revoke Local VM and host grants.
       const allowed = defaults.allowedComputers;
       let providers = { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false };
       let vpsMode = null;
       if (allowed === null || allowed === undefined) {
-        providers = { asciiBox: true, selfHostedVps: true, localVm: false, localMac: false };
-        vpsMode = "shared";
+        providers = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+        vpsMode = DEFAULT_VPS_MODE;
       } else if (Array.isArray(allowed) && allowed.length > 0) {
-        let hasCloud = false;
         for (const dest of allowed) {
           if (dest === "cloud") {
             providers.asciiBox = true;
             providers.selfHostedVps = true;
-            hasCloud = true;
           } else if (dest === "vm") {
             providers.localVm = true;
           } else if (dest === "local") {
             providers.localMac = true;
           }
         }
-        vpsMode = hasCloud ? "shared" : null;
-      } else {
-        // Empty array: shipped default.
-        providers = { asciiBox: true, selfHostedVps: true, localVm: false, localMac: false };
-        vpsMode = "shared";
+        vpsMode = providers.selfHostedVps ? DEFAULT_VPS_MODE : null;
       }
+      // Anything else (empty array, or a hand-edited non-array) stays
+      // all-off: an explicit deny-all is preserved, never widened.
       defaults.computerProviders = providers;
       defaults.vpsMode = vpsMode;
       return config;
