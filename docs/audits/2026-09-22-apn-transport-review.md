@@ -39,18 +39,18 @@ useful to do about it.
 Five interlocking fixes in `companion/src/apns.ts` + a UI surface on
 the pairing page.
 
-### 1.  Persistent HTTP/2 session (`node:http2`)
+### 1.  Persistent HTTP/2 Session (`node:http2`)
 
 Replaced the `fetchImpl`-based POST with a Node `http2` core-module
 session that:
 
 - holds one `client.connect` per `(host, keyId)`, keyed so a key
   rotation builds a fresh session;
-- sets TCP keepalive (`keepAliveInitialDelay: 30s`) and HTTP/2 PING
-  keepalive (`keepaliveTimeoutMillis: 60s`, `keepaliveIntervalMillis:
-  30s`) per Apple's APNs HTTP/2 reference;
-- configures `peerMaxConcurrentStreams: 500`, `initialWindowSize:
-  1 MiB`, `maxSessionMemory: 10 MiB`;
+- sets TCP keepalive (`keepAlive: true`, `keepAliveInitialDelay:
+  30000` ms) and runs an HTTP/2 PING every 30s via `session.ping`
+  (`pingIntervalMs: 30000`) per Apple's APNs HTTP/2 reference;
+- configures `settings.maxConcurrentStreams: 500`,
+  `settings.initialWindowSize: 1 MiB`, `maxSessionMemory: 10` (MB);
 - closes the session cleanly when no peer stream is open and rebuilds
   lazily after a GOAWAY.
 
@@ -58,7 +58,7 @@ The `fetchImpl` test seam is preserved: tests inject a fake fetch and
 bypass the http2 path entirely.  No new dependencies — `node:http2`
 is core.
 
-### 2.  Real transport error capture
+### 2.  Real Transport Error Capture
 
 The old `catch {}` swallowed everything.  `inspectTransportError` now
 reads `err.name`, `err.code`, `err.message`, and `err.cause`, and
@@ -76,7 +76,7 @@ The bucketed kind lands on `ApnsSendResult.failureKind` and
 `errorCode` / `lastErrorCode` so the health page can name what
 actually went wrong (`ECONNRESET` vs `ERR_HTTP2_PROTOCOL_ERROR`).
 
-### 3.  Circuit breaker
+### 3.  Circuit Breaker
 
 Twenty consecutive transport-or-socket failures, or five consecutive
 HTTP/2 protocol errors, opens a 60-second circuit breaker.
@@ -89,7 +89,7 @@ resets the run and closes the circuit.
 Thresholds are exported as `APNS_CIRCUIT_WINDOW_MS` (60s),
 `APNS_TRANSPORT_THRESHOLD` (20), `APNS_HTTP2_PROTOCOL_THRESHOLD` (5).
 
-### 4.  Apple's `timestamp` field on `InvalidProviderToken`
+### 4.  Apple's `timestamp` Field on `InvalidProviderToken`
 
 Apple's 403 `InvalidProviderToken` body carries a `timestamp` field
 whose value the Apple debug page asks for verbatim.  The control page
@@ -97,7 +97,7 @@ now renders it as `InvalidProviderToken (timestamp=1700000000000)`
 directly, so the owner does not have to dig through the log to file
 a debug ticket.
 
-### 5.  UI surface on the pairing page
+### 5.  UI Surface on the Pairing Page
 
 `companion/src/control.ts:426-445` now renders four extra paragraphs
 when present:
