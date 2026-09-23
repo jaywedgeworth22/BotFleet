@@ -236,8 +236,15 @@ if [[ "$BOTFLEET_CHECKOUT_IS_GIT" == "1" ]]; then
   # up-to-date check above, so without this fetch origin/main (or an overridden
   # target) may still name stale updater policy in the local checkout.  A stage
   # commit is a bare SHA: fetching main brings in every commit that can pass
-  # the ancestry check below, so that is the ref to refresh.
+  # the ancestry check below, so that is the ref to refresh.  A revision
+  # expression such as origin/main~1 or origin/main^{commit} is not a valid
+  # refspec, so fetch the ref it is based on and let the rev-parse below
+  # resolve the full expression locally.
   BOOTSTRAP_FETCH_REF="${BOOTSTRAP_REF#origin/}"
+  BOOTSTRAP_FETCH_REF="${BOOTSTRAP_FETCH_REF%%[~^@:]*}"
+  if [[ -z "$BOOTSTRAP_FETCH_REF" ]]; then
+    BOOTSTRAP_FETCH_REF="main"
+  fi
   if [[ "$BOOTSTRAP_FROM_STAGE" == "1" ]]; then
     BOOTSTRAP_FETCH_REF="main"
   fi
