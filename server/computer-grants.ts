@@ -551,9 +551,9 @@ async function resolveMounts<Lease>(
   // and mounted with its own tools, so the agent chooses per task.  Granting
   // only the VM therefore means only the VM.
   let { granted, auto } = resolveGrants(bot.computers, runOn, cfg.botDefaults?.computers, allowed);
-  // const wantsCloud = granted.includes("cloud"); // removed; use wantsCloudFiltered instead
-  const wantsVm = granted.includes("vm");
-  const wantsLocal = granted.includes("local");
+  // `wantsCloud` / `wantsVm` / `wantsLocal` are computed after the
+  // per-provider filter below so the mount branches see the post-filter
+  // grant.
   // `auto` says the bot never chose; these say where auto is still allowed to
   // look.  They are separate because the auto path mounts two different
   // things — a cloud computer and, failing that, the host — and an operator
@@ -570,22 +570,36 @@ async function resolveMounts<Lease>(
   // field is too coarse to distinguish ASCII.dev Box from Self-Hosted
   // VPS, so a workspace with `["cloud"]` in the legacy field AND the
   // operator's Box toggle off would otherwise let a Box-backed bot
-  // continue using Box.  Drop the cloud destination entirely when the
-  // resolved backend is disabled by the new shape, for both explicit
-  // grants and the Auto fallback.
+  // continue using Box.  It cannot express "Local VM off" or "This
+  // Computer off" at all — `null` means every destination is allowed —
+  // so a config written with only the new shape (a provider off, the
+  // legacy allowlist unrestricted) would still mount both.  Drop each
+  // destination the new shape disables, for explicit grants and the Auto
+  // fallback alike; a missing `computerProviders` keeps the legacy
+  // behavior bit-for-bit.
   const providers = cfg.botDefaults?.computerProviders;
-  if (providers && granted.includes("cloud")) {
-    const backendEnabled = cloudBackend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true;
-    if (!backendEnabled) granted = granted.filter((d) => d !== "cloud");
+  if (providers) {
+    if (granted.includes("cloud")) {
+      const backendEnabled = cloudBackend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true;
+      if (!backendEnabled) granted = granted.filter((d) => d !== "cloud");
+    }
+    if (providers.localVm !== true) granted = granted.filter((d) => d !== "vm");
+    if (providers.localMac !== true) granted = granted.filter((d) => d !== "local");
   }
-  // Recompute `wantsCloud` after the per-provider filter so the mount
-  // branches below see the post-filter grant.
+  // Recompute `wantsCloud`, `wantsVm` and `wantsLocal` after the
+  // per-provider filter so the mount branches below see the post-filter
+  // grant.
   const wantsCloudFiltered = granted.includes("cloud");
+  const wantsVm = granted.includes("vm");
+  const wantsLocal = granted.includes("local");
   const autoCloudProviderEnabled = auto && autoAllows.has("cloud") && providers
     ? (cloudBackend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true)
     : true;
   const autoCloud = auto && autoAllows.has("cloud") && autoCloudProviderEnabled;
-  const autoHost = auto && autoAllows.has("local");
+  // The Auto host fallback is a grant too: with This Computer off, an
+  // unconfigured bot must not reach the desktop through it.
+  const autoHostProviderEnabled = providers ? providers.localMac === true : true;
+  const autoHost = auto && autoAllows.has("local") && autoHostProviderEnabled;
   // One derivation for every destination — see computer-capability.ts.  The
   // names below are kept because the mount sites read as "does this turn
   // mount X", not "can this engine reach X".
