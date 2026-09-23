@@ -1029,6 +1029,27 @@ export function quiesceBootoutLabels(config, previous) {
   return [...labels];
 }
 
+/**
+ * `launchctl bootout` exits nonzero when the job was already gone, so its
+ * exit code cannot separate "removed" from "failed".  Confirm with
+ * `launchctl print` that the job is actually absent, retrying briefly while
+ * launchd tears it down: a job that survives bootout can be relaunched by
+ * KeepAlive while rollback is restoring files.
+ */
+export async function waitForLaunchdBootout(domain, label, {
+  attempts = 5,
+  delayMs = 500,
+  probe = () => run("launchctl", ["print", `${domain}/${label}`], { allowFailure: true }),
+  wait = sleep,
+} = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const printed = await probe();
+    if (printed.code !== 0) return true;
+    if (attempt + 1 < attempts) await wait(delayMs);
+  }
+  return false;
+}
+
 export function applicationAttachmentError(snapshot, openApplication) {
   if (!openApplication) return null;
   const health = Array.isArray(snapshot?.health) ? snapshot.health : [];
@@ -1857,7 +1878,16 @@ function createOperations(config) {
         try { await operation(); } catch (error) { stopErrors.push(error); }
       };
       for (const label of rollbackHarnessBootoutLabels(config, previous)) {
-        await recordStop(async () => { await run("launchctl", ["bootout", `${config.domain}/${label}`], { allowFailure: true }); });
+        await recordStop(async () => {
+          await run("launchctl", ["bootout", `${config.domain}/${label}`], { allowFailure: true });
+          // bootout exits nonzero when the job was already gone, so its exit
+          // code cannot separate "removed" from "failed".  Confirm the job
+          // is absent before any file moves, or its KeepAlive can relaunch
+          // the failed replacement over the restore.
+          if (!(await waitForLaunchdBootout(config.domain, label))) {
+            throw new Error(`Could not boot out ${label} for rollback: ${config.domain}/${label} is still loaded`);
+          }
+        });
       }
       await recordStop(async () => { await run("osascript", ["-e", 'if application "BotFleet" is running then tell application "BotFleet" to quit'], { allowFailure: true }); });
       await recordStop(async () => {
@@ -2103,4 +2133,5 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
     process.exitCode = 1;
   });
 }
+
 
