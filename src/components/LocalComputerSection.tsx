@@ -10,7 +10,7 @@
 //   Hosted VPS, Local VM, This Computer), each with a caption explaining
 //   the impact of turning it off.
 // - `<VpsModeToggle>` next to the VPS row so the operator can pick
-//   shared vs per-bot, or "not used".
+//   per-bot or "not used" (Shared is hidden until it has a runtime).
 // - `<BotComputerMatrix>` so every bot's grant is visible in one table,
 //   with a one-click "Apply new default to all" that opens a confirm
 //   dialog.
@@ -31,8 +31,8 @@ import { ComputerImpactConfirmModal, type ImpactedBot } from "./ComputerImpactCo
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   COMPUTER_PROVIDER_ORDER,
-  DEFAULT_COMPUTER_PROVIDERS,
   DEFAULT_VPS_MODE,
+  migrateAllowedComputersToProviders,
   type ComputerProviderId,
   type ComputerProviders,
   type VpsMode,
@@ -71,29 +71,15 @@ function allowedComputersFromProviders(providers: ComputerProviders): Array<"clo
 }
 
 /** Derive the new per-provider shape from the legacy allowlist array,
- * for the read path on configs that pre-date the migration.  Mirrors
- * `migrateAllowedComputersToProviders` in
- * `shared/local-auto-consent.ts` so the two sides of the cut-over
- * agree. */
-function providersFromAllowedComputers(allowed: Array<"cloud" | "vm" | "local"> | null | undefined): ComputerProviders {
-  if (allowed === null || allowed === undefined) return { ...DEFAULT_COMPUTER_PROVIDERS };
-  const providers: ComputerProviders = {
-    asciiBox: false,
-    selfHostedVps: false,
-    localVm: false,
-    localMac: false,
-  };
-  for (const dest of allowed) {
-    if (dest === "cloud") {
-      providers.asciiBox = true;
-      providers.selfHostedVps = true;
-    } else if (dest === "vm") {
-      providers.localVm = true;
-    } else if (dest === "local") {
-      providers.localMac = true;
-    }
-  }
-  return providers;
+ * for the read path on configs that pre-date the migration.  Uses
+ * `migrateAllowedComputersToProviders` itself so the renderer and the
+ * boot migrations cannot disagree: null/undefined is every provider on,
+ * [] is every provider off. */
+function providersFromAllowedComputers(allowed: Array<"cloud" | "vm" | "local"> | null | undefined): {
+  providers: ComputerProviders;
+  vpsMode: VpsMode;
+} {
+  return migrateAllowedComputersToProviders(allowed);
 }
 
 /** Resolve the workspace's effective providers, applying the migration
@@ -118,9 +104,10 @@ function resolveWorkspaceProviders(config: ConfigStatus | null | undefined): {
       resolvedFromLegacy: false,
     };
   }
+  const legacy = providersFromAllowedComputers(defaults?.allowedComputers);
   return {
-    providers: providersFromAllowedComputers(defaults?.allowedComputers),
-    vpsMode: defaults?.vpsMode ?? DEFAULT_VPS_MODE,
+    providers: legacy.providers,
+    vpsMode: legacy.providers.selfHostedVps ? (defaults?.vpsMode ?? legacy.vpsMode ?? DEFAULT_VPS_MODE) : null,
     resolvedFromLegacy: true,
   };
 }
@@ -259,17 +246,18 @@ export function LocalComputerSection() {
     persist(nextProviders, nextVpsMode);
   };
 
+  // The mode control and the VPS toggle drive the same state, so neither
+  // may refuse on account of the other.  Picking a mode while the VPS is
+  // off turns it on with that mode in one save; picking "Not Used" while it
+  // is on goes through the same disable path as the toggle, impact confirm
+  // included.
   const handleVpsModeChange = (next: VpsMode) => {
     if (saving) return;
-    if (next !== null && !providers.selfHostedVps) {
-      setError("Turn the Self-Hosted VPS provider on before picking a mode");
+    if (next === null) {
+      if (providers.selfHostedVps) handleProviderToggle("selfHostedVps", false);
       return;
     }
-    if (next === null && providers.selfHostedVps) {
-      setError("Turn the Self-Hosted VPS provider off to clear the mode");
-      return;
-    }
-    persist(providers, next);
+    persist({ ...providers, selfHostedVps: true }, next);
   };
 
   // Apply workspace defaults to every bot.  Mirrors the existing
