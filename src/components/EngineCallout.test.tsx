@@ -14,13 +14,32 @@ import {
   engineIdFromDriverKind,
 } from "@/lib/engine-capabilities.tsx";
 
+// EngineCallout emits JSON-style HTML where ASCII apostrophes and
+// quotes are HTML-escaped by `react-dom/server`'s serializer.  Comparing
+// a raw headline that contains an apostrophe against the rendered
+// markup via toContain() produces a false negative; this helper
+// normalizes both sides before comparing.  Curly quotes (U+2018 /
+// U+2019) are passed through by the serializer, so only the ASCII
+// entities need decoding.  Pinned by the headline-render test.
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
 describe("EngineCallout", () => {
   it("renders for every engine id in the registry", () => {
     for (const id of ENGINE_DISPLAY_ORDER) {
       const entry = ENGINE_CAPABILITIES[id];
       const html = renderToStaticMarkup(createElement(EngineCallout, { engineId: id }));
       expect(html).toContain("Why this engine?");
-      expect(html).toContain(entry.whyThisEngine.headline);
+      const decoded = decodeHtmlEntities(html);
+      expect(decoded).toContain(entry.whyThisEngine.headline);
       // At least one paragraph of prose — the legacy MiniMaxCallout
       // test pinned the same invariant.
       expect(html).toMatch(/<p/);
@@ -37,7 +56,8 @@ describe("EngineCallout", () => {
 
   it("resolves driver-kind ids via engineIdFromDriverKind", () => {
     const html = renderToStaticMarkup(createElement(EngineCallout, { driverKind: "grokAgent" }));
-    expect(html).toContain(ENGINE_CAPABILITIES.grok.whyThisEngine.headline);
+    const decoded = decodeHtmlEntities(html);
+    expect(decoded).toContain(ENGINE_CAPABILITIES.grok.whyThisEngine.headline);
   });
 
   it("renders nothing for an unknown engine id", () => {
