@@ -195,14 +195,21 @@ the file mutated twice in quick succession on the same launch.
 - matrix: a bot with `computers: undefined` (auto) lights the
   resolved cloud backend plus This Computer (the host fallback),
   or the inherited workspace default intersected with the
-  provider toggles when a default exists
+  provider toggles when a default exists.  The host fallback is
+  gated the way the server gates it
+  (`shouldMountLocalComputer({ requested: undefined, ... })`):
+  macOS hosts only, and only when the bot's engine has a local
+  approval channel — Linux/Windows hosts and engines without
+  local reach leave the column dark so the matrix and the
+  disable-impact modal do not list bots the runtime would never
+  mount
 - matrix: a bot with `computers: ["local"]` renders `localMac`
   check-mark only
 
 ## Verification
 
 - `pnpm typecheck` (renderer + server) passes with no errors.
-- `src/lib/computer-providers.test.ts` (NEW): 22 tests pass.
+- `src/lib/computer-providers.test.ts` (NEW): 27 tests pass.
 - `shared/local-auto-consent.test.ts`: 5 tests pass.
 - `server/config.test.ts`: 115 tests pass (no regression).
 - `server/computer-grants.test.ts`: 45 tests pass (no regression).
