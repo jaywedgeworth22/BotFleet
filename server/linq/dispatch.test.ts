@@ -165,6 +165,24 @@ describe("findBotForInbound", () => {
     expect(result?.bot.id).toBe("director");
   });
 
+  it("falls back to the only Linq-bound bot when `to` is missing", () => {
+    loadConfigMock.mockReturnValue({
+      botDefaults: { imessagePerBot: { director: "linq", sidekick: "off" } },
+      imessageLinq: { botNumber: "+14158707772" },
+    });
+    const bots = [makeBot("sidekick"), makeBot("director")];
+    expect(findBotForInbound(loadConfigMock(), bots, sampleInbound({ toNumber: undefined }))?.bot.id).toBe("director");
+  });
+
+  it("returns null without `to` when several bots are Linq-bound", () => {
+    loadConfigMock.mockReturnValue({
+      botDefaults: { imessagePerBot: { director: "linq", sidekick: "linq" } },
+      imessageLinq: { botNumber: "+14158707772" },
+    });
+    const bots = [makeBot("sidekick"), makeBot("director")];
+    expect(findBotForInbound(loadConfigMock(), bots, sampleInbound({ toNumber: undefined }))).toBeNull();
+  });
+
   it("returns null when no bot is bound to that number", () => {
     loadConfigMock.mockReturnValue({
       botDefaults: { imessagePerBot: { other: "linq" } },
