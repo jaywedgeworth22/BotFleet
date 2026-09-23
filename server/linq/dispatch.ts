@@ -106,7 +106,9 @@ export async function ingestInbound({
   if (!text && (!media || media.length === 0)) {
     return { dispatched: false, reason: "empty" };
   }
-  const port = Number(process.env.PORT || 8799);
+  // Same resolution as server/index.ts's PORT so an OMB_PORT/OGB_PORT
+  // override (tests, a second harness) dispatches to the right app server.
+  const port = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
   const host = process.env.BOTFLEET_HOST ?? `127.0.0.1:${port}`;
   const url = `http://${host}/api/bots/${bot.id}/messages`;
   const body: Record<string, unknown> = {
