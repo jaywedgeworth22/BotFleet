@@ -41,6 +41,7 @@ import { createComputerTools } from "./computer.ts";
 import { createGithubTools } from "./github.ts";
 import { createPhoneTools } from "./phone.ts";
 import { createRecallTools } from "./recall.ts";
+import { createLinqTools, type LinqToolDeps } from "./linq.ts";
 import type { RecallSettings } from "../recall-transport.ts";
 import { harnessTool, toolsFor, type ToolGateContext } from "./registry.ts";
 
@@ -83,7 +84,15 @@ export interface TurnToolHostContext {
   recall?: { settings: RecallSettings; botName: string };
   /** Whether a first-party physical Android phone (USB) is mounted for this turn. */
   phone?: boolean;
+  /** Whether the Linq partner-API is bound to this bot for this turn.
+   *  `send_voice_message` is the only tool gated on this; the host mounts
+   *  the executor only when the dispatch set the flag, so an unconfigured
+   *  bot cannot accidentally burn TTS quota. */
+  linq?: { settings: ReturnType<typeof import("../linq/dispatch.ts").resolveLinqBinding> };
   deps: TurnToolHostDeps;
+  /** Optional dependency injection for the voice-message executor, used by
+   *  tests; absent falls back to the first-party hosted TTS driver. */
+  linqDeps?: Partial<LinqToolDeps>;
   /** Ceiling on model-to-tool rounds; absent = the driver's default. */
   maxRounds?: number;
   /** The harness's permission broker, already bound to this turn's bot and
@@ -95,6 +104,24 @@ export interface TurnToolHostContext {
 
 const failed = (content: string, detail?: string): TurnToolOutcome =>
   detail ? { kind: "error", content, detail } : { kind: "error", content };
+
+/** Production voice synthesizer used when the host is mounted without an
+ *  injected `synthesize` (i.e., the real dispatch).  Funnels through the
+ *  first-party hosted TTS driver (`server/tts/index.ts`) so this tool does
+ *  not parallel-implement TTS the way the audit flagged in PR #519. */
+async function defaultLinqSynthesize(
+  text: string,
+  voice?: string,
+): Promise<{ bytes: Uint8Array; mime: string }> {
+  // `speak()` reads the workspace's tts config: provider, voice, key.  A
+  // thrown error surfaces to the executor's catch block as a typed outcome
+  // and the model gets a readable "TTS failed" message instead of a dead
+  // turn.
+  const { speak } = await import("../tts/index.ts");
+  const { loadConfig } = await import("../config.ts");
+  const result = await speak(loadConfig(), text, voice);
+  return { bytes: result.bytes, mime: result.mime };
+}
 
 /** Build the tool host for ONE turn.  The returned host closes over the
  *  caller's identity, so nothing downstream can forge it. */
@@ -112,6 +139,13 @@ export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
     // run them must stay driven by the one `localComputer` boolean —
     // a separate flag here could only drift from the registry's gate.
     ...(ctx.localComputer ? Object.entries(createGithubTools(ctx.botId)) : []),
+    ...(ctx.linq
+      ? Object.entries(
+          createLinqTools({ botId: ctx.botId, threadId: ctx.threadId }, {
+            synthesize: ctx.linqDeps?.synthesize ?? defaultLinqSynthesize,
+          }),
+        )
+      : []),
   ]);
   const gate: ToolGateContext = {
     // The dispatch only builds a host when the agents integration is
@@ -135,6 +169,7 @@ export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
     // object's own `github` key needs to exist, and it derives from the
     // same boolean the executor merge above already keys off.
     github: Boolean(ctx.localComputer),
+    linq: Boolean(ctx.linq),
   };
   // The same gate the catalog handed the model.  A hallucinated name, or a
   // real name the model was not offered this turn, finds no executor.

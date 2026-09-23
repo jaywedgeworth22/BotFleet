@@ -160,6 +160,12 @@ const vpsConfigSchema = z.object({
 const botDefaultsSchema = z.object({
   computers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
   cloudBackend: z.enum(["box", "vps"]).optional(),
+  /** Per-bot iMessage transport choice.  Absent = "off" (no surprise Linq
+   *  activation).  Stored alongside the other botDefaults because the
+   *  settings panel carries the whole block on every save, and because
+   *  `saveConfig` merges section-by-section so an unrelated edit never
+   *  wipes the per-bot mapping. */
+  imessagePerBot: z.record(z.string(), z.enum(["off", "mac-relay", "linq"])).optional(),
   // `null` is the wire spelling of "no allowlist — every destination is
   // allowed", and it has to be accepted, not merely tolerated: the settings
   // panel carries the whole botDefaults block on every save, so a fresh
@@ -252,6 +258,29 @@ const appConfigSchema = z.object({
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
   botDefaults: botDefaultsSchema.optional(),
+  /** Linq transport credentials live in `process.env` — never on disk — so
+   *  a stolen config.json does not hand an attacker a phone number.  Only
+   *  the workspace phone + per-bot toggle + sender policy live on disk. */
+  imessageLinq: z.object({
+    /** Linq phone number that receives iMessage on this workspace's behalf
+     *  — typically the Director bot's number.  Formatted E.164.  Stored
+     *  because operators want to see the number they bound. */
+    botNumber: optionalText,
+    /** Per-bot transport choice.  Absent means the bot defaults to "off";
+     *  setting this to "linq" routes that bot's inbound through Linq.
+     *  "mac-relay" is the existing python relay path; we surface it for
+     *  completeness even though this lane adds no new behavior on that
+     *  side. */
+    perBot: z.record(z.string(), z.enum(["off", "mac-relay", "linq"])).optional(),
+    /** Hub workspace-level allow/deny lists, applied before per-bot
+     *  overrides.  Phone numbers in E.164. */
+    ignoredSenders: z.array(z.string()).optional(),
+    allowedSenders: z.array(z.string()).optional(),
+    /** Toggle for the optional `send_voice_message` tool.  Off by default
+     *  because a hosted voice costs per character and we will not enable it
+     *  without the operator's explicit consent. */
+    allowVoiceByDefault: z.boolean().optional(),
+  }).optional(),
   ingress: z.object({
     publicUrl: z
       .string()
@@ -367,6 +396,25 @@ export interface AppConfig {
      * allowed.  `null` is the same thing said out loud, and is what a client
      * sends to clear a narrowed allowlist back to "everything". */
     allowedComputers?: Array<"cloud" | "vm" | "local"> | null;
+    /** Per-bot iMessage transport.  Lives under `botDefaults` (not in the
+     *  bot record) so settings can carry it as part of the same workspace
+     *  config the user patches in one round-trip.  Resolution per inbound:
+     *    1. `perBot[botId]` — explicit operator choice.
+     *    2. absent — treated as "off" (no surprise Linq activation). */
+    imessagePerBot?: Record<string, "off" | "mac-relay" | "linq">;
+  };
+  /** Workspace Linq binding.  Phone number + sender policy + voice-tool
+   *  consent live here, not on the bot itself, because Linq hands one phone
+   *  number per workspace in hobby tier — multiple bots share it; the
+   *  per-bot transport choice picks WHICH bot each inbound routes to.
+   *
+   *  Tokens never live here: `LINQ_API_TOKEN` and `LINQ_WEBHOOK_SECRET`
+   *  come from `process.env` (the runtime secret layer). */
+  imessageLinq?: {
+    botNumber?: string;
+    ignoredSenders?: string[];
+    allowedSenders?: string[];
+    allowVoiceByDefault?: boolean;
   };
   ingress?: { publicUrl?: string; enabled?: boolean };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
@@ -1115,7 +1163,7 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
   // is in the schema, in the API Keys panel and in the tombstone list, but a
   // save of it never reached disk.  `infisical` is here from the start so the
   // machine identity does not repeat it a third time.
-  for (const key of ["xai", "openaiCompat", "minimax", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "observability", "infisical", "botDefaults"] as const) {
+  for (const key of ["xai", "openaiCompat", "minimax", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "observability", "infisical", "botDefaults", "imessageLinq"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

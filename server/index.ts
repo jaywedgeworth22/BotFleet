@@ -283,6 +283,8 @@ import { isBotPackage, packageAgentAsMember, parseBotPackage, renderBotPackageMa
 import { createTeamManifest, importedMemberProfile, parseTeamManifest } from "./team-manifest.ts";
 import { readThreadEvents } from "./thread-events.ts";
 import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./webhook-ingress.ts";
+import { readLinqWebhook } from "./routes/linq-webhook.ts";
+import { resolveLinqBinding } from "./linq/dispatch.ts";
 import { memberTurnSelection } from "./member-turn.ts";
 import { WebhookManager } from "./webhooks.ts";
 import { ResourceTriggerManager } from "./resource-triggers.ts";
@@ -3327,6 +3329,12 @@ async function startTurn(
       // toolLoop eligibility.  Re-deriving that here would just risk the
       // two checks drifting apart.
       const hasPhone = usesDriverToolLoop && Boolean(integrations.phone);
+      // Linq transport gates `send_voice_message`.  The dispatch checks the
+      // bot's per-bot imessagePerBot choice AND the workspace's resolved
+      // Linq binding; both have to be true for the tool to surface.  Cost
+      // (hosted TTS) is the reason the gate is conservative.
+      const linqBinding = resolveLinqBinding(cfg, bot.id);
+      const hasLinq = usesDriverToolLoop && Boolean(linqBinding);
       // Workspace confinement for read_file/write_file/edit_file: when a
       // bot has a workspace but no This Computer grant, the file tools
       // are still advertised (they're useful) but every path is checked
@@ -3346,8 +3354,8 @@ async function startTurn(
           ? { workspaceRealpath: realOrResolved(confinementRoot) }
           : undefined;
       const turnTools = buildTurnTools(
-        { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace, recall: hasRecall, phone: hasPhone },
-        { chiefOfStaff: Boolean(bot.chiefOfStaff) },
+        { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace, recall: hasRecall, phone: hasPhone, linq: hasLinq },
+        { chiefOfStaff: Boolean(bot.chiefOfStaff), linq: hasLinq },
       );
       const turnInput = {
         threadId,
@@ -3378,6 +3386,11 @@ async function startTurn(
               workspace: worksInWorkspace,
               recall: hasRecall && recallSettingsForTurn ? { settings: recallSettingsForTurn, botName: bot.name } : undefined,
               phone: hasPhone,
+              // Pass a resolved binding when (and only when) both the
+              // per-bot transport choice and the workspace's bot number
+              // are in place; the gate inside the host then offers
+              // `send_voice_message` (host.ts owns the executor merge).
+              linq: hasLinq ? { settings: linqBinding } : undefined,
               confinement: confinementForTurn,
               cwd: cwd ?? bot.cwd ?? undefined,
               // Read here, not derived from the catalog above: this is what
@@ -5596,6 +5609,18 @@ function configStatus() {
     // same configured-or-not way as every other credential
     tts: tts.describeVoice(cfg),
     imageGen: { configured: Boolean(cfg.imageGen?.key) },
+    // Linq binding credentials live in env (LINQ_API_TOKEN), so we never
+    // carry a token across this frame — only the operator-curated phone
+    // number, the per-bot transport map, and the voice-tool consent.  Same
+    // rule as tts above: configured-or-not is the whole answer.
+    imessageLinq: {
+      configured: Boolean(process.env.LINQ_API_TOKEN?.trim()),
+      botNumber: cfg.imessageLinq?.botNumber ?? "",
+      perBot: cfg.botDefaults?.imessagePerBot ?? {},
+      ignoredSenders: cfg.imessageLinq?.ignoredSenders ?? [],
+      allowedSenders: cfg.imessageLinq?.allowedSenders ?? [],
+      allowVoiceByDefault: cfg.imessageLinq?.allowVoiceByDefault === true,
+    },
     // not a secret — the sidebar shows it
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
@@ -6848,6 +6873,41 @@ const server = createServer(async (req, res) => {
       return webhooks.remove(webhookMatch[1])
         ? json(res, 200, { ok: true })
         : json(res, 404, { error: "no such webhook" });
+    }
+
+    // Linq partner-API webhook.  Receives `message.received`,
+    // `message.sent`, and `message.delivered` events, verifies the
+    // HMAC-SHA256 signature when a workspace secret is configured, and
+    // dispatches inbound messages to the bot bound to the recipient
+    // number.  See `server/routes/linq-webhook.ts`.
+    if (path === "/api/webhooks/linq" && method === "POST") {
+      await readLinqWebhook(req, res, {
+        getBots: () => store.bots.slice(),
+      });
+      return;
+    }
+
+    if (path === "/api/test/linq-self-message" && method === "POST") {
+      const cfg = loadConfig();
+      const workspace = cfg.imessageLinq;
+      if (!workspace?.botNumber) {
+        return json(res, 400, { ok: false, reason: "no_bot_number" });
+      }
+      if (!process.env.LINQ_API_TOKEN?.trim()) {
+        return json(res, 400, { ok: false, reason: "missing_token" });
+      }
+      const body = await readBody(req);
+      const text = typeof body?.text === "string" ? body.text : "Test from BotFleet";
+      try {
+        const { linqSendMessage } = await import("./linq/client.ts");
+        const result = await linqSendMessage(`self:${workspace.botNumber}`, {
+          text: `[BotFleet self-test] ${text}`,
+        });
+        return json(res, 200, { ok: true, messageId: result.id });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return json(res, 502, { ok: false, reason: "send_failed", message });
+      }
     }
 
     if (path === "/api/resource-triggers" && method === "GET") {
