@@ -6484,6 +6484,47 @@ describe("cloud computer lifecycle routes honor the provider toggles", () => {
   });
 });
 
+describe("Local VM lifecycle routes honor the provider toggle", () => {
+  it("refuses to create or start a turned-off Local VM from the shared and per-bot routes", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Vic Vmless" })).body.bot;
+    try {
+      const off = await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: false, localMac: true } },
+      });
+      expect(off.status).toBe(200);
+      for (const action of ["run", "start"]) {
+        const refused = await api("POST", `/api/local-computer/${action}`, {});
+        expect(refused.status).toBe(409);
+        expect(String(refused.body.error)).toContain("Local VM is turned off");
+      }
+      const perBot = await api("POST", `/api/bots/${bot.id}/local-computer/run`, {});
+      expect(perBot.status).toBe(409);
+      expect(String(perBot.body.error)).toContain("Local VM is turned off");
+    } finally {
+      await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("lets a turned-on Local VM past the provider gate", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Vera Vm" })).body.bot;
+    try {
+      const on = await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      expect(on.status).toBe(200);
+      // Shared mode answers the per-bot create with its own 409; the point is
+      // that the provider gate is not what stopped it.
+      const perBot = await api("POST", `/api/bots/${bot.id}/local-computer/run`, {});
+      expect(String(perBot.body.error ?? "")).not.toContain("turned off in Computer settings");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+});
+
 describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
   it("applies the workspace default to every bot, filtered through the allowlist", async () => {
     const ada = (await api("POST", "/api/bots", { name: "Ada Apply" })).body.bot;
