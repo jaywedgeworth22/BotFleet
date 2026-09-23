@@ -10105,6 +10105,27 @@ const server = createServer(async (req, res) => {
       // what the operator asked for" comment there.
       const persisted = requested ?? cfg.botDefaults?.computers ?? [];
       const next = allowed === null ? persisted : persisted.filter((entry) => allowed.includes(entry));
+      // The legacy "cloud" destination collapses hosted Box and the
+      // self-hosted VPS into one entry, but the runtime (turnComputerMounts
+      // in computer-grants.ts) resolves each bot's real backend and drops
+      // the destination when that backend's provider toggle is off.  The
+      // apply has to store the same answer the runtime will compute: with
+      // Box off, writing ["cloud"] to a Box-backed bot stores a grant the
+      // operator disabled, which the bot's next turn silently strips again.
+      // The same per-provider rule covers the Local VM and This Computer
+      // legs.  A bot whose provider toggles disable every destination this
+      // apply would grant keeps its own choice — narrowing it to Off is the
+      // exact mistake the allowlist-emptied guard above refuses.
+      const providerGranted = (bot: { cloudBackend?: "box" | "vps" }): Array<"cloud" | "vm" | "local"> => {
+        const providers = cfg.botDefaults?.computerProviders;
+        if (!providers) return next;
+        const backend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+        return next.filter((entry) => {
+          if (entry === "cloud") return backend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true;
+          if (entry === "vm") return providers.localVm === true;
+          return providers.localMac === true;
+        });
+      };
       const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
       const acknowledged = body.acknowledgeLocalAuto === true;
       // An empty filtered set is NOT a permission to clear every bot.  The
@@ -10168,7 +10189,10 @@ const server = createServer(async (req, res) => {
         // Concurrently: this is one operator action over a whole fleet, and a
         // driver that takes a second to answer a cancel would otherwise add
         // that second once per bot to a single click.
-        await Promise.allSettled(store.bots.filter((bot) => !botTurnedOff(bot)).map((bot) => interruptIfHostRevoked(bot, next)));
+        await Promise.allSettled(store.bots.filter((bot) => !botTurnedOff(bot)).map((bot) => {
+          const granted = providerGranted(bot);
+          return granted.length === 0 ? Promise.resolve() : interruptIfHostRevoked(bot, granted);
+        }));
         // Bots may have been created, renamed, or changed while cancellation
         // awaited a driver.  Recheck before any grant or default is persisted.
         const changedConsent = consentRequired();
@@ -10181,7 +10205,9 @@ const server = createServer(async (req, res) => {
         // the default on every run and ARE patched.
         for (const bot of store.bots) {
           if (botTurnedOff(bot)) continue;
-          const patched = store.patchBot(bot.id, { computers: next });
+          const granted = providerGranted(bot);
+          if (granted.length === 0) continue;
+          const patched = store.patchBot(bot.id, { computers: granted });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
         }
       }
