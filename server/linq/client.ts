@@ -10,7 +10,7 @@
 // https://apidocs.linqapp.com say otherwise; the audit doc lists each field
 // we call and where the name came from.
 
-import {
+import type {
   LinqApiError,
   LinqChatInfo,
   LinqSendResult,
