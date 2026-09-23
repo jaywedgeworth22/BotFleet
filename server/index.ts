@@ -2,6 +2,7 @@
 // (upstream rule): the React app dispatches typed commands over HTTP and
 // folds one SSE event stream; every provider process runs here.
 import {
+  COMPUTER_PROVIDER_LABEL,
   matchesLocalAutoConsent,
   requiresLocalAutoConsent,
   type LocalAutoConsentCapability,
@@ -10038,6 +10039,8 @@ const server = createServer(async (req, res) => {
     // bad input the same way, so the client cannot push a malformed default
     // into the store and then have it crash every bot.
     if (method === "POST" && path === "/api/bots/apply-defaults") {
+      const botTurnedOff = (bot: { computers?: readonly unknown[] }) =>
+        Array.isArray(bot.computers) && bot.computers.length === 0;
       const body = await readBody(req);
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
@@ -10101,9 +10104,13 @@ const server = createServer(async (req, res) => {
       // `resolveGrants` handed an already-unattended, already-autoApprove
       // bot host control the moment the operator later loosened the
       // allowlist again, with no acknowledgement ever having been asked.
+      // Off bots are never patched below, so they must not be asked about
+      // either: listing them in the consent warning names bots the apply
+      // will not touch.
       const pendingLocalAutoConsent = () => store.bots
         .filter(
           (bot) =>
+            !botTurnedOff(bot) &&
             localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, false, {
               currentDefault: cfg.botDefaults?.computers,
               nextDefault: cfg.botDefaults?.computers,
@@ -10127,7 +10134,7 @@ const server = createServer(async (req, res) => {
         // Concurrently: this is one operator action over a whole fleet, and a
         // driver that takes a second to answer a cancel would otherwise add
         // that second once per bot to a single click.
-        await Promise.allSettled(store.bots.map((bot) => interruptIfHostRevoked(bot, next)));
+        await Promise.allSettled(store.bots.filter((bot) => !botTurnedOff(bot)).map((bot) => interruptIfHostRevoked(bot, next)));
         // Bots may have been created, renamed, or changed while cancellation
         // awaited a driver.  Recheck before any grant or default is persisted.
         const changedConsent = consentRequired();
@@ -10139,7 +10146,7 @@ const server = createServer(async (req, res) => {
         // so skip them.  Auto bots (`computers === undefined`) inherit
         // the default on every run and ARE patched.
         for (const bot of store.bots) {
-          if (bot.computers !== undefined && bot.computers.length === 0) continue;
+          if (botTurnedOff(bot)) continue;
           const patched = store.patchBot(bot.id, { computers: next });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
         }
@@ -10874,6 +10881,22 @@ const server = createServer(async (req, res) => {
       // both backends — the Box branch runs commands too.
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
+      }
+      // A cloud provider turned off in Computer settings keeps every bot off
+      // it here too, not just in turns: opening the Computer panel must not
+      // provision, wake or join a billed Box (or a VPS) the operator turned
+      // off.  Sleep and remove stay open, because they only wind a computer
+      // down.  An install with no `computerProviders` yet defers to the
+      // legacy allowlist, same as `server/computer-grants.ts`.
+      if (m[2] !== "sleep" && m[2] !== "remove") {
+        const backend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+        const providerId = backend === "vps" ? "selfHostedVps" : "asciiBox";
+        const providers = cfg.botDefaults?.computerProviders;
+        if (providers && providers[providerId] !== true) {
+          return json(res, 409, {
+            error: `${COMPUTER_PROVIDER_LABEL[providerId]} is turned off in Computer settings`,
+          });
+        }
       }
       if (resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "vps") {
         if (m[2] === "exec") {
