@@ -791,6 +791,28 @@ function sendOver(
         }),
       );
     });
+    // A stream that got no answer at all means the connection under it is
+    // most likely half-open, and cancelling the stream does not fix that:
+    // left cached, the retry and every later send would be written to the
+    // same dead socket.  The PING keepalive does not catch it either — its
+    // callback ignores errors and Node puts no timeout on a PING.  So evict
+    // the session, fail every other send still waiting on it (they are on
+    // the same dead connection and would each wait out their own deadline),
+    // and destroy it.  Only this session's pending set is swept; a
+    // replacement session's sends are never touched.
+    failCachedSession(
+      url.host,
+      raw,
+      Object.assign(new Error(`APNs http2 session evicted after a request exceeded the ${deadlineMs}ms deadline`), {
+        code: "ETIMEDOUT",
+        name: "TimeoutError",
+      }),
+    );
+    try {
+      raw.destroy();
+    } catch {
+      /* already gone, or a test double with no destroy() */
+    }
   }, deadlineMs);
   deadline.unref?.();
   const bodyChunks: string[] = [];
