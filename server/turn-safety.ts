@@ -10,6 +10,10 @@ export interface TurnComputerInputs {
    * webhook or resource trigger mounts the cloud computer whatever the bot's
    * own computers say. */
   runOn?: "maus" | "cloud";
+  /** The providers the turn actually mounted, once its computers resolved.
+   * Auto can fall back from an unavailable cloud computer to This Computer,
+   * so the grant alone over-counts what the turn holds. */
+  mounted?: readonly ("asciiBox" | "selfHostedVps" | "localVm" | "localMac")[];
 }
 
 export interface ActiveTurnOwner {
@@ -76,6 +80,20 @@ export class ActiveTurnOwners {
       }
     }
     return latest;
+  }
+
+  /** Record what a live dispatch actually mounted.  A dispatch that has
+   * already settled, or been replaced, is left alone. */
+  recordMounted(threadId: string, dispatchId: number, mounted: NonNullable<TurnComputerInputs["mounted"]>): void {
+    const owners = this.byThread.get(threadId);
+    if (!owners) return;
+    for (const owner of owners.values()) {
+      if (owner.dispatchId !== dispatchId) continue;
+      owner.computerInputs = {
+        ...(owner.computerInputs ?? { computers: undefined, cloudBackend: undefined }),
+        mounted: [...mounted],
+      };
+    }
   }
 
   threadForBot(botId: string): string | undefined {
