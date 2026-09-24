@@ -379,29 +379,40 @@ function slimSentryEvent(value: JsonValue | undefined): JsonValue | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+function isSentryUrl(val: unknown): boolean {
+  if (typeof val !== "string" || !val) return false;
+  try {
+    const parsed = new URL(val);
+    return parsed.hostname === "sentry.io" || parsed.hostname.endsWith(".sentry.io");
+  } catch {
+    return false;
+  }
+}
+
 export function isSentryWebhookPayload(payload: JsonValue): boolean {
   const root = asRecord(payload);
   if (!root) return false;
-  if (root.actor && asRecord(root.actor)?.name === "Sentry") return true;
+  if (root.actor) {
+    const act = asRecord(root.actor);
+    if (act?.name === "Sentry" || act?.id === "sentry") return true;
+  }
   if (root.installation && pickStr(asRecord(root.installation), "uuid")) {
     if (root.action !== undefined || root.data !== undefined) return true;
   }
   const data = asRecord(root.data) ?? root;
   const issue = asRecord(data.issue);
   const event = asRecord(data.event);
-  // culprit is not Sentry-exclusive — generic issue trackers carry one —
-  // so only markers no other provider emits mark the payload as Sentry.
+  // culprit and shortId are not Sentry-exclusive — generic issue trackers carry
+  // them — so only validated Sentry URLs, actor, or installation mark the payload.
   if (
     issue &&
-    (pickStr(issue, "shortId") !== undefined ||
-      (typeof issue.permalink === "string" && issue.permalink.includes("sentry.io")))
+    (isSentryUrl(issue.permalink) || isSentryUrl(issue.url))
   ) {
     return true;
   }
   if (
     event &&
-    ((typeof event.url === "string" && event.url.includes("sentry.io")) ||
-      (typeof event.web_url === "string" && event.web_url.includes("sentry.io")))
+    (isSentryUrl(event.url) || isSentryUrl(event.web_url) || isSentryUrl(event.permalink))
   ) {
     return true;
   }
@@ -418,13 +429,7 @@ export function slimSentryPayload(payload: JsonValue): JsonValue {
   const event = slimSentryEvent(data?.event ?? root.event);
   if (issue) out.issue = issue;
   if (event) out.event = event;
-  const actor = asRecord(root.actor);
-  if (actor) {
-    const slimAct: Record<string, JsonValue> = {};
-    assignDefined(slimAct, "name", pickStr(actor, "name"));
-    assignDefined(slimAct, "type", pickStr(actor, "type"));
-    if (Object.keys(slimAct).length) out.actor = slimAct;
-  }
+  assignDefined(out, "actor", slimSentryActor(root.actor));
   const installation = asRecord(root.installation);
   if (installation) {
     const uuid = pickStr(installation, "uuid");

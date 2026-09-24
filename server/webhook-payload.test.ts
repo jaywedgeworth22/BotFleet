@@ -185,7 +185,14 @@ describe("slimWebhookPayload", () => {
   it("does not treat a Sentry issue payload as GitHub", () => {
     const payload = {
       action: "unresolved",
-      data: { issue: { title: "Cron failure", shortId: "FLEET-1", project: { slug: "fleet-infra" } } },
+      data: {
+        issue: {
+          title: "Cron failure",
+          shortId: "FLEET-1",
+          permalink: "https://jays-services.sentry.io/issues/101/",
+          project: { slug: "fleet-infra" },
+        },
+      },
     };
     expect(isGithubWebhookPayload(payload)).toBe(false);
     expect(isSentryWebhookPayload(payload)).toBe(true);
@@ -206,6 +213,14 @@ describe("slimWebhookPayload", () => {
     expect(isSentryWebhookPayload(culpritOnly)).toBe(false);
     expect(slimWebhookPayload(culpritOnly)).toEqual(culpritOnly);
 
+    // shortId is also used by generic issue trackers — without a validated
+    // sentry.io URL, actor, or installation, it must not mark the payload as Sentry.
+    const shortIdOnly = {
+      data: { issue: { shortId: "INC-7", summary: "Failure", details: { foo: "bar" } } },
+    };
+    expect(isSentryWebhookPayload(shortIdOnly)).toBe(false);
+    expect(slimWebhookPayload(shortIdOnly)).toEqual(shortIdOnly);
+
     // event_id is generic across event systems — without a sentry.io URL or
     // Sentry actor/installation, it must not mark the payload as Sentry.
     const eventIdOnly = {
@@ -213,6 +228,19 @@ describe("slimWebhookPayload", () => {
     };
     expect(isSentryWebhookPayload(eventIdOnly)).toBe(false);
     expect(slimWebhookPayload(eventIdOnly)).toEqual(eventIdOnly);
+
+    // URLs with non-Sentry hostnames must not classify the payload as Sentry.
+    const fakeUrl = {
+      event: { url: "https://not-sentry.io/events/1", details: { secret: 123 } },
+    };
+    expect(isSentryWebhookPayload(fakeUrl)).toBe(false);
+    expect(slimWebhookPayload(fakeUrl)).toEqual(fakeUrl);
+
+    const docsUrl = {
+      data: { issue: { permalink: "https://example.com/docs/sentry.io", details: { secret: 123 } } },
+    };
+    expect(isSentryWebhookPayload(docsUrl)).toBe(false);
+    expect(slimWebhookPayload(docsUrl)).toEqual(docsUrl);
     expect(serializeWebhookPayload(generic)).toContain("foo");
   });
 
@@ -249,6 +277,7 @@ describe("slimWebhookPayload", () => {
     const slim = slimWebhookPayload(fatSentry) as Record<string, JsonValue>;
     const issue = slim.issue as Record<string, JsonValue>;
     expect(slim.action).toBe("unresolved");
+    expect(slim.actor).toEqual({ type: "application", id: "sentry", name: "Sentry" });
     expect(issue.shortId).toBe("SOCRATIC-TRADE-1Y");
     expect(issue.title).toBe("robinhood-broker connection failed");
     expect(issue.level).toBe("warning");

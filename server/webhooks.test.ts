@@ -272,6 +272,8 @@ describe("WebhookManager", () => {
     const warningEvent = {
       payload: {
         action: "unresolved",
+        installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+        actor: { type: "application", id: "sentry", name: "Sentry" },
         data: {
           issue: {
             id: "100",
@@ -295,6 +297,8 @@ describe("WebhookManager", () => {
     const errorEvent = {
       payload: {
         action: "unresolved",
+        installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+        actor: { type: "application", id: "sentry", name: "Sentry" },
         data: {
           issue: {
             id: "101",
@@ -396,6 +400,8 @@ describe("WebhookManager", () => {
     const clauseWarning = {
       payload: {
         action: "unresolved",
+        installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+        actor: { type: "application", id: "sentry", name: "Sentry" },
         data: {
           issue: {
             id: "103",
@@ -414,6 +420,8 @@ describe("WebhookManager", () => {
     const clauseDebug = {
       payload: {
         action: "unresolved",
+        installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+        actor: { type: "application", id: "sentry", name: "Sentry" },
         data: {
           issue: {
             id: "104",
@@ -541,6 +549,40 @@ describe("WebhookManager", () => {
     const condAssignResult = h.manager.receive(condAssignHook.endpointId, condAssignSecret, assignEvent);
     expect(condAssignResult).toMatchObject({ duplicate: false });
     expect(condAssignResult.runId).toBeDefined();
+
+    // 18. "Investigate the recent drop of warning events" uses "drop of" as a volume noun phrase
+    // and should NOT ignore warning events.
+    const { webhook: dropOfHook, secret: dropOfSecret } = h.manager.create({
+      name: "Recent Drop Of Warnings",
+      prompt: "Investigate the recent drop of warning events.",
+      botId: "maus-1",
+    });
+    const dropOfResult = h.manager.receive(dropOfHook.endpointId, dropOfSecret, clauseWarning);
+    expect(dropOfResult).toMatchObject({ duplicate: false });
+    expect(dropOfResult.runId).toBeDefined();
+
+    // 19. "Ignore warning events only in staging" is a location-qualified exclusion
+    // the payload cannot evaluate — keep warning events.
+    const { webhook: onlyInHook, secret: onlyInSecret } = h.manager.create({
+      name: "Staging Only Warning Handler",
+      prompt: "Ignore warning events only in staging.",
+      botId: "maus-1",
+    });
+    const onlyInResult = h.manager.receive(onlyInHook.endpointId, onlyInSecret, clauseWarning);
+    expect(onlyInResult).toMatchObject({ duplicate: false });
+    expect(onlyInResult.runId).toBeDefined();
+
+    // 20. "Ignore assignment updates only for primary" is a scope-qualified exclusion
+    // the payload cannot evaluate — keep assigned deliveries.
+    const { webhook: onlyForAssignHook, secret: onlyForAssignSecret } = h.manager.create({
+      name: "Primary Only Assignment Handler",
+      prompt: "Ignore assignment updates only for primary.",
+      botId: "maus-1",
+    });
+    const onlyForAssignResult = h.manager.receive(onlyForAssignHook.endpointId, onlyForAssignSecret, assignEvent);
+    expect(onlyForAssignResult).toMatchObject({ duplicate: false });
+    expect(onlyForAssignResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

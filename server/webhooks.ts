@@ -336,8 +336,8 @@ export function shouldIgnoreWebhookEvent(
 
     const isLevelExcluded = (lvl: string): boolean => {
       // Find exclusion phrases, stopping at clause boundaries (;, \n, .)
-      // Distinguish noun usages like "drop in warning" or "a drop in" from imperative drop commands
-      const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden)\\s+)drop(?!\\s+in\\b))`;
+      // Distinguish noun usages like "drop in warning", "drop of warning", or "recent drop of" from imperative drop commands
+      const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)drop(?!\\s+(?:in|of)\\b))`;
       // Positive handling/investigation verbs that govern events
       const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
       // An exception word or positive handling verb stops exclusion scanning so exclusions bind to their target
@@ -372,13 +372,13 @@ export function shouldIgnoreWebhookEvent(
       if (negationPattern.test(prompt)) return false;
 
       // A conditional carve-out ("ignore warning events unless they occur
-      // in production", "only if from staging") qualifies the exclusion,
-      // and the payload carries nothing to evaluate the condition with.
+      // in production", "only in staging", "only if from staging") qualifies
+      // the exclusion, and the payload carries nothing to evaluate the condition with.
       // Conservative: keep the event rather than drop one the condition
       // would have kept.  The scan must not cross another instruction
       // verb — "ignore warnings, notify when resolved" conditions the
       // notify, not the ignore.
-      const conditional = `(?:unless|only\\s+(?:if|when)|if|when)`;
+      const conditional = `(?:unless|only\\s+(?:if|when|in|from|for|on)|if|when)`;
       const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
       const conditionalPattern = new RegExp(
         `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b${conditionalGap}\\b${conditional}\\b` +
@@ -401,7 +401,7 @@ export function shouldIgnoreWebhookEvent(
 
     if (action === "assigned" || action === "unassigned") {
       const isAssignmentExcluded = (): boolean => {
-        const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden)\\s+)drop(?!\\s+in\\b))`;
+        const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)drop(?!\\s+(?:in|of)\\b))`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
         const assignmentTarget = `\\b(?:assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const exceptionBoundary = String.raw`(?:except|but|other\s+than|apart\s+from|aside\s+from|${contrastingVerb})`;
@@ -434,10 +434,10 @@ export function shouldIgnoreWebhookEvent(
         if (negationPattern.test(prompt)) return false;
 
         // A conditional carve-out ("ignore assignment updates unless assigned to
-        // the on-call engineer", "only if assigned to primary") qualifies the
+        // the on-call engineer", "only for primary") qualifies the
         // exclusion, and the payload carries nothing to evaluate the condition with.
         // Conservative: keep the event rather than drop one the condition would have kept.
-        const conditional = `(?:unless|only\\s+(?:if|when)|if|when)`;
+        const conditional = `(?:unless|only\\s+(?:if|when|in|from|for|on)|if|when)`;
         const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
         const conditionalPattern = new RegExp(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}${conditionalGap}\\b${conditional}\\b` +
