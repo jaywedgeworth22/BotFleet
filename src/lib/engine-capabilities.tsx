@@ -11,9 +11,9 @@
 //   - the fleet-recall "Coding-seat tiers (2026-09-16)" + "Coding-seat tiers
 //     correction (2026-09-18)" notes for subscription pricing
 //
-// Fields marked "MARKED: needs Jay's confirmation" are the ones where I
+// Fields marked "MARKED: needs confirmation" are the ones where
 // could not find a hard source inside the repo.  Do not silently rewrite
-// them — Jay's correction on 2026-09-18 swapped a Plus for a Pro Lite, so
+// them — the correction on 2026-09-18 swapped a Plus for a Pro Lite, so
 // a wrong subscription tier here would surface wrong numbers in three
 // different panels.
 
@@ -93,14 +93,14 @@ export interface EngineCapabilityEntry {
   defaultModels: EngineModel[];
 }
 
-// MARKED: needs Jay's confirmation — Cursor Ultra monthly price. The
+// MARKED: needs confirmation — Cursor Ultra monthly price. The
 // fleet-recall note "Coding-seat tiers (2026-09-16)" bundles Cursor Ultra
 // into the SuperGrok Heavy subscription.  Cursor.com sells Cursor Ultra
-// independently too; if Jay pays for it separately, the costPerMonth here
+// independently too; if it is billed separately, the costPerMonth here
 // duplicates the spend.  Until confirmed, costPerMonth is `null` and the
 // "What-if API" projection does not surface a Cursor subscription line.
 const CURSOR_ULTRA_NOTE =
-  "Cursor Ultra quota is bundled into Jay's xAI SuperGrok Heavy subscription per fleet-recall 2026-09-16 — the standalone price below is the public catalog number, not what is actually billed.";
+  "Cursor Ultra quota is bundled into the xAI SuperGrok Heavy subscription per fleet-recall 2026-09-16 — the standalone price below is the public catalog number, not what is actually billed.";
 
 const CLAUDE_MAX_NOTE =
   "Claude Max 20x per fleet-recall 2026-09-16 ($213.20/mo).  Subscription is the only billing mode available — no Anthropic API key is configured for this engine.";
@@ -112,13 +112,13 @@ const MINIMAX_TOKEN_PLAN_NOTE =
   "MiniMax Token Plan Max ($55/mo per fleet-recall 2026-09-16).  The PAYG API rates below are what the registry uses for the 'what-if API' projection; the daily UI never charges against them unless the user explicitly opts into API mode.";
 
 const GROK_SUPER_NOTE =
-  "xAI SuperGrok Heavy per fleet-recall 2026-09-16 ($99/mo after the 67% promo on the $300 list price — switches mid-October to the plain $100 SuperGrok plan).  Cursor Ultra and Grok Bot bundles are folded in for Jay's seat.";
+  "xAI SuperGrok Heavy per fleet-recall 2026-09-16 ($99/mo after the 67% promo on the $300 list price — switches mid-October to the plain $100 SuperGrok plan).  Cursor Ultra and Grok Bot bundles are folded into the subscription.";
 
 const ANTIGRAVITY_ULTRA_NOTE =
   "Google AI Ultra per fleet-recall 2026-09-16 — $105.79/mo, renewing 2026-10-05 at $50/mo.  Antigravity access is the agent-approval lane behind PR #516.";
 
 const DEEPSEEK_HARNESS_NOTE =
-  "DeepSeek Harness (DSH) is bundled with Claude Max per fleet-recall 2026-09-16 — there is no separate subscription tier for Jay's seat, the standalone catalog number is what the registry would charge for a PAYG API key.";
+  "DeepSeek Harness (DSH) is bundled with Claude Max per fleet-recall 2026-09-16 — there is no separate subscription tier for this seat, the standalone catalog number is what the registry would charge for a PAYG API key.";
 
 export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
   grok: {
@@ -131,7 +131,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       subscription: {
         tierLabel: "xAI SuperGrok Heavy",
         costPerMonth: 99,
-        includedQuota: "Bundled Cursor Ultra + Grok Bot on Jay's seat",
+        includedQuota: "Bundled Cursor Ultra + Grok Bot on the subscription",
         notes: GROK_SUPER_NOTE,
       },
       api: {
@@ -160,7 +160,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       prose: [
         "xAI's Grok ships a 1M+ token context window on the SuperGrok Heavy tier, which is the longest window BotFleet has on a subscription today.",
         "Live web research is a first-class tool — when a bot needs the latest docs, the news, or a fresh pricing page, Grok is the engine that fetches and answers without a separate tool chain.",
-        "On Jay's seat, Grok quota is bundled with Cursor Ultra and Grok Bot under SuperGrok Heavy, so the same subscription covers three of the seven engines.",
+        "On this subscription, Grok quota is bundled with Cursor Ultra and Grok Bot under SuperGrok Heavy, so the same subscription covers three of the seven engines.",
       ],
     },
     defaultModels: [
@@ -179,10 +179,10 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       subscription: {
         tierLabel: "Cursor Ultra (bundled)",
         costPerMonth: null,
-        includedQuota: "Bundled into Jay's SuperGrok Heavy",
+        includedQuota: "Bundled into SuperGrok Heavy",
         notes: CURSOR_ULTRA_NOTE,
       },
-      notes: "MARKED: needs Jay's confirmation — Cursor Ultra costPerMonth is null until Jay confirms whether it is billed standalone or only via the xAI bundle.",
+      notes: "MARKED: needs confirmation — Cursor Ultra costPerMonth is null until it is confirmed whether the plan is billed standalone or only via the xAI bundle.",
     },
     capabilities: {
       files: "yes",
@@ -197,7 +197,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       headline: "Cursor Ultra quota without paying for Cursor twice.",
       prose: [
         "Cursor's CLI is the same tool the Cursor desktop app exposes — BotFleet just drives it over ACP.",
-        "On Jay's seat the Cursor Ultra quota is bundled into the xAI SuperGrok Heavy subscription, so the same plan covers Grok and Cursor.",
+        "On this subscription the Cursor Ultra quota is bundled into the xAI SuperGrok Heavy subscription, so the same plan covers Grok and Cursor.",
         "Cross-bot coordination is reliable here: Cursor Agent participates in groups and rooms, unlike older MCP-only shells.",
       ],
     },
@@ -305,7 +305,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
         notes: ANTIGRAVITY_ULTRA_NOTE,
       },
       api: {
-        // MARKED: needs Jay's confirmation — Gemini 2.5 Pro API rates from
+        // MARKED: needs confirmation — Gemini 2.5 Pro API rates from
         // the public Google AI Studio pricing page; cached-input rate is the
         // public "context caching" tier.
         inputPer1k: 0.00125,
@@ -313,7 +313,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
         cachedInputPer1k: 0.00031,
         notes: "Gemini 2.5 Pro PAYG rates — reference only; subscription is the primary billing mode.",
       },
-      notes: "Subscription is what Jay actually pays; the API block exists for the 'what-if API' projection only.",
+      notes: "Subscription is the primary billing path; the API block exists for the 'what-if API' projection only.",
     },
     capabilities: {
       files: "yes",
