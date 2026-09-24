@@ -84,6 +84,10 @@ const turns = new Map<string, AgentTurn>();
 // provider-error boundary independently from span state so a later failed
 // completion still deduplicates against the captured runtime error.
 const reportedProviderErrors = new Set<string>();
+// An ACP "initialize timed out" is breadcrumbed as an expected condition,
+// but the turn then finishes as a generic rpc_error.  Remember those turns
+// so the completion breadcrumbs too instead of paging a second report.
+const initTimeoutTurns = new Set<string>();
 
 let identityResolver: ((threadId: string) => TurnIdentity | null) | null = null;
 
@@ -302,7 +306,7 @@ function applyCost(span: SpanLike, cost: number | null | undefined, billingMode?
   span.setAttribute("gen_ai.usage.cost", cost);
 }
 
-const EXPECTED_TURN_STOPS = new Set(["auth_required", "cancelled", "interrupted"]);
+const EXPECTED_TURN_STOPS = new Set(["auth_required", "cancelled", "interrupted", "request_timeout"]);
 
 function endTurn(
   key: string,
@@ -500,7 +504,9 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         event.setup ||
         event.message.includes("The saved ACP session could not be resumed") ||
         event.message.includes("nobody answered this permission request in time") ||
-        event.message.includes("timeout waiting for response");
+        event.message.includes("timeout waiting for response") ||
+        event.message.includes("initialize timed out") ||
+        event.message.includes("the model did not answer within");
 
       if (isExpectedNonCrash) {
         sink.addBreadcrumb?.({
@@ -508,6 +514,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
           message: event.message.slice(0, 500),
           level: "warning",
         });
+        if (event.message.includes("initialize timed out")) initTimeoutTurns.add(key);
         break;
       }
       const turn = turns.get(key);
@@ -527,7 +534,12 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
     case "turn.completed": {
       const runtimeErrorReported = reportedProviderErrors.has(key);
       const stopReason = clean(event.stopReason)?.slice(0, 200) ?? "unknown";
-      const expectedStop = !event.ok && !runtimeErrorReported && EXPECTED_TURN_STOPS.has(stopReason);
+      const afterInitTimeout = initTimeoutTurns.delete(key);
+      const expectedStop =
+        !event.ok &&
+        !runtimeErrorReported &&
+        (EXPECTED_TURN_STOPS.has(stopReason) ||
+          (afterInitTimeout && stopReason === "rpc_error"));
       if (!event.ok) {
         // A failed turn is the thing an operator wants an Issue for.  Most
         // drivers report the failure only here — they never emit
@@ -535,6 +547,10 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // OpenAI-compatible, Grok, BoxAgent, and chat-completions drivers
         // report a user-initiated stop as "interrupted" rather than
         // "cancelled" — both are the expected, benign shape of a stop.
+        // "request_timeout" is the driver's own model-request timeout:  the
+        // matching runtime.error was already breadcrumbed as an expected
+        // operational condition, so the completion must not page an Issue.
+        // request_timeout + ACP init→rpc_error covered via expectedStop above.
         if (expectedStop) {
           sink.addBreadcrumb?.({
             category: "botfleet.turn",
@@ -564,6 +580,7 @@ export function resetSentryAiForTests(): void {
   }
   turns.clear();
   reportedProviderErrors.clear();
+  initTimeoutTurns.clear();
   identityResolver = null;
 }
 
