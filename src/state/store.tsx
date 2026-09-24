@@ -226,8 +226,11 @@ export interface Task {
   /** what this task has spent, banked once per settled turn */
   usage?: TaskUsage;
   /** Per-instance breakdown of `usage`, banked from the selection that
-   *  actually ran each turn (post-fallback).  Absent on older records. */
-  usageByInstance?: Record<string, TaskUsage>;
+   *  actually ran each turn (post-fallback).  `engineId` is the registry
+   *  engine resolved at bank time, so attribution survives deleting the
+   *  connection;  `byModel` splits the bucket per model that ran.
+   *  Absent on older records. */
+  usageByInstance?: Record<string, TaskUsage & { engineId?: string; byModel?: Record<string, TaskUsage> }>;
   /** folder this task's turns run in, pinned on its first turn; null =
    * legacy home-folder session; absent = not pinned yet */
   cwd?: string | null;
@@ -261,7 +264,7 @@ export interface Bot {
   /** Shared-room turns this bot spoke, banked per engine instance (room
    *  threads are not bot tasks).  `lastAt` is the bucket's most recent
    *  turn, for period windows. */
-  roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }>;
+  roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number; engineId?: string; byModel?: Record<string, TaskUsage> }>;
   name: string;
   title: string;
   description: string;
