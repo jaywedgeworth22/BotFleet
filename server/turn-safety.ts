@@ -6,6 +6,10 @@ import type { CloudBackend, ModelSelection } from "./contracts.ts";
 export interface TurnComputerInputs {
   computers: readonly ("cloud" | "vm" | "local")[] | undefined;
   cloudBackend: CloudBackend | undefined;
+  /** The destination an automation dispatched the turn to: a cloud routine,
+   * webhook or resource trigger mounts the cloud computer whatever the bot's
+   * own computers say. */
+  runOn?: "maus" | "cloud";
 }
 
 export interface ActiveTurnOwner {
