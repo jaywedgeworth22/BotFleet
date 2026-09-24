@@ -3729,6 +3729,9 @@ const routineRequests = new RoutineRequestService({
 /** Serialized byte budget for one list_routines response (50 KB target,
  * with headroom for the tool wrapper). */
 const ROUTINE_LIST_BUDGET_BYTES = 48_000;
+/** Most routines one list_routines response returns; the rest are counted
+ * in routinesOmitted. */
+const ROUTINE_LIST_MAX_ROWS = 100;
 const ROUTINE_WEEKDAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 type ManagedRoutine = ReturnType<RoutineManager["listRoutines"]>[number];
 type AgentRoutineFields = {
@@ -4149,10 +4152,13 @@ export function executeListRoutinesRequest(input: {
     body: {
       ...envelope,
       // The whole list, not just each field, stays inside the budget.
+      // Routines past the 100-row cap count as omitted too, so a capped
+      // list never reads as complete.
       ...fitListToBudget(
         envelope,
-        ownedRoutines.slice(0, 100).map((routine) => agentRoutine(routine)),
+        ownedRoutines.slice(0, ROUTINE_LIST_MAX_ROWS).map((routine) => agentRoutine(routine)),
         ROUTINE_LIST_BUDGET_BYTES,
+        Math.max(0, ownedRoutines.length - ROUTINE_LIST_MAX_ROWS),
       ),
     },
   };
