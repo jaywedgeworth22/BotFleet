@@ -574,7 +574,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // item.started at all; calling it here would double every tool
         // span.
         const { text, reasoning, usage, tool_calls } = await withChatSpan(
-          { model, conversationId: threadId, provider: genAiProvider(DRIVER_KIND) },
+          { model, conversationId: threadId, taskId: turnId, provider: genAiProvider(DRIVER_KIND) },
           ({ recordUsage }) =>
             complete(roundMessages, model, {
               stream: true,

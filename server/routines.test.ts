@@ -26,6 +26,9 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   const taskTitles: string[] = [];
   const emitted: any[] = [];
   const failed: any[] = [];
+  const checkInStarts: Array<{ run: any; routine: any }> = [];
+  const checkInFinishes: Array<{ run: any; checkInId: string; ok: boolean }> = [];
+  let checkInIdSeq = 0;
   let live = true;
   let admitting = true;
   let canStart = true;
@@ -56,6 +59,13 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
       triggerSources.push(triggerSource);
     },
     onRunFailed: (run) => failed.push(run),
+    checkInStart: (run, routine) => {
+      checkInStarts.push({ run: { ...run }, routine: { ...routine } });
+      return `check-in-${++checkInIdSeq}`;
+    },
+    checkInFinish: (run, checkInId, ok) => {
+      checkInFinishes.push({ run: { ...run }, checkInId, ok });
+    },
   };
   const manager = new RoutineManager(options);
   return {
@@ -68,6 +78,8 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     triggerSources,
     taskActivations,
     failed,
+    checkInStarts,
+    checkInFinishes,
     setNow: (value: number) => (now = value),
     setBot: (value: typeof bot) => (bot = value),
     setLive: (value: boolean) => (live = value),
@@ -1295,5 +1307,108 @@ describe("RoutineManager", () => {
       const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
       expect(disk.botSnoozes ?? {}).not.toHaveProperty("compiler-bot");
     });
+  });
+});
+
+describe("Sentry Crons check-ins", () => {
+  it("opens a check-in only for a genuine schedule-triggered dispatch, and closes it on success", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Housekeeper sweep",
+      prompt: "check disk and RAM",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+
+    expect(h.checkInStarts).toHaveLength(1);
+    expect(h.checkInStarts[0].run.routineId).toBe(routine.id);
+    expect(h.checkInStarts[0].routine.id).toBe(routine.id);
+    const run = h.manager.listRuns()[0]!;
+    expect(run.sentryCheckInId).toBe("check-in-1");
+
+    const base = { eventId: "e", provider: "claude" as const, threadId: run.threadId!, createdAt: new Date().toISOString() };
+    h.manager.handleRuntimeEvent({ ...base, type: "turn.completed", ok: true, stopReason: "end_turn" });
+
+    expect(h.checkInFinishes).toHaveLength(1);
+    expect(h.checkInFinishes[0]).toMatchObject({ checkInId: "check-in-1", ok: true });
+  });
+
+  it("closes the check-in with ok:false when the turn fails", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Monitor sweep",
+      prompt: "check uptime",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    const run = h.manager.listRuns()[0]!;
+
+    const base = { eventId: "e", provider: "claude" as const, threadId: run.threadId!, createdAt: new Date().toISOString() };
+    h.manager.handleRuntimeEvent({ ...base, type: "turn.completed", ok: false, stopReason: "prompt_timeout" });
+
+    expect(h.checkInFinishes).toHaveLength(1);
+    expect(h.checkInFinishes[0]).toMatchObject({ checkInId: "check-in-1", ok: false });
+  });
+
+  it("closes the check-in with ok:false for an orphaned run the stall sweep gives up on", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Deployer sweep",
+      prompt: "ship it",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    h.setLive(false);
+    h.setNow(h.options.now!() + 6 * 60_000);
+    await h.manager.tick();
+
+    expect(h.checkInFinishes).toHaveLength(1);
+    expect(h.checkInFinishes[0]).toMatchObject({ checkInId: "check-in-1", ok: false });
+  });
+
+  it("never opens a check-in for a webhook, resource, or manual dispatch", async () => {
+    const h = harness();
+    h.manager.enqueueWebhook({
+      webhookId: "wh-1",
+      webhookName: "Fixture hook",
+      prompt: "handle delivery",
+      botId: "maus-1",
+      runOn: "maus",
+      deliveryId: "delivery-1",
+      receivedAt: 1,
+    });
+    await h.manager.tick();
+    expect(h.checkInStarts).toHaveLength(0);
+
+    const routine = h.manager.create({
+      name: "Manual-only routine",
+      prompt: "run when asked",
+      botId: "maus-1",
+      schedule: { type: "once", at: h.options.now!() + 60_000 },
+    });
+    h.manager.runNow(routine.id);
+    await h.manager.tick();
+    expect(h.checkInStarts).toHaveLength(0);
+  });
+
+  it("hands the live routine (including its schedule) to checkInStart — whether a schedule is recurring enough to watch is the callback's call, not routines.ts's", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "One-time reminder",
+      prompt: "do the thing once",
+      botId: "maus-1",
+      schedule: { type: "once", at: new Date(2026, 7, 17, 8, 5).getTime() },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started).toHaveLength(1);
+    expect(h.checkInStarts).toHaveLength(1);
+    expect(h.checkInStarts[0].routine.schedule).toEqual({ type: "once", at: routine.nextRunAt });
   });
 });

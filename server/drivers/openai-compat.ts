@@ -438,7 +438,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           msg: { model, messageCount: roundMessages.length, round: opts.round },
         });
         const { text, reasoning, tool_calls, usage } = await withChatSpan(
-          { model, conversationId: threadId, provider: sentryProviderForUrl(config.url) },
+          { model, conversationId: threadId, taskId: turnId, provider: sentryProviderForUrl(config.url) },
           ({ recordUsage }) =>
             complete(roundMessages, model, {
               stream: true,

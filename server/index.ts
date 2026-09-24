@@ -233,6 +233,7 @@ import { infisical, type RefreshReason } from "./infisical.ts";
 import { InfisicalError } from "./infisical-client.ts";
 import { credentialFingerprint, SECRET_FIELDS, secretProvenance, secretSource, vaultNames, type SecretFieldSpec } from "./secret-map.ts";
 import { configureTurnIdentity, observeRuntimeEvent } from "./sentry-ai.ts";
+import { checkInRoutineFinish, checkInRoutineStart } from "./sentry-crons.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import {
@@ -1526,7 +1527,7 @@ configureTurnIdentity((threadId) => {
 // The latest running token totals for the turn in flight on each thread.
 // Providers report cumulative-within-turn numbers; the final value is folded
 // into the task's tally when the turn settles.
-const turnUsage = new Map<string, { input: number; output: number; cachedInput?: number }>();
+const turnUsage = new Map<string, { input: number; output?: number; cachedInput?: number }>();
 
 // Bounded per active turn. OpenHands uses a bounded recent-event scan for
 // the same class of stuck-loop detection; retaining an unlimited set of
@@ -3680,6 +3681,8 @@ routines = new RoutineManager({
     const detail = run.error ? `${run.routineName}: ${run.error}` : run.routineName;
     notify(buildNotification("routine-failed", bot, run.threadId ?? bot.threadId, detail));
   },
+  checkInStart: checkInRoutineStart,
+  checkInFinish: checkInRoutineFinish,
 });
 const recoveryOwners = routines.routineRequestReceiptOwners();
 if (recoveryOwners.length > 0) {

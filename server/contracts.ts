@@ -125,8 +125,12 @@ export type RuntimeEvent = RuntimeEventBase &
          * `input` (claude.ts sums cache reads into input; codex reports it
          * that way natively).  Usage Monitor telemetry subtracts it back out
          * to bill cache reads at their own rate, so a driver that reports
-         * input EXCLUDING cache must fold the cache figure in first. */
-        usage?: { input: number; output: number; cachedInput?: number };
+         * input EXCLUDING cache must fold the cache figure in first.
+         * `output` is optional: DSH's ACP server reports only a combined
+         * context-occupancy figure (session/update `usage_update`), never a
+         * real input/output split, so a driver that only knows one side
+         * omits the other rather than reporting a fabricated 0. */
+        usage?: { input: number; output?: number; cachedInput?: number };
       }
     | {
         type: "item.started";
@@ -181,8 +185,9 @@ export type RuntimeEvent = RuntimeEventBase &
         source: "user" | "auto" | "timeout" | "system" | "unavailable" | "peer";
         approvalScope?: "local-computer";
       }
-    // Same invariant as turn.completed.usage: `cachedInput` is a subset of `input`.
-    | { type: "thread.token-usage.updated"; input: number; output: number; cachedInput?: number }
+    // Same invariant as turn.completed.usage: `cachedInput` is a subset of
+    // `input`, and `output` is optional for the same reason (see there).
+    | { type: "thread.token-usage.updated"; input: number; output?: number; cachedInput?: number }
     // `setup: true` marks a failure the user fixes by installing or
     // configuring something, not by retrying — the UI offers setup instead.
     | { type: "runtime.error"; message: string; setup?: boolean }

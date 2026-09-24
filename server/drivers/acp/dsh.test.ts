@@ -112,6 +112,7 @@ describe("native DSH ACP turns", () => {
     delete process.env.FAKE_ACP_REASONING_EFFORTS;
     delete process.env.FAKE_ACP_REASONING_STICKS;
     delete process.env.FAKE_ACP_CONFIG_REPLY_BARE;
+    delete process.env.FAKE_ACP_USAGE_UPDATE;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -160,6 +161,28 @@ describe("native DSH ACP turns", () => {
       { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "model", value: pro } },
       { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "reasoning_effort", value: "max" } },
     ]);
+  });
+
+  it("reports input tokens (no fabricated output) from DSH's usage_update notification", async () => {
+    // The real @deepseek-ai/dsh-acp package never puts usage on the
+    // session/prompt result — its only signal is a session/update
+    // sessionUpdate:"usage_update" notification carrying a combined
+    // context-occupancy figure, not a real input/output split.  This is
+    // the regression test for BOTFLEET's fix: DSH turns used to report no
+    // token usage at all.
+    process.env.FAKE_ACP_USAGE_UPDATE = "1234";
+    await create();
+
+    await instance!.adapter.sendTurn({ threadId: "dsh-usage-turn", text: "how many tokens" });
+    const done = await recorder!.until((event) => event.type === "turn.completed");
+
+    expect(recorder!.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "thread.token-usage.updated", input: 1234 }),
+    ]));
+    const liveUpdate = recorder!.events.find((event) => event.type === "thread.token-usage.updated");
+    expect(liveUpdate).not.toHaveProperty("output");
+    expect(done).toMatchObject({ ok: true, usage: { input: 1234 } });
+    expect(done).not.toHaveProperty("usage.output");
   });
 
   it("uses session/resume because current DSH rejects session/load", async () => {

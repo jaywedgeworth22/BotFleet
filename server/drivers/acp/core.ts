@@ -617,8 +617,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
          * `turn.completed.usage` is defined to be.  Emitting it only as
          * `thread.token-usage.updated` left every ACP engine — nine of the
          * seventeen — invisible to cost bookkeeping and usage caps, because
-         * the contract says that live indicator must never be summed. */
-        let turnUsage: { input: number; output: number } | undefined;
+         * the contract says that live indicator must never be summed.
+         * `output` is optional: DSH's ACP server (`@deepseek-ai/dsh-acp`)
+         * never puts usage on the `session/prompt` result at all — its only
+         * signal is a `session/update` `usage_update` notification carrying
+         * a combined context-occupancy figure (see the `usage_update` case
+         * in `handleNotification` below), with no input/output split. */
+        let turnUsage: { input: number; output?: number } | undefined;
 
         const settle = (ok: boolean, stopReason: string | null) => {
           if (state.settled) return;
@@ -764,6 +769,43 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   itemId: u.toolCallId,
                   ok: u.status !== "failed",
                   detail: describeResult(u.content ?? u.rawOutput),
+                });
+              }
+              break;
+            }
+            // DSH's ACP server (`@deepseek-ai/dsh-acp`) never reports usage on
+            // the `session/prompt` result — `handle_prompt`'s only reply is
+            // `{ stopReason }`. Its one usage signal is this notification:
+            // `used` is the session's running context-token count
+            // (`tokenMeter.measure(session).totalTokens`, i.e. how much of
+            // the context window the conversation now occupies), not a
+            // per-turn delta and not a real input/output split — the
+            // model's actual per-call usage (`event.data.usage`) is computed
+            // internally but never crosses the wire. `used` is still the
+            // closest honest reading of "tokens this turn's request carried"
+            // available (the context sent grows by the same amount the
+            // transcript grows), so it becomes `gen_ai.usage.input_tokens`;
+            // there is no reported output figure, so that attribute stays
+            // unset instead of a fabricated 0 — see the `output?:` comment
+            // on `turnUsage` above.
+            case "usage_update": {
+              const used = u.used;
+              if (typeof used === "number" && Number.isFinite(used)) {
+                // Spread, not a literal `output: turnUsage?.output` — that
+                // would always create the key (value undefined when
+                // unknown), and turn.completed's `usage` below is emitted
+                // by spreading this same object, so an explicit
+                // `output: undefined` key would survive onto the wire
+                // event instead of being omitted.
+                turnUsage = {
+                  input: Math.max(0, Math.trunc(used)),
+                  ...(turnUsage?.output != null ? { output: turnUsage.output } : {}),
+                };
+                emit({
+                  ...base(threadId, turnId),
+                  type: "thread.token-usage.updated",
+                  input: turnUsage.input,
+                  ...(turnUsage.output != null ? { output: turnUsage.output } : {}),
                 });
               }
               break;
