@@ -5874,6 +5874,10 @@ function settleInterruptedBots(
   }
 }
 
+/** Provider-policy keys `POST /api/bots/apply-defaults` refuses; they belong
+ * to `PUT /api/config` and its revocation gates. */
+const APPLY_DEFAULTS_POLICY_KEYS = ["computerProviders", "vpsMode", "allowedComputers"] as const;
+
 /** A Computer provider was turned off in Settings.  The fleet is not
  * rebuilt for that (see CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD), but a turn that
  * already mounted the provider must not keep driving it until the turn
@@ -10136,11 +10140,32 @@ const server = createServer(async (req, res) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
+      // Provider policy (the per-provider toggles, the VPS mode and the legacy
+      // allowlist) is not this route's to change.  PUT /api/config owns it,
+      // with the gates a revocation needs: the local-Auto consent check
+      // against the NEXT allowlist and the targeted interrupt of turns that
+      // hold a disabled provider.  Saving it here skipped both, so a stale
+      // window could turn host access back on unacknowledged, or leave a
+      // disabled provider's mounts running.  Refuse rather than drop it, so a
+      // caller that meant to change policy is told so.
+      if (
+        body.botDefaults && typeof body.botDefaults === "object" && !Array.isArray(body.botDefaults) &&
+        APPLY_DEFAULTS_POLICY_KEYS.some((key) => Object.hasOwn(body.botDefaults as object, key))
+      ) {
+        return json(res, 400, {
+          error: "apply-defaults changes computer defaults only; save provider settings through PUT /api/config",
+        });
+      }
       const defaults = parseConfigPatch({ botDefaults: body.botDefaults ?? cfg.botDefaults });
       const incoming = defaults.botDefaults;
       if (!incoming) {
         return json(res, 400, { error: "botDefaults must include computers or cloudBackend" });
       }
+      // The backend this apply leaves in place.  Each bot's grant is resolved
+      // against it, not the one being replaced, so an atomic Box-to-VPS switch
+      // is filtered with the VPS toggle.  Provider toggles cannot change here
+      // (see above), so the stored ones are the next ones.
+      const nextCloudBackend = incoming.cloudBackend ?? cfg.botDefaults?.cloudBackend;
       const requested = incoming.computers;
       if (requested !== undefined) {
         if (!Array.isArray(requested)) {
@@ -10176,7 +10201,7 @@ const server = createServer(async (req, res) => {
       const providerGranted = (bot: { cloudBackend?: "box" | "vps" }): Array<"cloud" | "vm" | "local"> => {
         const providers = cfg.botDefaults?.computerProviders;
         if (!providers) return next;
-        const backend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+        const backend = resolveCloudBackend(bot.cloudBackend, nextCloudBackend);
         return next.filter((entry) => {
           if (entry === "cloud") return backend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true;
           if (entry === "vm") return providers.localVm === true;
@@ -10273,7 +10298,14 @@ const server = createServer(async (req, res) => {
       // its current value into the stored default means re-enabling a
       // destination later silently fails to bring it back, because the
       // default it would have come from was overwritten on the way in.
-      cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming };
+      // Only the computer defaults: provider policy is refused above, and a
+      // body with no botDefaults falls back to the stored ones, which must not
+      // be re-saved as if this route had set them.
+      cfg.botDefaults = {
+        ...(cfg.botDefaults ?? {}),
+        ...(incoming.computers !== undefined ? { computers: incoming.computers } : {}),
+        ...(incoming.cloudBackend !== undefined ? { cloudBackend: incoming.cloudBackend } : {}),
+      };
       saveConfig({ botDefaults: cfg.botDefaults });
       const status = configStatus();
       broadcast({ kind: "config", ...status });
