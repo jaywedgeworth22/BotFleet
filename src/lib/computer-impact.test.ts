@@ -119,3 +119,20 @@ describe("ComputerImpactConfirmModal copy", () => {
     }
   });
 });
+
+describe("LocalComputerSection before the config hydrates", () => {
+  it("locks the provider controls while there is no config to read", async () => {
+    const { providerControlsLocked, resolveWorkspaceProviders } = await import("./workspace-providers");
+    // With no config the resolver falls back to every provider on, which is
+    // exactly the state a premature save would write back over the disk.
+    expect(resolveWorkspaceProviders(null).providers).toEqual({
+      asciiBox: true, selfHostedVps: true, localVm: true, localMac: true,
+    });
+    expect(providerControlsLocked(null, false)).toBe(true);
+    expect(providerControlsLocked(undefined, false)).toBe(true);
+    const config = { botDefaults: { computerProviders: { asciiBox: false, selfHostedVps: false, localVm: true, localMac: false } } } as any;
+    expect(providerControlsLocked(config, false)).toBe(false);
+    expect(providerControlsLocked(config, true)).toBe(true);
+    expect(resolveWorkspaceProviders(config).providers.asciiBox).toBe(false);
+  });
+});
