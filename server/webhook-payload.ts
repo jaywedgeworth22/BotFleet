@@ -254,6 +254,12 @@ function slimGithubPayload(root: Record<string, JsonValue>): Record<string, Json
   assignDefined(out, "after", pickStr(root, "after"));
   assignDefined(out, "before", pickStr(root, "before"));
   assignDefined(out, "master_branch", pickStr(root, "master_branch"));
+  assignDefined(out, "state", pickStr(root, "state"));
+  assignDefined(out, "sha", pickStr(root, "sha"));
+  assignDefined(out, "context", pickStr(root, "context"));
+  const description = pickStr(root, "description");
+  if (description) out.description = description.length > 500 ? `${description.slice(0, 500)}…` : description;
+  assignDefined(out, "target_url", pickStr(root, "target_url"));
   assignDefined(out, "created", pickBool(root, "created"));
   assignDefined(out, "deleted", pickBool(root, "deleted"));
   assignDefined(out, "forced", pickBool(root, "forced"));

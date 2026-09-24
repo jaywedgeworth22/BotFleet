@@ -956,6 +956,32 @@ describe("WebhookManager", () => {
     const pushResult = h.manager.receive(compileHook.endpointId, compileSecret, pushEvent);
     expect(pushResult).toMatchObject({ ignored: true });
 
+    // 40. Duplicate receipts are checked before mutable ingress filters
+    const { webhook: mutableHook, secret: mutableSecret } = h.manager.create({
+      name: "Mutable Ingress Hook",
+      prompt: "Process all warning and error events.",
+      botId: "maus-1",
+    });
+    const mutableWarning = {
+      deliveryId: "mutable-delivery-1",
+      payload: {
+        action: "created",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          issue: { id: "2001", title: "Warning event", level: "warning", permalink: "https://sentry.io/issues/2001" },
+        },
+      },
+    };
+    const firstMutableResult = h.manager.receive(mutableHook.endpointId, mutableSecret, mutableWarning);
+    expect(firstMutableResult).toMatchObject({ duplicate: false, runId: expect.any(String) });
+
+    // Mutate trigger prompt to exclude warnings
+    h.manager.update(mutableHook.id, { prompt: "Only process errors. Ignore warning events." });
+
+    // Retrying the same deliveryId must remain a duplicate, not an ignored attempt
+    const retriedMutableResult = h.manager.receive(mutableHook.endpointId, mutableSecret, mutableWarning);
+    expect(retriedMutableResult).toMatchObject({ duplicate: true, runId: firstMutableResult.runId });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

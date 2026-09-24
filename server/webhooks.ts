@@ -874,9 +874,26 @@ export class WebhookManager {
     if (!trigger.enabled) fail(409, "This webhook is paused");
     if (this.options.botState(trigger.botId) === "missing") fail(410, "The assigned MAUS no longer exists");
 
+    const requestedDeliveryId = String(event.deliveryId ?? "").trim().slice(0, 200);
+    if (requestedDeliveryId) {
+      const key = `${trigger.endpointId}:${requestedDeliveryId}`;
+      const duplicate = this.deliveries.find((delivery) => delivery.key === key);
+      if (duplicate) {
+        this.appendAttempt(trigger, event, {
+          outcome: "duplicate",
+          statusCode: 202,
+          deliveryId: requestedDeliveryId,
+          runId: duplicate.runId,
+          reason: "Duplicate delivery ignored",
+        });
+        this.save();
+        return { runId: duplicate.runId, deliveryId: requestedDeliveryId, duplicate: true };
+      }
+    }
+
     const allowed = trigger.eventTypes ?? [];
     if (allowed.length > 0 && (!event.eventName || !allowed.includes(event.eventName))) {
-      const deliveryId = String(event.deliveryId ?? "").trim().slice(0, 200) || randomUUID();
+      const deliveryId = requestedDeliveryId || randomUUID();
       this.recordIgnoredAttempt(
         trigger,
         event,
@@ -896,7 +913,7 @@ export class WebhookManager {
     if (!route.skipConfiguredPrompt) {
       const ignoreDecision = shouldIgnoreWebhookEvent(trigger, event);
       if (ignoreDecision.ignore) {
-        const deliveryId = String(event.deliveryId ?? "").trim().slice(0, 200) || randomUUID();
+        const deliveryId = requestedDeliveryId || randomUUID();
         this.recordIgnoredAttempt(
           trigger,
           event,
@@ -908,22 +925,6 @@ export class WebhookManager {
     }
 
     const now = this.now();
-    const requestedDeliveryId = String(event.deliveryId ?? "").trim().slice(0, 200);
-    if (requestedDeliveryId) {
-      const key = `${trigger.endpointId}:${requestedDeliveryId}`;
-      const duplicate = this.deliveries.find((delivery) => delivery.key === key);
-      if (duplicate) {
-        this.appendAttempt(trigger, event, {
-          outcome: "duplicate",
-          statusCode: 202,
-          deliveryId: requestedDeliveryId,
-          runId: duplicate.runId,
-          reason: "Duplicate delivery ignored",
-        });
-        this.save();
-        return { runId: duplicate.runId, deliveryId: requestedDeliveryId, duplicate: true };
-      }
-    }
 
     // A sender retrying an already-accepted delivery must remain idempotent
     // even while this webhook's queue is full. Only new work consumes a slot.
