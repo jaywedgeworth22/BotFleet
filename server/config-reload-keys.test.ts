@@ -389,10 +389,21 @@ describe("an Auto turn is judged by what it actually mounted", () => {
   });
 
   it("records the resolved mounts on both dispatch paths", () => {
-    expect(source).toContain("activeTurnOwners.recordMounted(threadId, dispatchOwner.dispatchId, mountedProviders(turnComputers.mounts));");
-    expect(source).toContain("activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers.mounts));");
+    expect(source).toContain("activeTurnOwners.recordMounted(threadId, dispatchOwner.dispatchId, mountedProviders(turnComputers));");
+    expect(source).toContain("activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers));");
     const map = source.slice(source.indexOf("function mountedProviders("), source.indexOf("function autoHostMounts("));
     expect(map).toContain('{ box: "asciiBox", vps: "selfHostedVps", vm: "localVm", local: "localMac" }');
+  });
+
+  it("counts host tools as This Computer even with no CUA mount", () => {
+    const map = source.slice(source.indexOf("function mountedProviders("), source.indexOf("function autoHostMounts("));
+    // A tool-loop engine on an explicit This Computer turn gets host tools
+    // through hasHostComputer alone; the record must still name localMac.
+    expect(map).toContain("hasHostComputer: boolean;");
+    expect(map).toContain('if (computers.hasHostComputer) held.push("localMac");');
+    // With localMac recorded, turning This Computer off revokes the turn.
+    expect(revokedTurnProviders(["localMac"], [])).toEqual(["localMac"]);
+    expect(revokedTurnProviders([], [])).toEqual([]);
   });
 });
 
@@ -423,7 +434,7 @@ describe("a provider turned off before the turn reaches its engine", () => {
 
   it("stops a room turn during setup and after its mounts resolve, before sendTurn", () => {
     expect(source).toContain("return !isCancelled?.() && !activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId);");
-    const record = source.indexOf("activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers.mounts));");
+    const record = source.indexOf("activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers));");
     const fence = source.indexOf("if (activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId)) {", record);
     const send = source.indexOf(".sendTurn({", record);
     expect(record).toBeGreaterThan(-1);
