@@ -180,3 +180,16 @@ export function computerProvidersStale(
   const shown = expected as Record<string, unknown>;
   return PROVIDER_IDS.some((id) => shown[id] !== current[id]);
 }
+
+/** The bots a provider disable would take something from that the window did
+ * not show when the operator confirmed.  `acknowledged` is the list of bot ids
+ * the confirm named (or none, when no confirm was shown); `impacted` is what
+ * the server finds on its own bots and automations at save time.  Anything
+ * left over was added by another client after the window checked, and must be
+ * confirmed before the save goes through.  A list that only shrank passes. */
+export function unacknowledgedImpact<T extends { id: string }>(acknowledged: unknown, impacted: readonly T[]): T[] {
+  const seen = new Set(
+    Array.isArray(acknowledged) ? acknowledged.filter((id): id is string => typeof id === "string") : [],
+  );
+  return impacted.filter((bot) => !seen.has(bot.id));
+}
