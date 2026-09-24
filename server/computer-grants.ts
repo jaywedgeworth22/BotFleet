@@ -493,6 +493,8 @@ export interface ResolveTurnComputerMountsInput<Lease> {
   dispatchId: number;
   /** `opts.runOn` from the dispatcher: a cloud routine names its own home. */
   runOn?: string;
+  /** Whether this turn is running unattended (e.g. routine or webhook). */
+  unattended?: boolean;
   /** The operator-level allowlist, already read off the config. */
   allowed: ComputerDestination[] | null;
   deps: TurnComputerDeps<Lease>;
@@ -604,12 +606,13 @@ async function resolveMounts<Lease>(
   // One derivation for every destination — see computer-capability.ts.  The
   // names below are kept because the mount sites read as "does this turn
   // mount X", not "can this engine reach X".
+  const unattendedAgy = Boolean(input.unattended && engine.driverKind === "antigravity");
   const reach = computerReach({
     driverKind: engine.driverKind,
     capabilities: { computerMcp: engine.computerMcp, localComputerMcp: engine.localComputerMcp, toolLoop: engine.toolLoop },
   });
   const mountsCloudComputer = reach.box;
-  const mountsLocalComputer = reach.local;
+  const mountsLocalComputer = reach.local && !unattendedAgy;
   const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
 
   // Explicit destinations are strict.  In particular, Local VM must never
@@ -640,11 +643,13 @@ async function resolveMounts<Lease>(
     const cua = hostSupportsLocal && mountsLocalComputer ? deps.readHostConnection() : null;
     const unavailable = !hostSupportsLocal
       ? "local computer control is not available on this platform"
-      : !mountsLocalComputer
-        ? "this model engine has no approval channel for actions on this computer, so BotFleet did not mount it"
-        : !cua && !engine.toolLoop
-          ? "CUA Driver is not ready for this computer — check permissions and restart BotFleet"
-          : null;
+      : unattendedAgy
+        ? "unattended turns with this model engine cannot broker host approvals, so BotFleet did not mount the desktop"
+        : !mountsLocalComputer
+          ? "this model engine has no approval channel for actions on this computer, so BotFleet did not mount it"
+          : !cua && !engine.toolLoop
+            ? "CUA Driver is not ready for this computer — check permissions and restart BotFleet"
+            : null;
     if (unavailable) {
       deps.notice(`local computer not mounted: ${unavailable}`, false);
     } else if (cua) {
@@ -655,11 +660,21 @@ async function resolveMounts<Lease>(
   // A VPS is a local-agent computer mount, never a remote agent runner.
   // Explicit Cloud may prepare/start it.  Auto remains read-only unless the
   // person explicitly opted this bot into remote lifecycle actions.
+  // A turn requested with `runOn: "cloud"`, or an attended turn whose ONLY
+  // granted computer is cloud, fails hard if cloud is unreachable.  A bot
+  // that also holds the host computer, or an unattended routine/webhook,
+  // degrades gracefully so a desktop or network blip never kills the turn.
+  const shouldThrowOnCloudFailure = wantsCloudFiltered && (runOn === "cloud" || (!wantsLocal && !input.unattended));
+
   if ((wantsCloudFiltered || autoCloud) && cloudBackend === "vps") {
     const unsupported = deps.vps.vpsDriverError(engine.driverKind, reach);
-    if (unsupported && wantsCloudFiltered) throw new Error(unsupported);
-    if (unsupported && autoCloud) autoVpsProblem = unsupported;
-    if (!unsupported) {
+    if (unsupported) {
+      if (wantsCloudFiltered) {
+        if (shouldThrowOnCloudFailure) throw new Error(unsupported);
+        deps.notice(`VPS computer not mounted: ${unsupported}`, false);
+      }
+      if (autoCloud) autoVpsProblem = unsupported;
+    } else {
       vpsLease = deps.vpsLeases.claim(bot.id, threadId, dispatchId);
       let remote: RemoteComputerStatus | undefined;
       try {
@@ -667,8 +682,10 @@ async function resolveMounts<Lease>(
           ? await deps.vps.vpsComputerAction("provision", cfg, bot.id)
           : await deps.vps.inspectVpsForAuto(cfg, bot.id);
       } catch (err) {
-        if (wantsCloudFiltered) throw err;
-        autoVpsProblem = err instanceof Error ? err.message : String(err);
+        if (shouldThrowOnCloudFailure) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        deps.notice(`VPS computer not mounted: ${msg}`, false);
+        autoVpsProblem = msg;
       }
       if (!(await deps.checkpoint())) return stopped();
       if (remote?.ready && remote.sshAlias) {
@@ -688,12 +705,16 @@ async function resolveMounts<Lease>(
       } else {
         deps.vpsLeases.release(vpsLease);
         vpsLease = undefined;
-        if (wantsCloudFiltered) {
+        const problem = remote?.problem ?? autoVpsProblem ?? "the VPS computer could not be reached";
+        if (shouldThrowOnCloudFailure) {
           throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
+        }
+        if (!autoVpsProblem) {
+          deps.notice(`VPS computer not mounted: ${problem}`, false);
         }
         // Keep the caught SSH/timeout error when the lookup threw; the
         // generic text is only for a lookup that returned no usable box.
-        autoVpsProblem = remote?.problem ?? autoVpsProblem ?? "the VPS computer could not be reached";
+        autoVpsProblem = problem;
       }
     }
   }
@@ -702,7 +723,10 @@ async function resolveMounts<Lease>(
   // existing cloud box, then falls back to host CUA without provisioning.
   if ((wantsCloudFiltered || autoCloud) && cloudBackend === "box" && deps.box.boxConfigured(cfg)) {
     if (!mountsCloudComputer && wantsCloudFiltered) {
-      throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
+      if (shouldThrowOnCloudFailure) {
+        throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
+      }
+      deps.notice("cloud computer not mounted: this model engine cannot use computer tools", false);
     }
     let b = await deps.box.findBox(cfg, bot.id).catch(() => null);
     if (!(await deps.checkpoint())) return stopped();

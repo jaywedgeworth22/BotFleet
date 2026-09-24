@@ -3285,6 +3285,7 @@ async function startTurn(
         threadId,
         dispatchId: dispatchOwner.dispatchId,
         runOn: opts?.runOn,
+        unattended: isUnattended(bot.id),
         allowed: allowedBotComputers(cfg),
         deps: turnComputerDeps(
           bot.id,
