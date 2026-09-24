@@ -414,8 +414,12 @@ export function shouldIgnoreWebhookEvent(
       if (interveningPattern.test(prompt)) return false;
 
       const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
+      // "Don't just ignore", "do not ever ignore": up to two adverbs may sit
+      // between the negation and the exclusion verb.  Closed list, so an
+      // unrelated word in between never turns an exclusion into a negation.
+      const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
       const negationPattern = new RegExp(
-        `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
+        `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
           `|${negativeWord}\\s+[^.;\\n]*?\\b${lvl}s?\\b[^.;\\n]*?${exclusionVerb})`,
         "i",
@@ -482,8 +486,9 @@ export function shouldIgnoreWebhookEvent(
         if (interveningPattern.test(prompt)) return false;
 
         const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
+        const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
         const negationPattern = new RegExp(
-          `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
+          `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
             `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
             `|${negativeWord}\\s+[^.;\\n]*?${assignmentTarget}[^.;\\n]*?${exclusionVerb})`,
           "i",
