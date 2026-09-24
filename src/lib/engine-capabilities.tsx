@@ -42,6 +42,15 @@ export interface ApiRates {
   outputPer1k: number;
   /** USD per 1k cached-input tokens when the provider bills them separately. */
   cachedInputPer1k?: number;
+  /** Long-context tier: a request whose prompt reaches `minPromptTokens` is
+   *  billed at these rates for all of its tokens (xAI's "≥ 200k prompt
+   *  tokens" rows). */
+  longContext?: {
+    minPromptTokens: number;
+    inputPer1k: number;
+    outputPer1k: number;
+    cachedInputPer1k?: number;
+  };
   notes?: string;
 }
 
@@ -138,9 +147,20 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
         inputPer1k: 0.002,
         cachedInputPer1k: 0.0005,
         outputPer1k: 0.006,
-        // Grok 4.7 API rates: $2 input / $0.50 cached / $6 output per million tokens.
+        // Grok 4.7 API rates: $2 input / $0.50 cached / $6 output per million tokens
+        // under 200k prompt tokens; $4 / $1 / $12 at or above 200k (xAI's
+        // long-context tier, billed on every token of that request).  xAI's
+        // pricing page lists the grok-4.6 card; 4.7 uses the same rates.
         // Keep these API projections separate from Grok Build subscription billing.
-        notes: "Grok 4.7 xAI API rates from https://docs.x.ai/developers/models/grok-4.7.",
+        longContext: {
+          minPromptTokens: 200_000,
+          inputPer1k: 0.004,
+          cachedInputPer1k: 0.001,
+          outputPer1k: 0.012,
+        },
+        notes:
+          "Grok 4.7 xAI API rates from https://docs.x.ai/developers/models/grok-4.7; " +
+          "prompts at or above 200k tokens use the long-context rates per https://docs.x.ai/developers/pricing.",
       },
       notes: "Subscription is the primary path; API rates exist only for the 'what-if API' projection.",
     },
