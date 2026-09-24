@@ -127,6 +127,7 @@ import {
   revokedTurnProviders,
 } from "./config-reload-keys.ts";
 import { computerReach } from "./computer-capability.ts";
+import { shouldMountLocalComputer } from "./local-routing.ts";
 import {
   ensureDirs,
   instanceConfigs,
@@ -786,9 +787,28 @@ function localVmProviderOff(config: typeof cfg): boolean {
 /** Snapshot a bot's computer settings at dispatch, the inputs turn mounting
  * reads, so a provider disable can tell what the running turn holds even
  * after the bot is edited mid-turn.  Copied, never aliased. */
-function turnComputerInputs(bot: ComputerGrantSubject & { cloudBackend?: CloudBackend }): TurnComputerInputs {
+function turnComputerInputs(
+  bot: ComputerGrantSubject & { cloudBackend?: CloudBackend },
+  runOn?: RoutineRunOn,
+): TurnComputerInputs {
   const computers = storedComputerGrants(bot);
-  return { computers: computers ? [...computers] : undefined, cloudBackend: bot.cloudBackend };
+  return {
+    computers: computers ? [...computers] : undefined,
+    cloudBackend: bot.cloudBackend,
+    ...(runOn ? { runOn } : {}),
+  };
+}
+
+/** Whether the Auto This Computer fallback can mount for a turn on this
+ * engine, the way turn mounting decides it (`shouldMountLocalComputer`):
+ * macOS only, and only on an engine with local reach.  An engine missing from
+ * the registry counts as able, so an unknown never hides a live host mount. */
+function autoHostMounts(instanceId: string | undefined): boolean {
+  const instance = instanceId ? registry.get(instanceId) : undefined;
+  const providerSupportsLocal = instance
+    ? computerReach({ driverKind: instance.driverKind, capabilities: instance.adapter.capabilities }).local
+    : true;
+  return shouldMountLocalComputer({ requested: undefined, providerSupportsLocal });
 }
 
 function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
@@ -3111,7 +3131,7 @@ async function startTurn(
     botId: bot.id,
     selection: { instanceId, model, effort },
     fallbackPolicy,
-    computerInputs: turnComputerInputs(bot),
+    computerInputs: turnComputerInputs(bot, opts?.runOn),
   });
   turnUsage.delete(threadId);
 
@@ -5909,7 +5929,7 @@ function heldProvidersFor(
   settings: typeof cfg,
   inputs: TurnComputerInputs,
   runOn: RoutineRunOn | undefined,
-  options: { autoHost?: boolean } = {},
+  options: { autoHost: boolean },
 ): ComputerProviderId[] {
   const allowed = allowedBotComputers(settings);
   const { granted, auto } = resolveGrants(
@@ -5918,7 +5938,7 @@ function heldProvidersFor(
     settings.botDefaults?.computers,
     allowed,
   );
-  const autoAllows = autoDestinations(allowed).filter((d) => d !== "local" || options.autoHost !== false);
+  const autoAllows = autoDestinations(allowed).filter((d) => d !== "local" || options.autoHost);
   return heldComputerProviders(
     {
       granted,
@@ -5938,7 +5958,6 @@ function heldProvidersFor(
  * whatever its computers say.  The Auto host fallback counts only on macOS,
  * the one platform it mounts on. */
 function botsLosingProviders(before: typeof cfg, after: typeof cfg): Array<{ id: string; name: string }> {
-  const autoHost = process.platform === "darwin";
   const cloudAutomationBots = new Set<string>();
   for (const list of [routines?.listRoutines() ?? [], webhooks.list(), resourceTriggers.list()]) {
     for (const item of list) if (item.enabled && item.runOn === "cloud") cloudAutomationBots.add(item.botId);
@@ -5946,6 +5965,7 @@ function botsLosingProviders(before: typeof cfg, after: typeof cfg): Array<{ id:
   return store.bots
     .filter((bot) => {
       const inputs = turnComputerInputs(bot);
+      const autoHost = autoHostMounts(bot.modelSelection.instanceId);
       const runOns: Array<RoutineRunOn | undefined> = cloudAutomationBots.has(bot.id) ? [undefined, "cloud"] : [undefined];
       return runOns.some((runOn) => revokedTurnProviders(
         heldProvidersFor(before, inputs, runOn, { autoHost }),
@@ -5973,13 +5993,23 @@ async function interruptTurnsUsingDisabledProviders(
     const bot = store.bot(turn.botId);
     if (!bot) return;
     const run = routines?.activeRunForBot(bot.id);
-    const runOn = run?.threadId === turn.threadId ? run.runOn : undefined;
     // Judge the turn by what it mounted, not by the bot's grants now: a turn
     // that started on Cloud keeps its Box mount after the bot is switched to
     // Local VM, and disabling Box must still reach it.  A turn with no
     // snapshot (mid completion fold) falls back to the stored grants.
     const inputs = turn.computerInputs ?? turnComputerInputs(bot);
-    if (revokedTurnProviders(heldProvidersFor(before, inputs, runOn), heldProvidersFor(after, inputs, runOn)).length === 0) return;
+    // The destination the turn was dispatched to.  A cloud webhook or
+    // resource trigger has no active routine run, so the snapshot is the only
+    // record that it mounted the cloud computer.
+    const runOn = inputs.runOn ?? (run?.threadId === turn.threadId ? run.runOn : undefined);
+    // The Auto host fallback only counts where it can mount: macOS, on an
+    // engine with local reach.  Elsewhere it was never held, so turning This
+    // Computer off must not interrupt the turn.
+    const autoHost = autoHostMounts(turn.instanceId ?? bot.modelSelection.instanceId);
+    if (revokedTurnProviders(
+      heldProvidersFor(before, inputs, runOn, { autoHost }),
+      heldProvidersFor(after, inputs, runOn, { autoHost }),
+    ).length === 0) return;
     // Latch the stop before anything is awaited, same as the full reload and
     // the Stop button.  The driver may settle the turn the instant it is
     // killed; without the latch an exit_before_result cancellation reads as
