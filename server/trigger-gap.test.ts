@@ -148,4 +148,18 @@ describe("foldPrompts", () => {
     expect(folded).toContain("error 1");
     expect(folded).toContain("error 2");
   });
+
+  it("caps an oversized shared instruction header within the fold budget and preserves delivery bodies", () => {
+    const hugeInstructions = `[USER-CONFIGURED WEBHOOK INSTRUCTIONS]\n${"rule ".repeat(15_000)}\n[/USER-CONFIGURED WEBHOOK INSTRUCTIONS]`;
+    const p1 = `${hugeInstructions}\n\n[UNTRUSTED WEBHOOK EVENT DATA]\nfailure 1\n[/UNTRUSTED WEBHOOK EVENT DATA]`;
+    const p2 = `${hugeInstructions}\n\n[UNTRUSTED WEBHOOK EVENT DATA]\nfailure 2\n[/UNTRUSTED WEBHOOK EVENT DATA]`;
+    const folded = foldPrompts({
+      run: entry("a", p1),
+      folded: [entry("b", p2)],
+    });
+    expect(folded.length).toBeLessThanOrEqual(64_000);
+    expect(folded).toContain("[Instructions truncated for length]");
+    expect(folded).toContain("--- Delivery 2 ---");
+    expect(folded).toContain("failure 2");
+  });
 });

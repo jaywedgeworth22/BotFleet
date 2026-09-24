@@ -117,12 +117,20 @@ export function foldPrompts(decision: GapDecision): string {
   if (allShareHeader && firstHeader) {
     const bodies = parsed.map((p) => p.body);
     const sections = bodies.map((body, index) => `--- Delivery ${index + 1} ---\n${body}`);
-    const full = [firstHeader, header, ...sections].join("\n\n");
+
+    const maxHeaderBudget = Math.floor(MAX_FOLD_CHARS / 2);
+    let effectiveHeader = firstHeader;
+    if (effectiveHeader.length > maxHeaderBudget) {
+      const truncationMarker = "\n[Instructions truncated for length]";
+      effectiveHeader = effectiveHeader.slice(0, maxHeaderBudget - truncationMarker.length) + truncationMarker;
+    }
+
+    const full = [effectiveHeader, header, ...sections].join("\n\n");
     if (full.length <= MAX_FOLD_CHARS) return full;
     // Newest conclusions matter for compile-gate.  Keep from the end.
     const omitted = "[Earlier deliveries omitted for length]";
     const kept: string[] = [];
-    let used = firstHeader.length + 2 + header.length + 2 + omitted.length;
+    let used = effectiveHeader.length + 2 + header.length + 2 + omitted.length;
     for (let i = sections.length - 1; i >= 0; i--) {
       const extra = 2 + sections[i]!.length;
       if (kept.length > 0 && used + extra > MAX_FOLD_CHARS) break;
@@ -134,7 +142,7 @@ export function foldPrompts(decision: GapDecision): string {
       kept.unshift(sections[i]!);
       used += extra;
     }
-    return [firstHeader, header, omitted, ...kept].join("\n\n");
+    return [effectiveHeader, header, omitted, ...kept].join("\n\n");
   }
 
   const sections = distinct.map((prompt, index) => `--- ${index + 1} ---\n${prompt}`);

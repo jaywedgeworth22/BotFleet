@@ -875,16 +875,25 @@ export class WebhookManager {
       return { deliveryId, duplicate: false, ignored: true };
     }
 
-    const ignoreDecision = shouldIgnoreWebhookEvent(trigger, event);
-    if (ignoreDecision.ignore) {
-      const deliveryId = String(event.deliveryId ?? "").trim().slice(0, 200) || randomUUID();
-      this.recordIgnoredAttempt(
-        trigger,
-        event,
-        deliveryId,
-        ignoreDecision.reason ?? "Ignored by trigger ingress filter",
-      );
-      return { deliveryId, duplicate: false, ignored: true };
+    const route = resolveWebhookBotId(
+      trigger,
+      event.payload,
+      this.options.findBotIdByName,
+      this.options.botState,
+    );
+
+    if (!route.skipConfiguredPrompt) {
+      const ignoreDecision = shouldIgnoreWebhookEvent(trigger, event);
+      if (ignoreDecision.ignore) {
+        const deliveryId = String(event.deliveryId ?? "").trim().slice(0, 200) || randomUUID();
+        this.recordIgnoredAttempt(
+          trigger,
+          event,
+          deliveryId,
+          ignoreDecision.reason ?? "Ignored by trigger ingress filter",
+        );
+        return { deliveryId, duplicate: false, ignored: true };
+      }
     }
 
     const now = this.now();
@@ -917,12 +926,6 @@ export class WebhookManager {
     this.rate.set(trigger.endpointId, recent);
 
     const deliveryId = requestedDeliveryId || randomUUID();
-    const route = resolveWebhookBotId(
-      trigger,
-      event.payload,
-      this.options.findBotIdByName,
-      this.options.botState,
-    );
     const run = this.options.enqueue({
       webhookId: trigger.id,
       webhookName: trigger.name,

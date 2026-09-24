@@ -881,6 +881,29 @@ describe("WebhookManager", () => {
     const stormAttempts = h.manager.listAttempts().filter((a) => a.webhookId === stormHook.id);
     expect(stormAttempts.length).toBeLessThanOrEqual(3);
 
+    // 35. Routes fleet-infra Sentry events to Plumber even when Fixer's prompt excludes the level
+    h.options.findBotIdByName = (name) => (name === "Plumber" ? "maus-plumber" : undefined);
+    const { webhook: plumberRerouteHook, secret: plumberRerouteSecret } = h.manager.create({
+      name: "Sentry Production",
+      prompt: "Only process errors. Ignore warning and info events.",
+      botId: "maus-fixer",
+    });
+    const fleetInfraWarning = {
+      payload: {
+        action: "created",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          issue: { id: "999", title: "Disk warning", level: "warning", project: { slug: "fleet-infra" }, permalink: "https://sentry.io/issues/999" },
+        },
+      },
+    };
+    const fleetInfraResult = h.manager.receive(plumberRerouteHook.endpointId, plumberRerouteSecret, fleetInfraWarning);
+    expect(fleetInfraResult).toMatchObject({ duplicate: false });
+    expect(fleetInfraResult.runId).toBeDefined();
+    const queuedFleetInfra = h.queued.find((q) => q.webhookId === plumberRerouteHook.id);
+    expect(queuedFleetInfra).toMatchObject({ botId: "maus-plumber" });
+    expect(queuedFleetInfra?.prompt).not.toContain("Only process errors");
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
