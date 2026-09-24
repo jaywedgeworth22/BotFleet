@@ -137,10 +137,9 @@ final class Session: ObservableObject {
     /// cannot write the previous computer's provider map onto a new pairing.
     private var pairingGeneration = 0
     private var reconnectDelay: UInt64 = 0
-    /// How many computer panels are open. A count rather than a flag: the
-    /// panel can be pushed twice in a navigation stack, and the last one to
-    /// close is the one that should turn screens back off.
-    private var screenWatchers = 0
+    /// Open computer panels per bot.  A view can be pushed twice in a
+    /// navigation stack; its last close releases that bot's subscription.
+    private var screenWatchers: [String: Int] = [:]
     /// Authenticated avatar bytes shared by roster, header, group and task
     /// surfaces. Both entry count and byte cost are bounded because one valid
     /// uploaded image may be 10 MB.
@@ -553,13 +552,17 @@ final class Session: ObservableObject {
     /// session, including on cellular, whether or not anyone is looking.
     /// The reconnect resumes from the cursor, so nothing is missed.
     func watchScreen(of botId: String) {
-        screenWatchers += 1
-        if screenWatchers == 1 { restartStream() }
+        let count = screenWatchers[botId, default: 0]
+        screenWatchers[botId] = count + 1
+        if count == 0 { restartStream() }
     }
 
     func stopWatchingScreen(of botId: String) {
-        screenWatchers = max(0, screenWatchers - 1)
-        if screenWatchers == 0 {
+        guard let count = screenWatchers[botId] else { return }
+        if count > 1 {
+            screenWatchers[botId] = count - 1
+        } else {
+            screenWatchers.removeValue(forKey: botId)
             state.clearScreen(botId)
             restartStream()
         }
@@ -639,7 +642,11 @@ final class Session: ObservableObject {
                 // breaking out here instead would fall through to the "the
                 // harness went away" path and flash a lost-connection banner
                 // on what is actually a deliberate reconnect.
-                for try await frame in try client.events(since: state.cursor, screens: screenWatchers > 0) {
+                for try await frame in try client.events(
+                    since: state.cursor,
+                    screens: !screenWatchers.isEmpty,
+                    screenBotIds: Array(screenWatchers.keys).sorted()
+                ) {
                     if Task.isCancelled { return }
                     reconnectDelay = 0
 
