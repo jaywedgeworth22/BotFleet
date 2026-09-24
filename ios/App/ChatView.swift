@@ -79,11 +79,21 @@ struct ChatView: View {
     /// `Session` rather than parsing `instanceId`, which is operator-named
     private var currentModelSelection: ModelSelection? {
         guard case let .bot(bot) = current else { return nil }
-        let currentTask = bot.tasks?.first(where: { $0.threadId == bot.threadId })
-        if let taskSelection = currentTask?.modelSelection {
-            return currentTask?.activeModelSelection ?? taskSelection
+        guard let currentTask = bot.tasks?.first(where: { $0.threadId == bot.threadId }) else {
+            // Older harnesses send no task list; the bot-level record is all
+            // there is.
+            return bot.activeModelSelection ?? bot.modelSelection
         }
-        return bot.activeModelSelection ?? bot.modelSelection
+        if let taskSelection = currentTask.modelSelection {
+            return currentTask.activeModelSelection ?? taskSelection
+        }
+        // An inheriting task reads its own last-turn selection, never
+        // `bot.activeModelSelection`: that is the bot's latest turn across
+        // every task, so a fallback on another task would leak into this
+        // header.  The server clears an inheriting task's
+        // `activeModelSelection` when the bot's model changes (`patchBot`
+        // in server/store.ts), so a stale fallback does not outlive it.
+        return currentTask.activeModelSelection ?? bot.modelSelection
     }
 
     private var currentDriverKind: String? {
