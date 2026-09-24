@@ -2992,7 +2992,11 @@ async function startTurn(
   let selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
 
-  if (opts?.unattended && !opts?.modelSelection) {
+  // Unattended turns run on the cheaper model: an explicit flag, a fresh
+  // webhook/resource delivery (marked unattended above), or the bot's marked
+  // state inherited by connector/secret-card continuations.
+  const unattendedTurn = opts?.unattended ?? isUnattended(bot.id);
+  if (unattendedTurn && !opts?.modelSelection) {
     let downgradedModel = selection.model;
     if (selection.instanceId === "gemini" || selection.instanceId === "antigravity") {
       downgradedModel = downgradedModel.replace("-pro", "-flash");
@@ -3001,7 +3005,14 @@ async function startTurn(
         downgradedModel = "claude-3-5-haiku-latest";
       }
     }
-    selection = { ...selection, model: downgradedModel, effort: "low" };
+    // Stamp "low" only when the engine advertises it — Antigravity declares
+    // no effortLevels and DSH offers none/high/max, and the turn-start check
+    // below 409s an unsupported level.  Otherwise keep the configured effort.
+    const offeredEffortLevels =
+      registry.get(selection.instanceId)?.adapter.capabilities.effortLevels;
+    selection = offeredEffortLevels?.includes("low")
+      ? { ...selection, model: downgradedModel, effort: "low" }
+      : { ...selection, model: downgradedModel };
   }
   if (turnExternalCredentialPending(bot, selection.instanceId, opts?.runOn)) {
     throw externalCredentialPendingError(selection.instanceId);

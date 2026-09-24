@@ -123,8 +123,15 @@ maybe_heal_dependencies() {
     run_install_once
     return
   fi
-  probe_imports
-  local rc=$?
+  # The probe must run as an if-condition: under `set -e` a bare failing
+  # call exits the script before rc is captured and the self-heal below
+  # never runs for a partially broken installation.
+  local rc=0
+  if probe_imports; then
+    return 0
+  else
+    rc=$?
+  fi
   if [ "$rc" -eq 1 ]; then
     run_install_once
   elif [ "$rc" -ne 0 ]; then
