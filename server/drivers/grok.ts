@@ -23,12 +23,13 @@ import { httpErrorFor } from "./chat-completions/errors.ts";
 const DRIVER_KIND = "grok";
 const DEFAULT_URL = "https://api.x.ai/v1";
 
-// Kept in lockstep with the ACP Grok CLI driver's own current lineup
-// (acp/grok.ts's STATIC_GROK_MODELS) — same two model generations, this
-// driver's own xAI-API-key billed rows.
+// This is the xAI API catalog, which is separate from Grok Build's
+// subscription CLI catalog in acp/grok.ts. The Build-only fast variant is
+// intentionally absent here.
 const MODELS = {
-  default: "grok-4.6",
+  default: "grok-4.7",
   options: [
+    { id: "grok-4.7", label: "Grok 4.7" },
     { id: "grok-4.6", label: "Grok 4.6" },
     { id: "grok-4.5", label: "Grok 4.5" },
   ],

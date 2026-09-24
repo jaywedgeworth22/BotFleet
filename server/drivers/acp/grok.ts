@@ -12,8 +12,10 @@ import { decodeInjectId, hostApiKey, localHost, mergeLocalInject } from "../loca
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 export const STATIC_GROK_MODELS: ModelCatalog = {
-  default: "grok-4.6",
+  default: "grok-4.7",
   options: [
+    { id: "grok-4.7", label: "Grok 4.7" },
+    { id: "grok-4.7-build-fast", label: "Grok 4.7 Build Fast" },
     { id: "grok-4.6", label: "Grok 4.6" },
     { id: "grok-4.5", label: "Grok 4.5" },
   ],
@@ -34,7 +36,7 @@ function unquote(raw: string): string {
   return value;
 }
 
-/** Local slugs from ~/.grok/config.toml, plus the two cloud defaults.
+/** Local slugs from ~/.grok/config.toml, plus the current cloud lineup.
  *  `grok -m <slug>` already accepts these; the picker just didn't list them. */
 export function readGrokModelCatalog(env: Record<string, string | undefined> = process.env): ModelCatalog {
   const path = join(grokHome(env), "config.toml");
@@ -215,7 +217,7 @@ const support: AcpSupport = {
   // agent flags: Grok 1.0.6 only applies them when they sit AFTER `agent`
   // and BEFORE `stdio` (`grok agent -m slug stdio`). Putting -m first is
   // accepted as a TUI option and then ignored, so ACP session/new keeps
-  // [models].default (grok-4.6) and oMLX never sees a request.
+  // [models].default (grok-4.7) and oMLX never sees a request.
   spawnArgs: (config, turn) => {
     const args = [
       "--permission-mode",

@@ -958,7 +958,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                     ? sessionResult.models.availableModels
                     : [],
                 });
-                // initialize's currentModelId is the CLI default (grok-4.6),
+                // initialize's currentModelId is the CLI default (grok-4.7),
                 // not the model this turn asked for. After a successful pin,
                 // report the slug we set so the UI does not claim otherwise.
                 if (!selectedModel && cliTurn.model) selectedModel = cliTurn.model;

@@ -1001,11 +1001,11 @@ describe("ACP turns (fake CLI)", () => {
     expect(JSON.parse(readFileSync(without, "utf8")).argv).not.toContain("--reasoning-effort");
   });
 
-  it("puts Grok -m after agent so ACP stdio binds the local slug", async () => {
+  it("round-trips the Grok 4.7 picker model into the CLI argv", async () => {
     const dump = join(scratch, "grok-argv-order.json");
     await create(GrokAgentDriver);
     process.env.FAKE_ACP_DUMP = dump;
-    await instance.adapter.sendTurn({ threadId: "t-argv", text: "hi", model: "grok-4.5", effort: "high" });
+    await instance.adapter.sendTurn({ threadId: "t-argv", text: "hi", model: "grok-4.7", effort: "high" });
     await recorder.until((e) => e.type === "turn.completed");
 
     const argv = JSON.parse(readFileSync(dump, "utf8")).argv as string[];
@@ -1015,7 +1015,7 @@ describe("ACP turns (fake CLI)", () => {
     expect(agent).toBeGreaterThan(-1);
     expect(modelFlag).toBeGreaterThan(agent);
     expect(stdio).toBeGreaterThan(modelFlag);
-    expect(argv[modelFlag + 1]).toBe("grok-4.5");
+    expect(argv[modelFlag + 1]).toBe("grok-4.7");
     expect(argv.indexOf("--reasoning-effort")).toBeGreaterThan(agent);
     expect(argv.indexOf("--permission-mode")).toBeLessThan(agent);
   });

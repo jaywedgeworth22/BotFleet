@@ -135,13 +135,12 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
         notes: GROK_SUPER_NOTE,
       },
       api: {
-        inputPer1k: 0.005,
-        outputPer1k: 0.015,
-        // xAI does not publish a separate cache-read rate for the
-        // grok-api endpoints — do NOT add `cachedInputPer1k` here.
-        // Codex flagged the previous 0.0005 value as invented; the
-        // projection math now treats cached tokens as fresh input.
-        notes: "xAI PAYG API rates from the public x.ai pricing page.",
+        inputPer1k: 0.002,
+        cachedInputPer1k: 0.0005,
+        outputPer1k: 0.006,
+        // Grok 4.7 API rates: $2 input / $0.50 cached / $6 output per million tokens.
+        // Keep these API projections separate from Grok Build subscription billing.
+        notes: "Grok 4.7 xAI API rates from https://docs.x.ai/developers/models/grok-4.7.",
       },
       notes: "Subscription is the primary path; API rates exist only for the 'what-if API' projection.",
     },
@@ -156,15 +155,16 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       crossBotCoordination: "limited",
     },
     whyThisEngine: {
-      headline: "Long context + live research in one subscription.",
+      headline: "Grok 4.7 + live research in one subscription.",
       prose: [
-        "xAI's Grok ships a 1M+ token context window on the SuperGrok Heavy tier, which is the longest window BotFleet has on a subscription today.",
+        "Grok 4.7 brings long-context work and live research to the SuperGrok Heavy subscription.",
         "Live web research is a first-class tool — when a bot needs the latest docs, the news, or a fresh pricing page, Grok is the engine that fetches and answers without a separate tool chain.",
         "On Jay's seat, Grok quota is bundled with Cursor Ultra and Grok Bot under SuperGrok Heavy, so the same subscription covers three of the seven engines.",
       ],
     },
     defaultModels: [
-      { id: "grok-4", display: "Grok 4", ctxTokens: 1_000_000 },
+      { id: "grok-4.7", display: "Grok 4.7", ctxTokens: 500_000 },
+      { id: "grok-4.6", display: "Grok 4.6" },
       { id: "grok-3-mini", display: "Grok 3 mini", ctxTokens: 131_072 },
     ],
   },
