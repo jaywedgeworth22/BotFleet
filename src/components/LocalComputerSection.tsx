@@ -83,7 +83,7 @@ export function LocalComputerSection() {
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const configReady = state.config !== null && state.config !== undefined;
-  const locked = providerControlsLocked(state.config, saving);
+  const locked = providerControlsLocked(state.config, saving, state.hydration.status);
   const [error, setError] = useState<string | null>(null);
   // The provider pending confirmation: set when the user clicks an
   // enabled provider (would turn it off) and there is at least one bot
@@ -125,6 +125,17 @@ export function LocalComputerSection() {
     }),
     [hostPlatform, instances, reachKnown],
   );
+  // A routine, webhook or resource trigger set to run in the cloud gets the
+  // cloud destination even on a bot whose computers are off (resolveGrants).
+  // The matrix and the impact confirm read the same list.
+  const automations = useMemo(
+    () => ({
+      routines: state.routines,
+      webhooks: state.webhooks,
+      resourceTriggers: state.resourceTriggers,
+    }),
+    [state.routines, state.webhooks, state.resourceTriggers],
+  );
   const botsUsingProvider = useCallback(
     (provider: ComputerProviderId): ImpactedBot[] =>
       impactedBotsForProvider(provider, {
@@ -133,14 +144,7 @@ export function LocalComputerSection() {
         workspaceCloudBackend: state.config?.botDefaults?.cloudBackend,
         workspaceDefaultComputers: state.config?.botDefaults?.computers,
         autoLocalFor,
-        // A routine, webhook or resource trigger set to run in the cloud
-        // gets the cloud destination even on a bot whose computers are
-        // off (resolveGrants), so its bot loses that backend too.
-        automations: {
-          routines: state.routines,
-          webhooks: state.webhooks,
-          resourceTriggers: state.resourceTriggers,
-        },
+        automations,
       }),
     [
       bots,
@@ -148,9 +152,7 @@ export function LocalComputerSection() {
       state.config?.botDefaults?.cloudBackend,
       state.config?.botDefaults?.computers,
       autoLocalFor,
-      state.routines,
-      state.webhooks,
-      state.resourceTriggers,
+      automations,
     ],
   );
 
@@ -334,6 +336,7 @@ export function LocalComputerSection() {
           hostPlatform={hostPlatform}
           instances={instances}
           instancesReady={reachKnown}
+          automations={automations}
           busy={applying || saving || !configReady}
           onApplyToAll={applyToAll}
         />
