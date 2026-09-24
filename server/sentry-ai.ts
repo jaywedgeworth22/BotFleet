@@ -500,7 +500,9 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         event.setup ||
         event.message.includes("The saved ACP session could not be resumed") ||
         event.message.includes("nobody answered this permission request in time") ||
-        event.message.includes("timeout waiting for response");
+        event.message.includes("timeout waiting for response") ||
+        event.message.includes("initialize timed out") ||
+        event.message.includes("the model did not answer within");
 
       if (isExpectedNonCrash) {
         sink.addBreadcrumb?.({
