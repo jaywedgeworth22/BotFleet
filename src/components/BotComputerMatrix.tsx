@@ -16,7 +16,7 @@ import { Check, Minus } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { Bot, InstanceInfo } from "@/state/store";
 import { instanceSupportsLocalComputer } from "@/lib/local-computer";
-import type { ComputerProviders } from "../../shared/local-auto-consent";
+import type { ComputerProviderId, ComputerProviders } from "../../shared/local-auto-consent";
 import {
   COMPUTER_PROVIDER_LABEL,
   COMPUTER_PROVIDER_ORDER,
@@ -164,6 +164,81 @@ export function providersForBot(
   };
 }
 
+/** The minimum a routine, webhook or resource trigger needs to say for the
+ * matrix and the impact list: whose it is, where it runs, and whether it
+ * can fire. */
+export type CloudAutomationSource = {
+  botId: string;
+  runOn: "maus" | "cloud";
+  enabled: boolean;
+};
+
+export type CloudAutomations = {
+  routines?: readonly CloudAutomationSource[];
+  webhooks?: readonly CloudAutomationSource[];
+  resourceTriggers?: readonly CloudAutomationSource[];
+};
+
+export type CloudAutomationKind = "routine" | "webhook" | "resourceTrigger";
+
+/** Which of the bot's automations run in the cloud and can fire. */
+export function cloudAutomationKindsFor(botId: string, automations: CloudAutomations | undefined): CloudAutomationKind[] {
+  if (!automations) return [];
+  const kinds: CloudAutomationKind[] = [];
+  const has = (list: readonly CloudAutomationSource[] | undefined) =>
+    (list ?? []).some((item) => item.botId === botId && item.enabled && item.runOn === "cloud");
+  if (has(automations.routines)) kinds.push("routine");
+  if (has(automations.webhooks)) kinds.push("webhook");
+  if (has(automations.resourceTriggers)) kinds.push("resourceTrigger");
+  return kinds;
+}
+
+/** The cloud provider a bot's cloud automations run on, or null when it has
+ * none that can fire or that backend is off.  `runOn: "cloud"` grants the
+ * cloud destination whatever the bot's own computers say (`resolveGrants`),
+ * including a bot turned Off, and the per-provider filter then keeps it only
+ * while the resolved backend is on. */
+export function cloudAutomationProviderFor(
+  bot: Bot,
+  automations: CloudAutomations | undefined,
+  workspaceProviders: ComputerProviders | undefined,
+  workspaceCloudBackend?: "box" | "vps",
+): ComputerProviderId | null {
+  if (cloudAutomationKindsFor(bot.id, automations).length === 0) return null;
+  const provider: ComputerProviderId =
+    (bot.cloudBackend ?? workspaceCloudBackend ?? "box") === "box" ? "asciiBox" : "selfHostedVps";
+  const on = workspaceProviders ? workspaceProviders[provider] === true : true;
+  return on ? provider : null;
+}
+
+/** Everything a bot can reach: its own grant (`providersForBot`) plus the
+ * cloud backend its cloud automations run on.  The matrix and the
+ * disable-impact list both read this, so a cell and the confirm list never
+ * disagree about a bot. */
+export function effectiveProvidersForBot(
+  bot: Bot,
+  input: {
+    workspaceProviders: ComputerProviders | undefined;
+    workspaceCloudBackend?: "box" | "vps";
+    workspaceDefaultComputers?: readonly ("cloud" | "vm" | "local")[];
+    autoLocal?: AutoLocalFallback;
+    automations?: CloudAutomations;
+  },
+): ComputerProviders {
+  const providers = {
+    ...providersForBot(
+      bot,
+      input.workspaceProviders,
+      input.workspaceCloudBackend,
+      input.workspaceDefaultComputers,
+      input.autoLocal,
+    ),
+  };
+  const cloud = cloudAutomationProviderFor(bot, input.automations, input.workspaceProviders, input.workspaceCloudBackend);
+  if (cloud) providers[cloud] = true;
+  return providers;
+}
+
 export type BotComputerMatrixProps = {
   bots: Bot[];
   workspaceProviders: ComputerProviders | undefined;
@@ -187,6 +262,10 @@ export type BotComputerMatrixProps = {
    * While false, every engine is unknown and the fallback stays
    * fail-open instead of flashing dark during hydration. */
   instancesReady?: boolean;
+  /** Routines, webhooks and resource triggers.  A cloud one grants its bot
+   * the resolved cloud backend even when the bot's computers are off, so
+   * the matrix lights that cell the way the impact confirm counts it. */
+  automations?: CloudAutomations;
   /** Disabled while the apply-all-to-bots save is in flight, so the
    * button does not double-fire and the rows do not flicker. */
   busy?: boolean;
@@ -205,6 +284,7 @@ export function BotComputerMatrix({
   hostPlatform,
   instances,
   instancesReady,
+  automations,
   busy,
   onApplyToAll,
 }: BotComputerMatrixProps) {
@@ -249,19 +329,20 @@ export function BotComputerMatrix({
               </tr>
             ) : (
               bots.map((bot) => {
-                const providers = providersForBot(
-                  bot,
+                const providers = effectiveProvidersForBot(bot, {
                   workspaceProviders,
                   workspaceCloudBackend,
                   workspaceDefaultComputers,
-                  hostPlatform === undefined
-                    ? undefined
-                    : {
-                        hostPlatform,
-                        engineSupportsLocal:
-                          instancesReady && instances ? instanceSupportsLocalComputer(instances, bot) : undefined,
-                      },
-                );
+                  autoLocal:
+                    hostPlatform === undefined
+                      ? undefined
+                      : {
+                          hostPlatform,
+                          engineSupportsLocal:
+                            instancesReady && instances ? instanceSupportsLocalComputer(instances, bot) : undefined,
+                        },
+                  automations,
+                });
                 const isOff = bot.computers !== undefined && bot.computers.length === 0;
                 return (
                   <tr key={bot.id} className="border-t border-hairline/40">
