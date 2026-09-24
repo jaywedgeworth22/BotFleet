@@ -58,8 +58,9 @@ the same question through the cut-over.
   runtime setup is preserved in a separate `<LocalVmRuntimeCard>`
   and placed below in the section, so the one-click install / status
   flow operators already use is not silently dropped.
-- **`VpsModeToggle`** three-state control next to the VPS row
-  (Shared / Per-Bot / Not Used), wired to `botDefaults.vpsMode`.
+- **`VpsModeToggle`** two-state control next to the VPS row
+  (Per-Bot / Not Used), wired to `botDefaults.vpsMode`.  Shared is
+  hidden until it has a runtime; see What Shipped, section 4.
 - **Persistence** migration in `electron/main.mjs` running once at
   app launch via the existing `updateConfigFile` lock; idempotent
   on already-migrated configs.
