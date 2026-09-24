@@ -3120,20 +3120,29 @@ async function startTurn(
       // The model does not support effort at all (legacy stored configuration).
       // Drop it and clear it from the owning selection (task, fallback, or bot)
       // so the turn can proceed without bricking or clobbering an unrelated primary effort.
-      if (task.modelSelection && task.modelSelection.instanceId === selection.instanceId && task.modelSelection.model === selection.model) {
-        store.patchTask(bot.id, threadId, { modelSelection: { ...task.modelSelection, effort: undefined } });
-      } else if (task.modelSelection?.fallbacks?.some((f) => f.instanceId === selection.instanceId && f.model === selection.model)) {
-        const nextFallbacks = task.modelSelection.fallbacks.map((f) =>
-          f.instanceId === selection.instanceId && f.model === selection.model ? { ...f, effort: undefined } : f,
-        );
-        store.patchTask(bot.id, threadId, { modelSelection: { ...task.modelSelection, fallbacks: nextFallbacks } });
-      } else if (bot.modelSelection.instanceId === selection.instanceId && bot.modelSelection.model === selection.model) {
-        store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, effort: undefined } });
-      } else if (bot.modelSelection.fallbacks?.some((f) => f.instanceId === selection.instanceId && f.model === selection.model)) {
-        const nextFallbacks = bot.modelSelection.fallbacks.map((f) =>
-          f.instanceId === selection.instanceId && f.model === selection.model ? { ...f, effort: undefined } : f,
-        );
-        store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, fallbacks: nextFallbacks } });
+      // Strip it from every entry of the owning chain that names this
+      // instance+model — primary and fallbacks alike.  A chain can list the
+      // same model twice (A -> B -> A), and matching only the first hit would
+      // clear the wrong entry and leave the stale effort on the one selected.
+      const matches = (s: ModelSelection) => s.instanceId === selection.instanceId && s.model === selection.model;
+      const stripChain = (chain: ModelSelection): ModelSelection | null => {
+        const primaryHit = matches(chain) && chain.effort !== undefined;
+        const fallbackHit = chain.fallbacks?.some((f) => matches(f) && f.effort !== undefined) ?? false;
+        if (!primaryHit && !fallbackHit) return null;
+        return {
+          ...chain,
+          ...(primaryHit ? { effort: undefined } : {}),
+          ...(fallbackHit
+            ? { fallbacks: chain.fallbacks!.map((f) => (matches(f) ? { ...f, effort: undefined } : f)) }
+            : {}),
+        };
+      };
+      if (task.modelSelection) {
+        const next = stripChain(task.modelSelection);
+        if (next) store.patchTask(bot.id, threadId, { modelSelection: next });
+      } else {
+        const next = stripChain(bot.modelSelection);
+        if (next) store.patchBot(bot.id, { modelSelection: next });
       }
       effort = undefined;
     } else {
