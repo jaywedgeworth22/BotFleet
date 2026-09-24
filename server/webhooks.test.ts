@@ -1280,6 +1280,24 @@ describe("WebhookManager", () => {
     expect(noIgnoreResult.runId).toBeDefined();
     expect(noIgnoreResult.ignored).toBeUndefined();
 
+    // 59. Configured prompt takes precedence over name negation (Name: "Not Only Errors", Prompt: "Only process errors.")
+    const { webhook: promptOverrideHook, secret: promptOverrideSecret } = h.manager.create({
+      name: "Not Only Errors",
+      prompt: "Only process errors.",
+      botId: "maus-1",
+    });
+    const promptOverrideResult = h.manager.receive(promptOverrideHook.endpointId, promptOverrideSecret, clauseWarning);
+    expect(promptOverrideResult).toMatchObject({ ignored: true });
+
+    // 60. Excepted assignments ("Handle incidents except assignments") reject assignment deliveries
+    const { webhook: exceptAssignHook, secret: exceptAssignSecret } = h.manager.create({
+      name: "Incident Except Assign Responder",
+      prompt: "Handle incidents except assignments.",
+      botId: "maus-1",
+    });
+    const exceptAssignResult = h.manager.receive(exceptAssignHook.endpointId, exceptAssignSecret, warningAssignEvent);
+    expect(exceptAssignResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

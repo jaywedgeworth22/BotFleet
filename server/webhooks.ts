@@ -376,20 +376,16 @@ export function shouldIgnoreWebhookEvent(
               `|${nonErrorTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
             "i",
           );
-          const isNonErrorExcluded =
-            (nonErrorExclusionPattern.test(prompt) || nonErrorExclusionPattern.test(name)) &&
-            !new RegExp(
-              `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${nonErrorTarget}` +
-                `|${nonErrorTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
-                `|${negativeWord}\\s+[^.;\\n]*?${nonErrorTarget}[^.;\\n]*?${exclusionVerb})`,
-              "i",
-            ).test(prompt) &&
-            !new RegExp(
-              `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${nonErrorTarget}` +
-                `|${nonErrorTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
-                `|${negativeWord}\\s+[^.;\\n]*?${nonErrorTarget}[^.;\\n]*?${exclusionVerb})`,
-              "i",
-            ).test(name);
+          const nonErrorNegationPattern = new RegExp(
+            `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${nonErrorTarget}` +
+              `|${nonErrorTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
+              `|${negativeWord}\\s+[^.;\\n]*?${nonErrorTarget}[^.;\\n]*?${exclusionVerb})`,
+            "i",
+          );
+          const negationErrorOnly = new RegExp(
+            `\\b(?:do\\s+not|don't|never|not)\\s+(?:only|exclusively)\\b`,
+            "i",
+          );
 
           const positiveHandling = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)`;
           const inclusionPhrase = `(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed|investigated|triaged|resolved)`;
@@ -403,12 +399,16 @@ export function shouldIgnoreWebhookEvent(
             `)`,
             "i",
           );
-          if (isNonErrorExcluded || errorOnlyPattern.test(prompt) || errorOnlyPattern.test(name)) {
-            const negationErrorOnly = new RegExp(
-              `\\b(?:do\\s+not|don't|never|not)\\s+(?:only|exclusively)\\b`,
-              "i",
-            );
-            if (negationErrorOnly.test(prompt) || negationErrorOnly.test(name)) return false;
+
+          const isPromptErrorOnly =
+            (nonErrorExclusionPattern.test(prompt) && !nonErrorNegationPattern.test(prompt)) ||
+            (errorOnlyPattern.test(prompt) && !negationErrorOnly.test(prompt));
+          const isNameErrorOnly =
+            (nonErrorExclusionPattern.test(name) && !nonErrorNegationPattern.test(name)) ||
+            (errorOnlyPattern.test(name) && !negationErrorOnly.test(name));
+
+          const isErrorOnlyScope = prompt.trim() ? isPromptErrorOnly : isNameErrorOnly;
+          if (isErrorOnlyScope) {
 
             const positiveTargetsLevel = new RegExp(
               `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+)\\b${lvl}s?\\b` +
@@ -520,7 +520,7 @@ export function shouldIgnoreWebhookEvent(
         if (negationPattern.test(prompt) || negationPattern.test(name)) return false;
 
         const negatedTargetPattern = new RegExp(
-          `\\b(?:not|no|neither|without|never)\\s+(?:any\\s+)?${assignmentTarget}` +
+          `\\b(?:not|no|neither|without|never|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+(?:any\\s+)?${assignmentTarget}` +
             `|${assignmentTarget}\\s+(?:are|is\\s+)?(?:not|never|out\\s+of\\s+scope)\\b`,
           "i",
         );
@@ -566,7 +566,7 @@ export function shouldIgnoreWebhookEvent(
 
       const assignmentMatcher = /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i;
       const positiveAssignmentMatcher = new RegExp(
-        `(?<!\\b(?:not|no|neither|without|never)\\s+(?:any\\s+)?)${assignmentTarget}`,
+        `(?<!\\b(?:not|no|neither|without|never|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+(?:any\\s+)?)${assignmentTarget}`,
         "i",
       );
       const assignmentContextMatcher = /\b(?:(?:assignment|ownership|issue)\s+(?:router|triage)|(?:router|triage)\s+(?:for\s+)?(?:assignments?|assignees?|ownership|owners?))\b/i;
