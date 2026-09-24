@@ -31,11 +31,11 @@ import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { engineReachKnown, instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { ComputerImpactConfirmModal } from "./ComputerImpactConfirmModal";
 import { impactedBotsForProvider, type ImpactedBot } from "@/lib/computer-impact";
+import { providerControlsLocked, resolveWorkspaceProviders } from "@/lib/workspace-providers";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   COMPUTER_PROVIDER_ORDER,
   DEFAULT_VPS_MODE,
-  migrateAllowedComputersToProviders,
   type ComputerProviderId,
   type ComputerProviders,
   type VpsMode,
@@ -73,48 +73,6 @@ function allowedComputersFromProviders(providers: ComputerProviders): Array<"clo
   return result;
 }
 
-/** Derive the new per-provider shape from the legacy allowlist array,
- * for the read path on configs that pre-date the migration.  Uses
- * `migrateAllowedComputersToProviders` itself so the renderer and the
- * boot migrations cannot disagree: null/undefined is every provider on,
- * [] is every provider off. */
-function providersFromAllowedComputers(allowed: Array<"cloud" | "vm" | "local"> | null | undefined): {
-  providers: ComputerProviders;
-  vpsMode: VpsMode;
-} {
-  return migrateAllowedComputersToProviders(allowed);
-}
-
-/** Resolve the workspace's effective providers, applying the migration
- * fall-through on configs that have not been migrated yet.  Returns
- * both the providers and the resolved VPS mode so the parent can hand
- * them to the toggles without re-doing the same lookup. */
-function resolveWorkspaceProviders(config: ConfigStatus | null | undefined): {
-  providers: ComputerProviders;
-  vpsMode: VpsMode;
-  resolvedFromLegacy: boolean;
-} {
-  const defaults = config?.botDefaults;
-  if (defaults?.computerProviders) {
-    return {
-      providers: {
-        asciiBox: Boolean(defaults.computerProviders.asciiBox),
-        selfHostedVps: Boolean(defaults.computerProviders.selfHostedVps),
-        localVm: Boolean(defaults.computerProviders.localVm),
-        localMac: Boolean(defaults.computerProviders.localMac),
-      },
-      vpsMode: defaults.vpsMode ?? (defaults.computerProviders.selfHostedVps ? DEFAULT_VPS_MODE : null),
-      resolvedFromLegacy: false,
-    };
-  }
-  const legacy = providersFromAllowedComputers(defaults?.allowedComputers);
-  return {
-    providers: legacy.providers,
-    vpsMode: legacy.providers.selfHostedVps ? (defaults?.vpsMode ?? legacy.vpsMode ?? DEFAULT_VPS_MODE) : null,
-    resolvedFromLegacy: true,
-  };
-}
-
 export function LocalComputerSection() {
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
@@ -124,6 +82,8 @@ export function LocalComputerSection() {
   const bots = state.bots ?? [];
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
+  const configReady = state.config !== null && state.config !== undefined;
+  const locked = providerControlsLocked(state.config, saving);
   const [error, setError] = useState<string | null>(null);
   // The provider pending confirmation: set when the user clicks an
   // enabled provider (would turn it off) and there is at least one bot
@@ -233,7 +193,7 @@ export function LocalComputerSection() {
   );
 
   const handleProviderToggle = (provider: ComputerProviderId, next: boolean) => {
-    if (saving) return;
+    if (locked) return;
     if (!next) {
       // Disable path.  If any bot currently uses the provider, gate
       // the change on the modal; otherwise commit immediately.
@@ -267,7 +227,7 @@ export function LocalComputerSection() {
   // is on goes through the same disable path as the toggle, impact confirm
   // included.
   const handleVpsModeChange = (next: VpsMode) => {
-    if (saving) return;
+    if (locked) return;
     if (next === null) {
       if (providers.selfHostedVps) handleProviderToggle("selfHostedVps", false);
       return;
@@ -316,6 +276,7 @@ export function LocalComputerSection() {
   };
 
   const applyToAll = () => {
+    if (!configReady) return;
     submitRequest(
       {
         path: "/api/bots/apply-defaults",
@@ -345,16 +306,16 @@ export function LocalComputerSection() {
               key={id}
               provider={id}
               enabled={providers[id]}
-              busy={saving}
+              busy={locked}
               onToggle={(next) => handleProviderToggle(id, next)}
             />
           ))}
         </div>
         <div className="mt-4 flex flex-col gap-1.5 border-t border-hairline/40 pt-4">
           <div className="text-[12px] font-medium text-ink">Self-Hosted VPS Mode</div>
-          <VpsModeToggle value={vpsMode} busy={saving} onChange={handleVpsModeChange} />
+          <VpsModeToggle value={vpsMode} busy={locked} onChange={handleVpsModeChange} />
         </div>
-        {resolved.resolvedFromLegacy && (
+        {configReady && resolved.resolvedFromLegacy && (
           <div className="mt-3 rounded-lg bg-warning/10 px-3 py-2 text-[11.5px] text-warning">
             Loaded from the legacy <code className="font-mono">allowedComputers</code> shape.  The next save will write the new per-provider key alongside it.
           </div>
@@ -373,7 +334,7 @@ export function LocalComputerSection() {
           hostPlatform={hostPlatform}
           instances={instances}
           instancesReady={reachKnown}
-          busy={applying || saving}
+          busy={applying || saving || !configReady}
           onApplyToAll={applyToAll}
         />
       </Card>
