@@ -121,24 +121,28 @@ export function capReplayedTranscript(
     lastKept = entry;
   }
 
+  // Whichever limit set `start`, the kept prefix must not open on a tool
+  // result: its call was dropped, and an orphaned tool result is a message
+  // the provider rejects with 400.  Skip past any leading result entries.
+  while (start < transcript.length && isToolResultEntry(transcript[start])) start++;
+
   return transcript.slice(start);
 }
 
-/** True when `next` is the OTHER side of an open tool pair with
- *  `prev` — i.e. one is an assistant entry with toolCalls and the other
- *  is a user entry with toolResults.  Used to detect when a budget cut
- *  would orphan one half of a pair (an invalid chat-completions
- *  prefix) and prefer to keep both halves together even if that
- *  overflows the byte cap by a single pair. */
+/** True when `older` is the assistant tool call that `newer` answers:
+ *  `older` carries toolCalls, `newer` carries toolResults, and at least
+ *  one result id matches a call id.  Only that direction is a pair — an
+ *  older RESULT before a newer CALL belongs to an earlier call, and keeping
+ *  it would open the transcript on an orphaned result.  Used to detect when
+ *  a byte cut would split a call from its result, and prefer to keep both
+ *  halves even if that overflows the byte cap by a single entry. */
 function isToolPairPartner(
-  next: Transcript[number],
-  prev: Transcript[number],
+  older: Transcript[number],
+  newer: Transcript[number],
 ): boolean {
-  const nextIsCall = isToolCallEntry(next);
-  const prevIsCall = isToolCallEntry(prev);
-  const nextIsResult = isToolResultEntry(next);
-  const prevIsResult = isToolResultEntry(prev);
-  return (nextIsCall && prevIsResult) || (nextIsResult && prevIsCall);
+  if (!isToolCallEntry(older) || !isToolResultEntry(newer)) return false;
+  const callIds = new Set(older.toolCalls!.map((call) => call.id));
+  return newer.toolResults!.some((result) => callIds.has(result.id));
 }
 
 function isToolCallEntry(entry: Transcript[number]): boolean {
