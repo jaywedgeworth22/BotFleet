@@ -10,11 +10,38 @@
 // off cannot leak host control into a single bot's grant.  A new install
 // leaves it unset (every destination is allowed), matching the shipped
 // behavior exactly.
+//
+// This card is the LEGACY editor for the workspace default — the
+// redesigned Computer settings UI (`<LocalComputerSection>`) is the
+// primary view.  Its Allowed Computers row is read-only: the primary
+// view owns that allowlist and confirms affected bots before a provider
+// turns off.  The New Bots row still edits the same on-disk shape; to
+// keep both editors consistent we mirror every write onto the new
+// `botDefaults.computerProviders` and `botDefaults.vpsMode` fields the
+// primary view owns.  A future lane (see audit doc) will delete this
+// card once every install has had a release to migrate.
 import { useEffect, useState } from "react";
 import { ApiError, api, useStore, type ConfigStatus } from "@/state/store";
 import { Card } from "./SettingsPrimitives";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { cn } from "@/lib/cn";
+import type { ComputerProviders, VpsMode } from "../../shared/local-auto-consent";
+
+/** Derive the legacy allowlist from the new per-provider
+ * shape so this legacy card's toggle row renders the same state the
+ * primary view shows.  `null` means "every destination is allowed" —
+ * the only case every legacy destination is on. */
+function allowedFromProviders(providers: ComputerProviders): Destination[] | null {
+  const cloud = providers.asciiBox || providers.selfHostedVps;
+  const vm = providers.localVm;
+  const local = providers.localMac;
+  if (cloud && vm && local) return null;
+  const result: Destination[] = [];
+  if (cloud) result.push("cloud");
+  if (vm) result.push("vm");
+  if (local) result.push("local");
+  return result;
+}
 
 type Destination = "cloud" | "vm" | "local";
 type Backend = "box" | "vps";
@@ -22,6 +49,11 @@ type DefaultsRequest = {
   computers: Destination[];
   cloudBackend: Backend;
   allowedComputers?: Destination[] | null;
+  /** New per-provider shape mirrored onto every save so the
+   * redesigned primary editor renders the same state.  Optional so
+   * the existing call sites that omit it continue to type-check. */
+  computerProviders?: ComputerProviders;
+  vpsMode?: VpsMode | undefined;
 };
 type ConsentRequest = {
   kind: "save" | "apply";
@@ -36,15 +68,86 @@ const DESTINATION_LABEL: Record<Destination, string> = {
   local: "This Computer",
 };
 
-/** The allowlist is persisted as either absent (every destination is allowed,
- * the shipped default) or an array of destinations.  On the wire we say the
- * first state as an explicit `null`, and the server drops the stored key when
- * it sees one — omitting the field instead would merge into whatever is
- * already on disk, so turning the last destination back on would appear to
- * work and then come back narrowed on the next reload. */
-function allowedForWire(value: Destination[] | null | undefined): Destination[] | null {
-  if (value === null || value === undefined) return null;
-  return value;
+const DESTINATIONS: Destination[] = ["cloud", "vm", "local"];
+
+/** Read-only view of the workspace allowlist in the legacy card.
+ *
+ * The Providers card (`<LocalComputerSection>`) owns this state and gates
+ * every disable behind `<ComputerImpactConfirmModal>`, which lists the bots
+ * that would lose a leg of their grant.  An editable copy here would let an
+ * operator turn Cloud, Local VM or This Computer off with no such
+ * confirmation, so this card only mirrors what the Providers card saved. */
+/** One row in the read-only summary. */
+type SummaryRow = { key: string; label: string; enabled: boolean };
+
+/** Rows for the read-only summary.  The per-provider shape splits the
+ * legacy "cloud" destination into ASCII.dev Box and Self-hosted VPS, so
+ * when the Providers card saved that shape each gets its own row: with
+ * Box off and VPS on, the Box row must read "not allowed", matching the
+ * Box toggle, instead of lighting up because the VPS keeps "cloud" open.
+ * Installs that only have the legacy allowlist keep the three rows. */
+export function allowedSummaryRows(allowed: Destination[] | null, providers?: ComputerProviders | null): SummaryRow[] {
+  if (providers) {
+    return [
+      { key: "box", label: "ASCII.dev Box (VM)", enabled: providers.asciiBox === true },
+      { key: "vps", label: "Self-hosted VPS", enabled: providers.selfHostedVps === true },
+      { key: "vm", label: DESTINATION_LABEL.vm, enabled: providers.localVm === true },
+      { key: "local", label: DESTINATION_LABEL.local, enabled: providers.localMac === true },
+    ];
+  }
+  return DESTINATIONS.map((d) => ({
+    key: d,
+    label: DESTINATION_LABEL[d],
+    enabled: allowed === null || allowed.includes(d),
+  }));
+}
+
+/** Read-only view of the workspace allowlist in the legacy card.
+ *
+ * The Providers card (`<LocalComputerSection>`) owns this state and gates
+ * every disable behind `<ComputerImpactConfirmModal>`, which lists the bots
+ * that would lose a leg of their grant.  An editable copy here would let an
+ * operator turn Cloud, Local VM or This Computer off with no such
+ * confirmation, so this card only mirrors what the Providers card saved. */
+export function AllowedComputersSummary({
+  allowed,
+  providers,
+}: {
+  allowed: Destination[] | null;
+  providers?: ComputerProviders | null;
+}) {
+  const rows = allowedSummaryRows(allowed, providers);
+  const enabledCount = rows.filter((r) => r.enabled).length;
+  return (
+    <Card
+      title="Allowed Computers"
+      subtitle={"The destinations any bot in this workspace is allowed to use.\u00a0 This mirrors the Providers card above; change it there, where turning a provider off first shows which bots it affects."}
+    >
+      <div className="flex overflow-hidden rounded-lg border border-hairline/40" role="list">
+        {rows.map((row, i) => (
+          <div
+            key={row.key}
+            role="listitem"
+            aria-label={`${row.label}: ${row.enabled ? "allowed" : "not allowed"}`}
+            className={cn(
+              "flex-1 py-1.5 text-center text-[13px]",
+              i > 0 && "border-l border-hairline/40",
+              row.enabled ? "bg-control text-ink font-medium" : "text-ink-secondary",
+            )}
+          >
+            {row.label}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 text-[11.5px] text-ink-secondary">
+        {enabledCount === rows.length
+          ? "Every destination is allowed — the shipped default."
+          : enabledCount === 0
+            ? "No destination is allowed.\u00a0 Every bot is locked to its current choice (or auto) until you re-enable one."
+            : `${enabledCount} of ${rows.length} destinations allowed.\u00a0 A bot that picked a disabled destination keeps that choice, but the run is refused.`}
+      </div>
+    </Card>
+  );
 }
 
 export function BotComputerDefaults() {
@@ -69,13 +172,17 @@ export function BotComputerDefaults() {
   useEffect(() => {
     setComputers(saved?.computers ?? []);
     setBackend(saved?.cloudBackend ?? "box");
-    setAllowed(saved?.allowedComputers ?? null);
-  }, [saved?.computers, saved?.cloudBackend, saved?.allowedComputers]);
+    // Read the allowlist from the new per-provider shape first, then
+    // fall back to the legacy field for installs that pre-date the
+    // migration.  This keeps both editors rendering the same state
+    // even when only one of them was the last writer.
+    setAllowed(saved?.computerProviders ? allowedFromProviders(saved.computerProviders) : (saved?.allowedComputers ?? null));
+  }, [saved?.computers, saved?.cloudBackend, saved?.allowedComputers, saved?.computerProviders]);
 
   const restoreSavedDefaults = () => {
     setComputers(saved?.computers ?? []);
     setBackend(saved?.cloudBackend ?? "box");
-    setAllowed(saved?.allowedComputers ?? null);
+    setAllowed(saved?.computerProviders ? allowedFromProviders(saved.computerProviders) : (saved?.allowedComputers ?? null));
   };
 
   const submit = (request: ConsentRequest, acknowledgedBots?: { id: string; name: string }[]) => {
@@ -109,15 +216,18 @@ export function BotComputerDefaults() {
       });
   };
 
-  const save = (
-    next: { computers?: Destination[]; backend?: Backend; allowed?: Destination[] | null },
-  ) => {
+  // Provider policy is read-only in this legacy card (see
+  // AllowedComputersSummary): turning a provider off must go through the
+  // Providers card's affected-bot confirmation, and every provider save there
+  // carries a compare-and-swap snapshot.  So a save here sends only the
+  // computer defaults.  Re-sending the allowlist, provider flags or VPS mode
+  // from this card's copy of the config let a stale card write old flags
+  // back over a newer save; the server keeps the stored ones untouched.
+  const save = (next: { computers?: Destination[]; backend?: Backend }) => {
     const nextComputers = [...(next.computers ?? computers)];
     const nextBackend = next.backend ?? backend;
-    const nextAllowed = next.allowed === undefined ? allowed : next.allowed;
     setComputers(nextComputers);
     setBackend(nextBackend);
-    setAllowed(nextAllowed);
     submit({
       kind: "save",
       method: "PUT",
@@ -126,7 +236,6 @@ export function BotComputerDefaults() {
         botDefaults: {
           computers: nextComputers,
           cloudBackend: nextBackend,
-          allowedComputers: allowedForWire(nextAllowed),
         },
       },
     });
@@ -141,9 +250,7 @@ export function BotComputerDefaults() {
     });
   };
 
-  const destinations: Destination[] = ["cloud", "vm", "local"];
-  const options: Array<[Destination, string]> = destinations.map((d) => [d, DESTINATION_LABEL[d]]);
-  const isAllowed = (d: Destination) => allowed === null || allowed.includes(d);
+  const options: Array<[Destination, string]> = DESTINATIONS.map((d) => [d, DESTINATION_LABEL[d]]);
   // When the allowlist disables every destination, the workspace default
   // picker is showing the operator what would be applied if they ever
   // re-enabled a destination — and "Set all bots to default" will save it
@@ -154,57 +261,11 @@ export function BotComputerDefaults() {
 
   return (
     <>
-      <Card
-        title="Allowed Computers"
-        subtitle="The destinations any bot in this workspace is allowed to use.  Disabling a destination here keeps every bot off it, no matter what a bot's own settings say.  Leave everything on to keep the shipped behavior."
-      >
-        <div className="flex overflow-hidden rounded-lg border border-hairline/40">
-          {options.map(([mode, label], i) => {
-            const enabled = isAllowed(mode);
-            return (
-              <button
-                key={mode}
-                disabled={saving}
-                onClick={() => {
-                  // The allowlist is either "everything" (null) or an array.
-                  // Clicking the one ON in an everything-allowed state turns
-                  // it into "everywhere except this one"; clicking a disabled
-                  // destination back on adds it back.
-                  if (allowed === null) {
-                    save({ allowed: destinations.filter((d) => d !== mode) });
-                  } else {
-                    const next = enabled
-                      ? allowed.filter((d) => d !== mode)
-                      : [...allowed, mode];
-                    save({ allowed: next.length === destinations.length ? null : next });
-                  }
-                }}
-                className={cn(
-                  "flex-1 py-1.5 text-[13px]",
-                  i > 0 && "border-l border-hairline/40",
-                  saving && "opacity-60",
-                  enabled
-                    ? "bg-control text-ink font-medium"
-                    : "text-ink-secondary hover:bg-control/60 hover:text-ink",
-                )}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-2 text-[11.5px] text-ink-secondary">
-          {allowed === null
-            ? "Every destination is allowed — the shipped default."
-            : allowed.length === 0
-              ? "No destination is allowed.  Every bot is locked to its current choice (or auto) until you re-enable one."
-              : `${allowed.length} of 3 destinations allowed.  A bot that picked a disabled destination keeps that choice, but the run is refused.`}
-        </div>
-      </Card>
+      <AllowedComputersSummary allowed={allowed} providers={saved?.computerProviders ?? null} />
 
       <Card
         title="New Bots"
-        subtitle="Which computers a bot gets before anyone opens its settings.  Pick more than one and it chooses per task.  Leave all of them off to keep the shipped behavior: reuse whatever already exists, create nothing."
+        subtitle={"Which computers a bot gets before anyone opens its settings.\u00a0 Pick more than one and it chooses per task.\u00a0 Leave all of them off to keep the shipped behavior: reuse whatever already exists, create nothing."}
       >
         <div className="flex overflow-hidden rounded-lg border border-hairline/40">
           {options.map(([mode, label], i) => (
@@ -257,7 +318,7 @@ export function BotComputerDefaults() {
         <div className="mt-2 text-[11.5px] text-ink-secondary">
           {computers.length === 0
             ? "New bots use whatever computer already exists, and create nothing."
-            : `New bots get ${computers.length > 1 ? "all of these" : "this"}.  Bots you have already set up keep their own choice, and a bot you turned off stays off.`}
+            : `New bots get ${computers.length > 1 ? "all of these" : "this"}.\u00a0 Bots you have already set up keep their own choice, and a bot you turned off stays off.`}
         </div>
         <div className="mt-3 flex items-center gap-2">
           <button

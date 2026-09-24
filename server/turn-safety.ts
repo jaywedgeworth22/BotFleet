@@ -1,10 +1,32 @@
-import type { ModelSelection } from "./contracts.ts";
+import type { CloudBackend, ModelSelection } from "./contracts.ts";
+
+/** The bot's computer settings as they were when a turn was dispatched, which
+ * is what that turn mounted.  A later bot edit changes the stored grants but
+ * not the live mounts, so a provider disable must be judged against these. */
+export interface TurnComputerInputs {
+  computers: readonly ("cloud" | "vm" | "local")[] | undefined;
+  cloudBackend: CloudBackend | undefined;
+  /** The destination an automation dispatched the turn to: a cloud routine,
+   * webhook or resource trigger mounts the cloud computer whatever the bot's
+   * own computers say. */
+  runOn?: "maus" | "cloud";
+  /** The providers the turn actually mounted, once its computers resolved.
+   * Auto can fall back from an unavailable cloud computer to This Computer,
+   * so the grant alone over-counts what the turn holds. */
+  mounted?: readonly ("asciiBox" | "selfHostedVps" | "localVm" | "localMac")[];
+}
 
 export interface ActiveTurnOwner {
   dispatchId: number;
   botId: string;
   selection: ModelSelection;
   fallbackPolicy: ModelSelection;
+  computerInputs?: TurnComputerInputs;
+  /** Set when a settings change took away a provider this dispatch holds or
+   * could reach.  A dispatch that has not reached its provider yet has no
+   * session to interrupt, so its own pre-dispatch checks must see this and
+   * stop instead of starting the turn with the revoked mount. */
+  revoked?: boolean;
 }
 
 /** The engine/model that owns each live dispatch.  A fallback is a per-turn
@@ -63,6 +85,42 @@ export class ActiveTurnOwners {
       }
     }
     return latest;
+  }
+
+  /** Record what a live dispatch actually mounted.  A dispatch that has
+   * already settled, or been replaced, is left alone. */
+  recordMounted(threadId: string, dispatchId: number, mounted: NonNullable<TurnComputerInputs["mounted"]>): void {
+    const owners = this.byThread.get(threadId);
+    if (!owners) return;
+    for (const owner of owners.values()) {
+      if (owner.dispatchId !== dispatchId) continue;
+      owner.computerInputs = {
+        ...(owner.computerInputs ?? { computers: undefined, cloudBackend: undefined }),
+        mounted: [...mounted],
+      };
+    }
+  }
+
+  /** Fence one exact dispatch after its computer access was revoked.  A
+   * dispatch that already settled, or was replaced, is left alone. */
+  revoke(threadId: string, dispatchId: number): boolean {
+    const owners = this.byThread.get(threadId);
+    if (!owners) return false;
+    for (const owner of owners.values()) {
+      if (owner.dispatchId !== dispatchId) continue;
+      owner.revoked = true;
+      return true;
+    }
+    return false;
+  }
+
+  isRevoked(threadId: string, dispatchId: number): boolean {
+    const owners = this.byThread.get(threadId);
+    if (!owners) return false;
+    for (const owner of owners.values()) {
+      if (owner.dispatchId === dispatchId) return owner.revoked === true;
+    }
+    return false;
   }
 
   threadForBot(botId: string): string | undefined {

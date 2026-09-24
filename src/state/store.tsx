@@ -388,6 +388,9 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
+  /** The server's host platform (`process.platform`).  Absent from older
+   * servers. */
+  host?: { platform: string };
   xai?: { configured: boolean };
   /** The two `install.apiKeyOnly` engines: an endpoint and a key, no CLI to
    * install and no interactive sign-in.  `url` is configuration, not a
@@ -410,8 +413,24 @@ export interface ConfigStatus {
   botDefaults?: {
     computers: Array<"cloud" | "vm" | "local">;
     cloudBackend: "box" | "vps";
-    /** null = every destination is allowed (the shipped default). */
+    /** null = every destination is allowed (the shipped default).  Legacy
+     * input — the redesigned Computer settings UI reads
+     * `computerProviders` instead and writes back through here so the
+     * server's allowlist gate keeps working through the cut-over. */
     allowedComputers: Array<"cloud" | "vm" | "local"> | null;
+    /** Per-provider allowlist written by the redesigned Computer
+     * settings UI.  The toggles drive this shape; the legacy
+     * `allowedComputers` above is back-filled from it for the cut-over
+     * release. */
+    computerProviders?: {
+      asciiBox: boolean;
+      selfHostedVps: boolean;
+      localVm: boolean;
+      localMac: boolean;
+    };
+    /** Shared-vs-per-bot VPS mode.  `null` is only legal when
+     * `selfHostedVps` is false. */
+    vpsMode?: "shared" | "per-bot" | null;
   };
   ingress?: { publicUrl?: string; enabled?: boolean };
   localVm: { mode: "shared" | "per-bot"; maxInstances: number };
@@ -526,7 +545,7 @@ export function getConversationMode(config?: ConfigStatus | null): ConversationM
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "botDefaults" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "botDefaults" | "host" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -541,6 +560,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     // surviving each SSE `config` frame — drop it here and
     // resolveCloudBackend() silently falls back to "box" fleet-wide.
     botDefaults: frame.botDefaults,
+    host: frame.host,
     ingress: frame.ingress,
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,

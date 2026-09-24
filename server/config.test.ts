@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DATA_DIR,
   migrateLegacyElevenLabsTtsProvider,
+  migrateComputerProvidersConfig,
   allowedBotComputers,
   filterAllowedComputers,
   instanceConfigs,
@@ -1523,5 +1524,65 @@ describe("the secret-store section", () => {
       delete process.env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID;
       delete process.env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET;
     }
+  });
+});
+
+describe("migrateComputerProvidersConfig", () => {
+  // The next provider save back-fills `allowedComputers` from whatever this
+  // migration writes, so a wrong mapping here becomes a real grant change.
+  it("keeps an explicit deny-all ([]) as every provider off", () => {
+    const cfg: AppConfig = { botDefaults: { allowedComputers: [] } };
+    expect(migrateComputerProvidersConfig(cfg)).toBe(true);
+    expect(cfg.botDefaults?.computerProviders).toEqual({
+      asciiBox: false,
+      selfHostedVps: false,
+      localVm: false,
+      localMac: false,
+    });
+    expect(cfg.botDefaults?.vpsMode).toBeNull();
+    expect(allowedBotComputers(cfg)).toEqual([]);
+  });
+
+  it("maps a null allowlist (legacy unrestricted) to every provider on", () => {
+    const cfg: AppConfig = { botDefaults: { allowedComputers: null } };
+    expect(migrateComputerProvidersConfig(cfg)).toBe(true);
+    expect(cfg.botDefaults?.computerProviders).toEqual({
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    });
+    expect(cfg.botDefaults?.vpsMode).toBe("per-bot");
+  });
+
+  it("maps an absent allowlist (legacy unrestricted) to every provider on", () => {
+    const cfg: AppConfig = { botDefaults: { computers: ["local"] } };
+    expect(migrateComputerProvidersConfig(cfg)).toBe(true);
+    expect(cfg.botDefaults?.computerProviders).toEqual({
+      asciiBox: true,
+      selfHostedVps: true,
+      localVm: true,
+      localMac: true,
+    });
+    expect(cfg.botDefaults?.computers).toEqual(["local"]);
+  });
+
+  it("maps a narrowed allowlist onto just the named providers", () => {
+    const cfg: AppConfig = { botDefaults: { allowedComputers: ["vm", "local"] } };
+    expect(migrateComputerProvidersConfig(cfg)).toBe(true);
+    expect(cfg.botDefaults?.computerProviders).toEqual({
+      asciiBox: false,
+      selfHostedVps: false,
+      localVm: true,
+      localMac: true,
+    });
+    expect(cfg.botDefaults?.vpsMode).toBeNull();
+  });
+
+  it("leaves an already-migrated config alone", () => {
+    const providers = { asciiBox: true, selfHostedVps: false, localVm: false, localMac: true };
+    const cfg: AppConfig = { botDefaults: { allowedComputers: [], computerProviders: { ...providers }, vpsMode: null } };
+    expect(migrateComputerProvidersConfig(cfg)).toBe(false);
+    expect(cfg.botDefaults?.computerProviders).toEqual(providers);
   });
 });

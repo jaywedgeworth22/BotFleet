@@ -21,6 +21,7 @@ import {
   type CustomRoomLabels,
   type RoomTerminology,
 } from "../shared/terminology.ts";
+import { DEFAULT_VPS_MODE, migrateAllowedComputersToProviders } from "../shared/local-auto-consent.ts";
 
 const optionalText = z.string().optional();
 const externalCredentialStorage = z.literal("external").optional();
@@ -157,6 +158,17 @@ const vpsConfigSchema = z.object({
  * top of the settings page is enough to keep any bot from running on the
  * host.  Absent means "every destination is allowed", preserving the shipped
  * behavior for every existing install. */
+/** Shape of the per-provider toggle the new Computer settings UI writes.
+ * Each key is a `ComputerProviderId`; values are explicit booleans so a
+ * partial save is fail-closed (an unknown future provider reads as off).
+ * Matches `ComputerProviders` in `shared/local-auto-consent.ts`. */
+const computerProvidersSchema = z.object({
+  asciiBox: z.boolean().optional(),
+  selfHostedVps: z.boolean().optional(),
+  localVm: z.boolean().optional(),
+  localMac: z.boolean().optional(),
+});
+
 const botDefaultsSchema = z.object({
   computers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
   cloudBackend: z.enum(["box", "vps"]).optional(),
@@ -168,7 +180,25 @@ const botDefaultsSchema = z.object({
   // -- the patch merges section by section, so an omitted key preserves
   // whatever is on disk, and re-enabling the last destination would silently
   // fail to clear the stored array.  null CLEARS; absent means "leave it".
+  //
+  // DEPRECATED — the redesigned Computer settings UI writes
+  // `computerProviders` instead and reads `allowedComputers` only as a
+  // backwards-compatibility input during the boot migration
+  // (`migrateComputerProvidersConfig` in `server/config.ts`).  Server
+  // code that still keys off `allowedComputers` (the allowlist gate in
+  // `server/computer-grants.ts`) keeps reading it on disk and ignores
+  // the new shape; the two stay in sync because the renderer writes
+  // both for the cut-over release.
   allowedComputers: z.array(z.enum(["cloud", "vm", "local"])).max(3).nullable().optional(),
+  /** Per-provider allowlist that the redesigned Computer settings UI
+   * drives.  The settings panel writes this directly; the renderer
+   * derives `allowedComputers` from it before each save so the server's
+   * legacy allowlist gate keeps working through the cut-over. */
+  computerProviders: computerProvidersSchema.optional(),
+  /** Shared-vs-per-bot VPS mode.  Only meaningful when `selfHostedVps`
+   * is enabled; the schema does not cross-validate here because the
+   * renderer is the only writer and it already enforces the rule. */
+  vpsMode: z.enum(["shared", "per-bot"]).nullable().optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -365,8 +395,24 @@ export interface AppConfig {
     cloudBackend?: "box" | "vps";
     /** Operator-level allowlist; an absent entry means the destination is
      * allowed.  `null` is the same thing said out loud, and is what a client
-     * sends to clear a narrowed allowlist back to "everything". */
+     * sends to clear a narrowed allowlist back to "everything".  Legacy
+     * input — the redesigned Computer settings UI writes
+     * `computerProviders` and `vpsMode` instead, and the renderer
+     * back-fills `allowedComputers` from the new shape for the cut-over
+     * so server-side allowlist gates keep working. */
     allowedComputers?: Array<"cloud" | "vm" | "local"> | null;
+    /** Per-provider allowlist written by the redesigned Computer settings
+     * UI.  Boots migrate any pre-existing `allowedComputers` to this
+     * shape via `migrateComputerProvidersConfig` below. */
+    computerProviders?: {
+      asciiBox?: boolean;
+      selfHostedVps?: boolean;
+      localVm?: boolean;
+      localMac?: boolean;
+    };
+    /** Shared-vs-per-bot VPS mode.  `null` means "not configured" and
+     * is only valid when `selfHostedVps` is off. */
+    vpsMode?: "shared" | "per-bot" | null;
   };
   ingress?: { publicUrl?: string; enabled?: boolean };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
@@ -827,6 +873,57 @@ export function migrateLegacyElevenLabsTtsProvider(cfg: AppConfig): boolean {
   return true;
 }
 
+/** Map the legacy per-destination allowlist onto the new per-provider
+ * shape the redesigned Computer settings UI drives.  Returns `true` when
+ * the caller's config was actually changed — idempotent on a config that
+ * already carries `botDefaults.computerProviders` (the redesigned UI is
+ * the only writer, so a config with the new key has the new key as its
+ * source of truth and the legacy field is left untouched).
+ *
+ * Cross-field invariants the new shape enforces (handled here, not by the
+ * zod schema, because the schema does not cross-validate):
+ * - `vpsMode === null` is only legal when `selfHostedVps` is false.  A
+ *   stored `null` alongside `selfHostedVps: true` falls back to
+ *   `DEFAULT_VPS_MODE` (per-bot) rather than throwing, so an upgrade cannot break a fleet that was
+ *   operating a VPS in shared mode before the schema was tightened.
+ * - The legacy `["cloud"]` entry never picked a VPS mode; the runtime
+ *   has always run one VPS container per bot, so the migrator pins it
+ *   to `DEFAULT_VPS_MODE` (per-bot). */
+export function migrateComputerProvidersConfig(cfg: AppConfig): boolean {
+  const defaults = cfg.botDefaults;
+  if (!defaults) return false;
+  if (defaults.computerProviders) {
+    // Already migrated.  Repair the cross-field invariant in place
+    // rather than refusing: a config the new UI wrote that landed a
+    // null vpsMode alongside an enabled VPS is a logic bug, but the
+    // repair is a single default and a single repair is cheaper than a
+    // hard refusal at boot.
+    if (defaults.computerProviders.selfHostedVps && defaults.vpsMode === null) {
+      defaults.vpsMode = DEFAULT_VPS_MODE;
+      return true;
+    }
+    if (!defaults.computerProviders.selfHostedVps && defaults.vpsMode !== null && defaults.vpsMode !== undefined) {
+      defaults.vpsMode = null;
+      return true;
+    }
+    return false;
+  }
+  // No new-shape key.  Compute from the legacy `allowedComputers` with
+  // the one shared mapping, so the server, the desktop boot migration
+  // and the renderer agree:
+  //   null / undefined -> every provider on (legacy "no allowlist")
+  //   []               -> every provider off (explicit deny-all)
+  //   [...]            -> each named destination's providers on
+  // Getting either of the first two wrong is not cosmetic: the next
+  // provider save back-fills `allowedComputers` from this shape, so a
+  // deny-all would silently re-enable cloud and an unrestricted install
+  // would silently lose its Local VM and host grants.
+  const migrated = migrateAllowedComputersToProviders(defaults.allowedComputers);
+  defaults.computerProviders = migrated.providers;
+  defaults.vpsMode = migrated.vpsMode;
+  return true;
+}
+
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
   try {
@@ -924,6 +1021,17 @@ export function loadConfig(): AppConfig {
   // operator-driven save can still write the pin alongside any other
   // tts.* they choose to persist.
   migrateLegacyElevenLabsTtsProvider(cfg);
+  // Migration: existing installs carried the legacy
+  // `botDefaults.allowedComputers` shape (an array of three legacy
+  // destinations).  The redesigned Computer settings UI drives the new
+  // `botDefaults.computerProviders` shape (four per-provider booleans
+  // plus `vpsMode`).  Runs in-memory only on the loaded copy; the
+  // desktop boot path in `electron/main.mjs` persists the new shape
+  // through `updateConfigFile` so the next load finds it and is a
+  // no-op.  Doing the migration here keeps the server's allowlist gate
+  // (which still reads `allowedComputers`) answering the SAME question
+  // the new UI is asking on the very first request after upgrade.
+  migrateComputerProvidersConfig(cfg);
   return cfg;
 }
 
