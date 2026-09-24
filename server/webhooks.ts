@@ -343,12 +343,12 @@ export function shouldIgnoreWebhookEvent(
       // Distinguish noun usages like "drop in warning", "drop of warning", or "recent drop of" from imperative drop commands.
       // Passive "ignored"/"dropped" count only after a be/get auxiliary ("warnings are ignored",
       // "assignments should be dropped"), so adjective uses like "handle dropped warnings" stay positive.
-      const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped)\\b)`;
+      const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped)\\b)`;
       // Positive handling/investigation verbs that govern events
       const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
-      const inScopePhrase = String.raw`\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
+      const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
       // An exception word, contrast word (not), positive handling verb, or in-scope assertion stops exclusion scanning so exclusions bind to their target
-      const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
+      const exceptionBoundary = String.raw`\b(?:except|but|not(?!\s+in\s+scope\b)|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
       const verbFirstPattern = new RegExp(
         `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b`,
         "i",
@@ -374,7 +374,7 @@ export function shouldIgnoreWebhookEvent(
 
             const positiveTargetsLevel = new RegExp(
               `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b` +
-                `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
+                `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
               "i",
             );
             if (positiveTargetsLevel.test(prompt)) return false;
@@ -404,7 +404,7 @@ export function shouldIgnoreWebhookEvent(
       // Positive investigation verbs or in-scope assertions override exclusion only when they specifically target this level
       const positiveTargetsLevel = new RegExp(
         `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b` +
-          `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
+          `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
         "i",
       );
       if (positiveTargetsLevel.test(prompt)) return false;
@@ -459,11 +459,11 @@ export function shouldIgnoreWebhookEvent(
 
     if (action === "assigned" || action === "unassigned") {
       const isAssignmentExcluded = (): boolean => {
-        const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped)\\b)`;
+        const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped)\\b)`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
         const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
-        const inScopePhrase = String.raw`\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
-        const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
+        const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
+        const exceptionBoundary = String.raw`\b(?:except|but|not(?!\s+in\s+scope\b)|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
         const verbFirstPattern = new RegExp(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}`,
           "i",
@@ -476,7 +476,7 @@ export function shouldIgnoreWebhookEvent(
 
         const positiveTargetsAssignment = new RegExp(
           `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?${assignmentTarget}` +
-            `|${assignmentTarget}(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:are|is\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
+            `|${assignmentTarget}(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
           "i",
         );
         if (positiveTargetsAssignment.test(prompt)) return false;

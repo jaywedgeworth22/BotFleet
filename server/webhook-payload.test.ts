@@ -624,6 +624,36 @@ describe("slimWebhookPayload", () => {
     expect(slimWebhookPayload(customBatch)).toEqual(customBatch);
     expect(serializeWebhookPayload(customBatch)).toContain("legacy data");
   });
+
+  it("preserves legacy PagerDuty created_on occurrence timestamps on messages and incidents", () => {
+    const legacyPd = {
+      messages: [
+        {
+          id: "msg-legacy-1",
+          event: "incident.trigger",
+          created_on: "2026-09-24T08:15:00Z",
+          incident: {
+            id: "INC-LEGACY",
+            number: 109,
+            title: "Disk space full",
+            status: "triggered",
+            urgency: "high",
+            created_on: "2026-09-24T08:14:50Z",
+            html_url: "https://my-team.pagerduty.com/incidents/INC-LEGACY",
+          },
+        },
+      ],
+    };
+    expect(isPagerDutyWebhookPayload(legacyPd)).toBe(true);
+    const slim = slimWebhookPayload(legacyPd) as Record<string, JsonValue>;
+    expect(slim.created_on).toBe("2026-09-24T08:15:00Z");
+    const msgs = slim.messages as Record<string, JsonValue>[];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].created_on).toBe("2026-09-24T08:15:00Z");
+    const inc = msgs[0].incident as Record<string, JsonValue>;
+    expect(inc.created_on).toBe("2026-09-24T08:14:50Z");
+    expect(inc.created_at).toBe("2026-09-24T08:14:50Z");
+  });
 });
 
 

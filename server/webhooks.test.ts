@@ -1049,6 +1049,22 @@ describe("WebhookManager", () => {
       }
     }
 
+    // 45. "Warning events are not in scope" treats "not in scope" as an exclusion,
+    // and does not falsely treat "in scope" as an inclusion in error-only triggers.
+    const notInScopeCases: Array<{ name: string; prompt: string }> = [
+      { name: "Warning Not In Scope", prompt: "Warning events are not in scope." },
+      { name: "Only Errors Hook", prompt: "Only errors are in scope.  Warning events are not in scope." },
+    ];
+    for (const tc of notInScopeCases) {
+      const { webhook: nisHook, secret: nisSecret } = h.manager.create({
+        name: tc.name,
+        prompt: tc.prompt,
+        botId: "maus-1",
+      });
+      const nisResult = h.manager.receive(nisHook.endpointId, nisSecret, clauseWarning);
+      expect(nisResult).toMatchObject({ ignored: true });
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

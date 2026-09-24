@@ -495,7 +495,8 @@ function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefi
   assignDefined(out, "status", pickStr(rec, "status"));
   assignDefined(out, "urgency", pickStr(rec, "urgency"));
   assignDefined(out, "html_url", pickStr(rec, "html_url"));
-  assignDefined(out, "created_at", pickStr(rec, "created_at"));
+  assignDefined(out, "created_at", pickStr(rec, "created_at") ?? pickStr(rec, "created_on"));
+  assignDefined(out, "created_on", pickStr(rec, "created_on") ?? pickStr(rec, "created_at"));
   const priorityRec = asRecord(rec.priority);
   if (priorityRec) {
     const pOut: Record<string, JsonValue> = {};
@@ -643,6 +644,7 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
       const sMsg: Record<string, JsonValue> = {};
       assignDefined(sMsg, "event", pickStr(msgRec, "event") ?? pickStr(msgRec, "type"));
       assignDefined(sMsg, "id", pickStr(msgRec, "id"));
+      assignDefined(sMsg, "created_on", pickStr(msgRec, "created_on") ?? pickStr(msgRec, "created_at"));
       const agent = slimPagerDutyUser(msgRec.agent);
       if (agent) sMsg.agent = agent;
       const inc = slimPagerDutyIncident(msgRec.incident);
@@ -653,6 +655,7 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
       out.messages = slimmedMessages;
       const first = slimmedMessages[0];
       assignDefined(out, "event_type", pickStr(first, "event"));
+      assignDefined(out, "created_on", pickStr(first, "created_on"));
       if (first.agent) out.agent = first.agent;
     }
     if (root.messages.length > rawMessages.length) {
