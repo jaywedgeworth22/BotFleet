@@ -735,6 +735,33 @@ describe("routine failure resiliency and unattended safety", () => {
     }
   });
 
+  it("fails clearly when an unattended Antigravity turn's cloud fails, since its local grant never mounts", async () => {
+    for (const cloudBackend of ["vps", "box"] as const) {
+      const deps = makeBaseDeps();
+      deps.vps.vpsComputerAction = async () => {
+        throw new Error("Docker-over-SSH command timed out");
+      };
+      deps.box.boxConfigured = () => true;
+      deps.box.provisionBox = async () => {
+        throw new Error("Box API returned 503");
+      };
+
+      await expect(
+        resolveTurnComputerMounts({
+          bot: { id: "b1", name: "Agy", computers: ["cloud", "local"], cloudBackend },
+          cfg: { box: { token: "t" } } as unknown as AppConfig,
+          engine: { driverKind: "antigravity", computerMcp: true, localComputerMcp: true, toolLoop: false },
+          threadId: "t1",
+          dispatchId: 1,
+          runOn: undefined,
+          unattended: true,
+          allowed: null,
+          deps,
+        }),
+      ).rejects.toThrow(cloudBackend === "vps" ? "Docker-over-SSH command timed out" : "Box API returned 503");
+    }
+  });
+
   it("still fails a cloud-only box turn when the box cannot be created", async () => {
     const deps = makeBaseDeps();
     deps.box.boxConfigured = () => true;
