@@ -250,6 +250,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
+import { fitListToBudget, serializedPreview } from "./serialized-preview.ts";
 import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
@@ -3725,18 +3726,59 @@ const routineRequests = new RoutineRequestService({
   cloudReady: cloudRoutineReadiness,
   canPersist: routineProposalPersistence,
 });
+/** Serialized byte budget for one list_routines response (50 KB target,
+ * with headroom for the tool wrapper). */
+const ROUTINE_LIST_BUDGET_BYTES = 48_000;
+/** Most routines one list_routines response returns; the rest are counted
+ * in routinesOmitted. */
+const ROUTINE_LIST_MAX_ROWS = 100;
 const ROUTINE_WEEKDAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
-const agentRoutine = (routine: ReturnType<RoutineManager["listRoutines"]>[number]) => {
+type ManagedRoutine = ReturnType<RoutineManager["listRoutines"]>[number];
+type AgentRoutineFields = {
+  id: string;
+  name: string;
+  nameTruncated?: true;
+  enabled: boolean;
+  runOn: ManagedRoutine["runOn"];
+  durationMinutes: number;
+  schedule:
+    | { type: "once"; at: string }
+    | { type: "weekly"; time: string; weekdays: (typeof ROUTINE_WEEKDAY_NAMES)[number][]; timeZone?: string };
+  nextRunAt: string | null;
+};
+type AgentRoutineSummary = AgentRoutineFields & {
+  instructionsPreview: string;
+  instructionsPreviewTruncated: boolean;
+};
+type AgentRoutineDetails = AgentRoutineFields & { instructions: string };
+function agentRoutine(routine: ManagedRoutine, includeInstructions: true): AgentRoutineDetails;
+function agentRoutine(routine: ManagedRoutine, includeInstructions?: false): AgentRoutineSummary;
+function agentRoutine(
+  routine: ManagedRoutine,
+  includeInstructions = false,
+): AgentRoutineSummary | AgentRoutineDetails {
   // Routines created in the calendar predate chat-card redaction and may
   // contain a credential in their instructions. The list result is handed
   // back to the model, so scrub the complete value before taking its preview.
   const safeInstructions = redactSecretsInText(routine.prompt);
   const safeName = redactSecretsInText(routine.name);
+  // Bound the preview by its serialized UTF-8 size, not UTF-16 units, so CJK
+  // or control-character instructions cannot push 100 previews past the list
+  // budget, and an emoji is never split at the cut.
+  const preview = includeInstructions ? undefined : serializedPreview(safeInstructions, 160);
+  // Names are capped at 80 characters on write, not 80 bytes: bound the list
+  // copy by serialized size too (the full name is in the routine_id lookup).
+  const name = includeInstructions ? { preview: safeName, truncated: false } : serializedPreview(safeName, 80);
   return {
     id: routine.id,
-    name: safeName,
-    instructions: safeInstructions.slice(0, 2_000),
-    instructionsTruncated: safeInstructions.length > 2_000,
+    name: name.preview,
+    ...(name.truncated ? { nameTruncated: true } : {}),
+    ...(includeInstructions
+      ? { instructions: safeInstructions }
+      : {
+          instructionsPreview: preview!.preview,
+          instructionsPreviewTruncated: preview!.truncated,
+        }),
     enabled: routine.enabled,
     runOn: routine.runOn,
     durationMinutes: routine.durationMinutes,
@@ -4083,6 +4125,7 @@ export function executeListAgentsRequest(input: { selfId: string }): {
 export function executeListRoutinesRequest(input: {
   fromBotId: string;
   fromThreadId?: string;
+  routineId?: string;
 }): { status: number; body: Record<string, unknown> } {
   const from = store.bot(input.fromBotId);
   if (!from) return { status: 403, body: { error: "unknown sender" } };
@@ -4090,15 +4133,33 @@ export function executeListRoutinesRequest(input: {
   if (!connectorThread(from.id, fromThreadId)) {
     return { status: 403, body: { error: "source conversation does not belong to sender" } };
   }
+  const ownedRoutines = (routines?.listRoutines() ?? []).filter((routine) => routine.botId === from.id);
+  if (input.routineId) {
+    const routine = ownedRoutines.find((candidate) => candidate.id === input.routineId);
+    if (!routine) return { status: 404, body: { error: "routine not found" } };
+    return {
+      status: 200,
+      body: {
+        now: new Date().toISOString(),
+        timeZone: routineTimeZone(),
+        routine: agentRoutine(routine, true),
+      },
+    };
+  }
+  const envelope = { now: new Date().toISOString(), timeZone: routineTimeZone() };
   return {
     status: 200,
     body: {
-      now: new Date().toISOString(),
-      timeZone: routineTimeZone(),
-      routines: (routines?.listRoutines() ?? [])
-        .filter((routine) => routine.botId === from.id)
-        .slice(0, 100)
-        .map(agentRoutine),
+      ...envelope,
+      // The whole list, not just each field, stays inside the budget.
+      // Routines past the 100-row cap count as omitted too, so a capped
+      // list never reads as complete.
+      ...fitListToBudget(
+        envelope,
+        ownedRoutines.slice(0, ROUTINE_LIST_MAX_ROWS).map((routine) => agentRoutine(routine)),
+        ROUTINE_LIST_BUDGET_BYTES,
+        Math.max(0, ownedRoutines.length - ROUTINE_LIST_MAX_ROWS),
+      ),
     },
   };
 }
@@ -6799,9 +6860,11 @@ const server = createServer(async (req, res) => {
       }
       if (method === "GET" && path === "/api/internal/routines") {
         const fromThreadId = url.searchParams.get("fromThreadId");
+        const routineId = url.searchParams.get("routineId");
         const result = executeListRoutinesRequest({
           fromBotId: String(url.searchParams.get("fromBotId") ?? ""),
           ...(fromThreadId ? { fromThreadId } : {}),
+          ...(routineId ? { routineId } : {}),
         });
         return json(res, result.status, result.body);
       }
