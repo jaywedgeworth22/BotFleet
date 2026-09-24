@@ -116,7 +116,7 @@ import {
   type TurnComputerDeps,
   type TurnComputerMounts,
 } from "./computer-grants.ts";
-import { providerReloadKeys } from "./config-reload-keys.ts";
+import { disabledComputerProviders, providerReloadKeys, turnUsesComputerProvider } from "./config-reload-keys.ts";
 import { computerReach } from "./computer-capability.ts";
 import {
   ensureDirs,
@@ -5864,6 +5864,44 @@ function settleInterruptedBots(
   }
 }
 
+/** A Computer provider was turned off in Settings.  The fleet is not
+ * rebuilt for that (see CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD), but a turn that
+ * already mounted the provider must not keep driving it until the turn
+ * happens to end.  So interrupt exactly the busy turns whose grant, resolved
+ * under the settings they started with, includes a disabled provider, and
+ * leave every other turn running.  The interrupt goes through the engine, so
+ * the turn settles through its normal terminal path. */
+async function interruptTurnsUsingDisabledProviders(
+  before: typeof cfg,
+  after: typeof cfg,
+): Promise<void> {
+  const disabled = disabledComputerProviders(
+    before.botDefaults?.computerProviders,
+    after.botDefaults?.computerProviders,
+  );
+  if (disabled.length === 0) return;
+  const allowed = allowedBotComputers(before);
+  const autoAllows = autoDestinations(allowed);
+  await Promise.allSettled(activeInterruptedTurns().map(async (turn) => {
+    const bot = store.bot(turn.botId);
+    if (!bot) return;
+    const run = routines?.activeRunForBot(bot.id);
+    const runOn = run?.threadId === turn.threadId ? run.runOn : undefined;
+    const { granted, auto } = resolveGrants(
+      storedComputerGrants(bot),
+      runOn,
+      before.botDefaults?.computers,
+      allowed,
+    );
+    const cloudBackend = resolveCloudBackend(bot.cloudBackend, before.botDefaults?.cloudBackend);
+    if (!turnUsesComputerProvider({ granted, auto, autoAllows, cloudBackend }, disabled)) return;
+    const instance = registry.get(turn.instanceId ?? bot.modelSelection.instanceId);
+    await instance?.adapter.interruptTurn(turn.threadId).catch((error: unknown) => {
+      console.error(`interrupt after computer provider disable failed for thread ${turn.threadId}:`, error);
+    });
+  }));
+}
+
 async function runProviderReload() {
   // Snapshot the actual bot/room thread and latch Stop before the first
   // teardown side effect or await.  An asynchronous completion fold can now
@@ -10410,6 +10448,10 @@ const server = createServer(async (req, res) => {
       }
       providerConfigBusy = true;
       localAutoConsentConfigBusy = consentRelevantConfigSave;
+      // The settings the running turns resolved their computers under.  The
+      // save below replaces `cfg`'s top-level sections, so a shallow copy is
+      // a stable snapshot of them.
+      const configBeforeSave: typeof cfg = { ...cfg };
             try {
       // A project key is useful only if it can create/reuse the Session that
       // powers both the connections UI and the agent MCP. Validate it before
@@ -10654,6 +10696,11 @@ const server = createServer(async (req, res) => {
         // turns for nothing.  A save that reloads is the deliberate,
         // user-initiated rebuild the flag was waiting for.
         infisical.setPendingProviderReload(false);
+      } else {
+        // No rebuild, so no blanket interrupt: only the turns holding a
+        // provider this save turned off are stopped.  (A rebuild above has
+        // already interrupted every turn.)
+        await interruptTurnsUsingDisabledProviders(configBeforeSave, cfg);
       }
       const status = configStatus();
       broadcast({ kind: "config", ...status });
