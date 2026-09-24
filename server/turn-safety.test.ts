@@ -45,6 +45,28 @@ describe("active turn ownership", () => {
     expect(owners.forBot("bot-1")).toBeUndefined();
   });
 
+  it("fences only the exact dispatch whose computer access was revoked", () => {
+    const owners = new ActiveTurnOwners();
+    const selection = { instanceId: "primary", model: "m" };
+    const claimed = owners.claim("thread-1", { botId: "bot-1", selection, fallbackPolicy: selection });
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(false);
+    // A replaced or unknown dispatch is left alone.
+    expect(owners.revoke("thread-1", claimed.dispatchId + 1)).toBe(false);
+    expect(owners.revoke("thread-2", claimed.dispatchId)).toBe(false);
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(false);
+    expect(owners.revoke("thread-1", claimed.dispatchId)).toBe(true);
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(true);
+    // The owner is still there to settle; the fence is what its pre-dispatch
+    // check reads.
+    expect(owners.forEvent("thread-1", "primary")?.revoked).toBe(true);
+    owners.settle("thread-1", "primary");
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(false);
+    // A fresh dispatch on the same thread starts unfenced.
+    const next = owners.claim("thread-1", { botId: "bot-1", selection, fallbackPolicy: selection });
+    expect(owners.isRevoked("thread-1", next.dispatchId)).toBe(false);
+    expect(owners.revoke("thread-1", claimed.dispatchId)).toBe(false);
+  });
+
   it("keeps the computer settings a turn was dispatched with, whatever the bot says later", () => {
     const owners = new ActiveTurnOwners();
     const selection = { instanceId: "primary", model: "m" };
