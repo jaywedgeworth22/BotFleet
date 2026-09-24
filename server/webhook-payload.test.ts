@@ -296,8 +296,44 @@ describe("slimWebhookPayload", () => {
       threshold: 50,
       project: { id: "1001", slug: "agentic-trading" },
     });
-    expect((slim.data as Record<string, JsonValue>).metric_alert).toBeDefined();
+    // One copy only — duplicating under out.data doubled large alerts past
+    // MAX_EVENT_CHARS and the serializer sliced them into invalid JSON.
+    expect(slim.data).toBeUndefined();
+    expect(JSON.stringify(slim).match(/High API Error Rate Alert/g)).toHaveLength(1);
     expect(serializeWebhookPayload(sentryMetricAlert)).toContain("High API Error Rate Alert");
+  });
+
+  it("keeps a slim assignedTo so assignment deliveries retain the new owner", () => {
+    const assigned = {
+      action: "assigned",
+      actor: { type: "user", id: "sentry", name: "Jay" },
+      data: {
+        issue: {
+          id: "102",
+          shortId: "ST-3",
+          title: "Assigned incident for triage",
+          level: "error",
+          project: { slug: "socratic-trade" },
+          assignedTo: {
+            type: "user",
+            id: "42",
+            name: "Ada",
+            email: "ada@example.com",
+            avatarUrl: "https://gravatar.example.com/avatar/deadbeef",
+            flags: { newsletter: false },
+          },
+        },
+      },
+    };
+    const slim = slimWebhookPayload(assigned) as Record<string, JsonValue>;
+    const issue = slim.issue as Record<string, JsonValue>;
+    expect(issue.assignedTo).toEqual({
+      type: "user",
+      id: "42",
+      name: "Ada",
+      email: "ada@example.com",
+    });
+    expect(JSON.stringify(issue)).not.toContain("avatarUrl");
   });
 
   it("retains and slims every message in a multi-incident PagerDuty delivery batch", () => {
