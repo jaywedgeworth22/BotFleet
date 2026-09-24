@@ -254,3 +254,38 @@ describe("provider toggle saves say what they saw", () => {
     expect(staleProviderConfig(null)).toBeNull();
   });
 });
+
+describe("Auto host fallback follows the server's platform", () => {
+  it("prefers the platform the server reports over the window's", async () => {
+    const { autoHostPlatform } = await import("./workspace-providers");
+    const darwin = { host: { platform: "darwin" } } as any;
+    // A plain browser says "other"; the harness it talks to is macOS.
+    expect(autoHostPlatform(darwin, "other")).toBe("darwin");
+    expect(autoHostPlatform({ host: { platform: "linux" } } as any, "darwin")).toBe("linux");
+    expect(autoHostPlatform({ host: { platform: "freebsd" } } as any, "darwin")).toBe("other");
+    // Older server: the desktop app's own platform, else no guess.
+    expect(autoHostPlatform({} as any, "darwin")).toBe("darwin");
+    expect(autoHostPlatform(null, "other")).toBeUndefined();
+  });
+
+  it("lists a true-Auto bot when This Computer turns off on a macOS server", async () => {
+    const { autoHostPlatform } = await import("./workspace-providers");
+    const platform = autoHostPlatform({ host: { platform: "darwin" } } as any, "other")!;
+    const impacted = impactedBotsForProvider("localMac", {
+      bots: [makeBot("auto")],
+      workspaceProviders: ALL_ON,
+      autoLocalFor: () => ({ hostPlatform: platform, engineSupportsLocal: true }),
+    });
+    expect(impacted.map((bot) => bot.id)).toEqual(["auto"]);
+  });
+
+  it("is carried on the config status and its SSE frame", async () => {
+    const { readFileSync } = await import("node:fs");
+    const server = readFileSync(new URL("../../server/index.ts", import.meta.url), "utf8");
+    expect(server).toContain("host: { platform: process.platform },");
+    const { configStatusFromFrame } = await import("../state/store");
+    expect(configStatusFromFrame({ host: { platform: "darwin" } } as any).host).toEqual({ platform: "darwin" });
+    const section = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    expect(section).toContain("autoHostPlatform(state.config, capabilities.host.platform)");
+  });
+});
