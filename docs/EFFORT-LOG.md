@@ -117,8 +117,10 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 (mirror: docs/EFFORT-LOG.md in the repo). As of 2026-08-29.
 
 ## In Progress
+- **2026-09-22 - CLAUDE - IN_PROGRESS - [BF][Claude] Voice mode: status review (PR #513 MiniMax-default TTS, Apple STT, Mac verification, DSH scope).** <!-- wb-agent-report:ca46a7d126364023bb5c29d5a7056cf1 -->
 - **2026-09-22 - MM - PLANNED - [BF][MM] APNs push: 1825 SendFailed since 21:50; likely HTTP/2 transport issue (native fetch + APNs HTTP/2 requirement).** <!-- wb-agent-report:851f6868afc748d78ac2da02fa0541f9 -->
 - **2026-09-22 - MM - IN_PROGRESS - [BF][MM] BotFleet bundle-ID rename: com.botfleet.* + com.jay.botfleet-server -> app.botfleet.<platform>; add group.app.botfleet + botfleet.app associated domain.** <!-- wb-agent-report:581f1f0b297f4f6b9f108cabdf8b3fbd -->
+- **2026-09-21 - AG - IN_PROGRESS - [BF][AG] Fix DSH MiniMax model option serialization (provider minimax).** <!-- wb-agent-report:41b6134a6e9a4c988d6bb5f952c47c48 -->
 - **2026-09-21 - AG - IN_PROGRESS - Fix Antigravity host policy refusal and unblock model fallback.** <!-- wb-agent-report:2a9a509b4a5547a787126385f67bc1d6 -->
 - **2026-09-21 - MM - IN_PROGRESS - [BF][MM] Computer Use settings: per-provider enable/disable + impact-confirm + matrix view.** <!-- wb-agent-report:9613f1355e424e5d943d7d7d91e42348 -->
 - **2026-09-19 - AG - IN_PROGRESS - Fix stale grok-3-mini hardcoded in Grok driver generateText.** <!-- wb-agent-report:24ca78d75a24438187e9bfb4b37de67a -->
@@ -146,10 +148,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 
 ## Completed
-- **2026-09-22 - CLAUDE - IN_PROGRESS - [BF][Claude] Voice mode: status review (PR #513 MiniMax-default TTS, Apple STT, Mac verification, DSH scope).** <!-- wb-agent-report:ca46a7d126364023bb5c29d5a7056cf1 -->
-- **2026-09-21 - MM - PLANNED - [BF][MM] Rewrite MiniMax TTS + avatar against native contract (PR #513 broken: invented OpenAI shape, wrong endpoints, silent ElevenLabs breakage, wrong MIME).** <!-- wb-agent-report:0e0ff08dbfd442f6b8f29e0e78b409b0 -->
 - **2026-09-20 - MM - IN_PROGRESS - feat(tts,avatar): default to MiniMax; preserve ElevenLabs as opt-in (PR #513).** <!-- wb-agent-report:24bcc6b6036b46a1aff18579ec02fd0f -->
-- **2026-09-21 - AG - IN_PROGRESS - [BF][AG] Fix DSH MiniMax model option serialization (provider minimax).** <!-- wb-agent-report:41b6134a6e9a4c988d6bb5f952c47c48 -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Audit defect: sentence-gap regression on Bot Computer Use copy (single space after period, missing second space).** <!-- wb-agent-report:bbe48a9ae62e4c809123487486ea9c59 -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Audit defect: ASCII.dev Box defaults over self-hosted VPS, no VPS-setup hint when alias missing.** <!-- wb-agent-report:31636bd1731a4e3dacdb2518a333a1fa -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Audit defect: Settings nav 'Local VM' mislabels the computer-use section (also covers Local Mac + Cloud VPS).** <!-- wb-agent-report:ce2e419406ea4b7cb9e489f2fc89041e -->
@@ -459,6 +458,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - **2026-09-22 - BF-Director - PLANNED - [Director] Engine capability uplift + wisdom registry: bots should do tasks efficiently, not just stop attempting doomed ones.** <!-- wb-agent-report:3997db1bebf14a8ebb0d19f66b6cb202 -->
 - **2026-09-22 - BF-Director - PLANNED - [Director] Engine capability gate: stop wasted-token retry storms on known-doomed engine/task combinations.** <!-- wb-agent-report:5fc628cbeeec4f6cbb01613f72ffaedb -->
 - **2026-09-22 - MM - PLANNED - [BF][MM] Sentry SDK silently fails to load — Dynamic require of 'util' not supported in ESM context (server/sentry.ts:194).** <!-- wb-agent-report:91d45243824948acbeab728c15d632d8 -->
+- **2026-09-21 - MM - PLANNED - [BF][MM] Rewrite MiniMax TTS + avatar against native contract (PR #513 broken: invented OpenAI shape, wrong endpoints, silent ElevenLabs breakage, wrong MIME).** <!-- wb-agent-report:0e0ff08dbfd442f6b8f29e0e78b409b0 -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] iOS companion: spoken replies where auto-speak is on (fetch mp3 from /api/tts/speak, play in chat view).** <!-- wb-agent-report:dfbbddbcd8c3483cbcdae21f55981144 -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Voice Settings: 'Use my cloned voice' global toggle (off by default, per-bot override preserved).** <!-- wb-agent-report:18da00ff043d4270b4adf29867318527 -->
 - **2026-09-21 - MM - PLANNED - [BF][MM] Voice cloning pipeline: record on Mac, upload to MiniMax Voice Clone API, persist voice_id.** <!-- wb-agent-report:c6858d6654a343b8b2c82ee745c79a79 -->
