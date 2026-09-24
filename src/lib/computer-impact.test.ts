@@ -136,3 +136,60 @@ describe("LocalComputerSection before the config hydrates", () => {
     expect(resolveWorkspaceProviders(config).providers.asciiBox).toBe(false);
   });
 });
+
+describe("LocalComputerSection before the automations hydrate", () => {
+  it("keeps the provider controls locked until the whole hydration pass is ready", async () => {
+    const { providerControlsLocked } = await import("./workspace-providers");
+    const config = { botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: false, localVm: false, localMac: false } } } as any;
+    // Config is in, but bots/routines/webhooks/triggers may still be loading:
+    // the impact confirm would read an empty automation list.
+    expect(providerControlsLocked(config, false, "idle")).toBe(true);
+    expect(providerControlsLocked(config, false, "loading")).toBe(true);
+    expect(providerControlsLocked(config, false, "failed")).toBe(true);
+    expect(providerControlsLocked(config, false, "ready")).toBe(false);
+  });
+
+  it("is wired to the store's hydration status", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    expect(source).toContain("providerControlsLocked(state.config, saving, state.hydration.status)");
+  });
+});
+
+describe("BotComputerMatrix and the impact list agree", () => {
+  it("lights the resolved cloud backend for an Off bot with a cloud automation", async () => {
+    const { BotComputerMatrix, effectiveProvidersForBot } = await import("../components/BotComputerMatrix");
+    const off = makeBot("off", []);
+    const vpsOff = makeBot("vpsoff", [], "vps");
+    const automations = { routines: [cloudRoutine("off"), cloudRoutine("vpsoff")] };
+    expect(effectiveProvidersForBot(off, { workspaceProviders: ALL_ON, automations })).toEqual({
+      asciiBox: true, selfHostedVps: false, localVm: false, localMac: false,
+    });
+    expect(effectiveProvidersForBot(vpsOff, { workspaceProviders: ALL_ON, automations }).selfHostedVps).toBe(true);
+    // A backend that is off stays dark, same as the per-provider filter.
+    expect(effectiveProvidersForBot(off, { workspaceProviders: { ...ALL_ON, asciiBox: false }, automations }).asciiBox).toBe(false);
+    // Every lit cell is a provider whose disable lists the bot, and vice versa.
+    for (const provider of ["asciiBox", "selfHostedVps", "localVm", "localMac"] as const) {
+      const listed = impactedBotsForProvider(provider, { bots: [off], workspaceProviders: ALL_ON, automations }).length > 0;
+      expect(effectiveProvidersForBot(off, { workspaceProviders: ALL_ON, automations })[provider]).toBe(listed);
+    }
+    const html = renderToStaticMarkup(
+      createElement(BotComputerMatrix, {
+        bots: [off],
+        workspaceProviders: ALL_ON,
+        automations,
+        onApplyToAll: () => {},
+      }),
+    );
+    expect(html).toContain('data-testid="matrix-cell-off-asciiBox-on"');
+    expect(html).toContain('data-testid="matrix-cell-off-localMac-off"');
+  });
+
+  it("keeps an Off bot with no cloud automation dark", async () => {
+    const { effectiveProvidersForBot } = await import("../components/BotComputerMatrix");
+    const automations = { routines: [cloudRoutine("off", false), { botId: "off", runOn: "maus" as const, enabled: true }] };
+    expect(effectiveProvidersForBot(makeBot("off", []), { workspaceProviders: ALL_ON, automations })).toEqual({
+      asciiBox: false, selfHostedVps: false, localVm: false, localMac: false,
+    });
+  });
+});
