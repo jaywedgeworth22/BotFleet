@@ -294,7 +294,7 @@ type TurnMetadata = {
   outputTokens: number;
   cachedInputTokens: number;
   cwd: string | null;
-  latencyMs: number;
+  latencyMs?: number;
   success: boolean;
   tokenType: TokenType;
   model: string | null;
@@ -393,13 +393,15 @@ export function buildTurnEvents(
       outputTokens: outTokens,
       cachedInputTokens: cachedTokens,
       cwd: params.cwd || null,
-      latencyMs: params.latencyMs || 0,
       success: params.success !== false,
       tokenType: slice.tokenType,
       model: keyRef || null,
       instanceId: params.instanceId,
       usageReported,
     };
+    if (params.latencyMs !== undefined && Number.isFinite(params.latencyMs) && params.latencyMs >= 0) {
+      metadata.latencyMs = params.latencyMs;
+    }
     if (roomId) {
       metadata.roomId = roomId;
       if (roomName) metadata.roomName = roomName;
