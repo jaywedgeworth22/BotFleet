@@ -35,6 +35,26 @@ final class ProfileRoutinePolicyTests: XCTestCase {
         XCTAssertTrue(offline.canSelect(.maus, preserving: .cloud))
     }
 
+    func testEngineStatusLabelKeepsAmbiguousProbeFailuresUnavailable() {
+        func label(_ state: String, _ reason: String? = nil, authenticated: Bool? = nil) -> String {
+            ProviderSnapshot(state: state, reason: reason, authenticated: authenticated, version: nil).engineStatusLabel
+        }
+        XCTAssertEqual(label("available"), "Ready")
+        XCTAssertEqual(label("available", authenticated: false), "Sign in")
+        // Claude/Codex reuse "CLI not found" for timeout / nonzero exit too —
+        // that text alone cannot mean "Not installed".
+        XCTAssertEqual(label("unavailable", "`claude` CLI not found"), "Unavailable")
+        XCTAssertEqual(label("unavailable", "no API key — set MINIMAX_API_KEY or add it to the instance config"), "Unavailable")
+        XCTAssertEqual(label("unavailable", "Update Claude Code to 2.0 or newer"), "Unavailable")
+        XCTAssertEqual(label("unavailable", "provider probe exploded"), "Unavailable")
+        XCTAssertEqual(label("unavailable", "Disabled in settings"), "Unavailable")
+        XCTAssertEqual(label("unavailable"), "Unavailable", "no reason is not proof the binary is missing")
+        XCTAssertFalse(
+            ProviderSnapshot(state: "unavailable", reason: "`claude` CLI not found", authenticated: nil, version: nil).isMissingBinary,
+            "no structured missing-binary signal yet"
+        )
+    }
+
     func testAgentVoiceWorksWithoutANonexistentWorkspaceDefault() throws {
         let keyOnly = try decodeConfig(#"{"tts":{"configured":true,"ready":false,"voice":""}}"#)
         XCTAssertTrue(keyOnly.isTTSConfigured)

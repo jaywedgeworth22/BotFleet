@@ -180,6 +180,12 @@ export class ProviderRegistry {
     if (isFullAuto) this.fullAutoByInstance.set(instanceId, true);
     else this.fullAutoByInstance.delete(instanceId);
 
+    // Record enabled before any shadow/decode branch so a Mac-disabled
+    // engine that cannot load still describes with enabled: false.  Shadows
+    // used to omit the flag, and phones treat a missing enabled as on.
+    const enabled = entry.enabled !== false;
+    this.enabledByInstance.set(instanceId, enabled);
+
     const driver = this.driversByKind.get(entry.driver);
     if (!driver) {
       this.byId.set(instanceId, {
@@ -203,8 +209,6 @@ export class ProviderRegistry {
       const rawCli = cliOfRaw(entry.config);
       if (rawCli) this.cliByInstance.set(instanceId, rawCli);
       else this.cliByInstance.delete(instanceId);
-      const enabled = entry.enabled !== false;
-      this.enabledByInstance.set(instanceId, enabled);
       // Same inputs MinimaxDriver.create() below receives, resolved the
       // same way and at the same moment — retained here (rather than read
       // back off `live`, which exposes no such getter) so describeEntry's
@@ -397,10 +401,12 @@ export class ProviderRegistry {
       return found;
     };
     if (entry.shadow) {
+      const enabled = this.enabledByInstance.get(entry.instanceId) ?? true;
       return {
         instanceId: entry.instanceId,
         driverKind: entry.shadow.driverKind,
         displayName: entry.shadow.displayName ?? entry.shadow.driverKind,
+        enabled,
         snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
         models: { default: "", options: [] },
         capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
