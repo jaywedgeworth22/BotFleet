@@ -58,6 +58,39 @@ export function disabledComputerProviders(before: ProviderFlags, after: Provider
   return PROVIDER_IDS.filter((id) => providerOn(before, id) && !providerOn(after, id));
 }
 
+/** Providers a save revoked through the legacy `botDefaults.allowedComputers`
+ * allowlist.  An older client narrows only that field; before the per-provider
+ * pass existed, such a save rebuilt the fleet and so revoked every mount, and
+ * it must still revoke the mounts it removes.  `null` is every destination
+ * allowed.  The legacy field cannot tell Box from VPS, so removing `cloud`
+ * revokes both cloud providers. */
+export function legacyAllowlistRevokedProviders(
+  before: readonly Destination[] | null,
+  after: readonly Destination[] | null,
+): ComputerProviderId[] {
+  const allows = (list: readonly Destination[] | null, destination: Destination) =>
+    list === null || list.includes(destination);
+  const revoked = (destination: Destination) => allows(before, destination) && !allows(after, destination);
+  const result: ComputerProviderId[] = [];
+  if (revoked("cloud")) result.push("asciiBox", "selfHostedVps");
+  if (revoked("vm")) result.push("localVm");
+  if (revoked("local")) result.push("localMac");
+  return result;
+}
+
+/** Everything a config save took away: per-provider toggles turned off plus
+ * destinations removed from the legacy allowlist, in provider order. */
+export function revokedComputerProviders(
+  before: { providers: ProviderFlags; allowed: readonly Destination[] | null },
+  after: { providers: ProviderFlags; allowed: readonly Destination[] | null },
+): ComputerProviderId[] {
+  const revoked = new Set([
+    ...disabledComputerProviders(before.providers, after.providers),
+    ...legacyAllowlistRevokedProviders(before.allowed, after.allowed),
+  ]);
+  return PROVIDER_IDS.filter((id) => revoked.has(id));
+}
+
 /** Whether a turn resolved under the pre-save settings may be using one of
  * `disabled`.  Conservative for Auto bots: an Auto turn may have reached any
  * destination the auto path was still allowed to look at, so it counts as
