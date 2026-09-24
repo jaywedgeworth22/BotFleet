@@ -436,7 +436,7 @@ async function computeVpsComputerStatus(
   const status = emptyStatus(botId, alias);
   if (!alias) return status;
   viewerConnections.delete(`${alias}:${status.container_name}`);
-  const run = (args: string[], timeoutMs = 30_000, input?: string) =>
+  const run = (args: string[], timeoutMs = 10_000, input?: string) =>
     runner(vpsDockerArgs(alias, args), { timeoutMs, input });
 
   let inspectedImageId: string | null = null;
