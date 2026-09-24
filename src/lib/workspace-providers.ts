@@ -86,3 +86,13 @@ export function applyDefaultsBody(
   if (botDefaults?.cloudBackend !== undefined) next.cloudBackend = botDefaults.cloudBackend;
   return Object.keys(next).length > 0 ? { botDefaults: next } : {};
 }
+
+/** The current config a stale provider save was refused with (409
+ * `computer_providers_stale`), so the window can show the real toggles
+ * instead of the ones it tried to write over.  Null for any other error. */
+export function staleProviderConfig(error: unknown): ConfigStatus | null {
+  const body = (error as { status?: unknown; body?: { code?: unknown; config?: unknown } } | null)?.body;
+  if (!body || body.code !== "computer_providers_stale") return null;
+  const config = body.config;
+  return config && typeof config === "object" ? (config as ConfigStatus) : null;
+}
