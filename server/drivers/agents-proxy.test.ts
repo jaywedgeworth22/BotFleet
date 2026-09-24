@@ -319,6 +319,23 @@ describe("agents-proxy MCP surface", () => {
     expect(lastAuth).toBe(`Bearer ${TOKEN}`);
   });
 
+  it("passes the omitted-routine count through, and never calls a fully trimmed list empty", async () => {
+    routinesResponse = {
+      now: "2026-08-28T10:30:00.000Z",
+      timeZone: "Asia/Kolkata",
+      routines: [{ id: "routine-1", name: "Morning brief", enabled: true }],
+      routinesOmitted: 3,
+    };
+    const partial = await callTool("list_routines", {});
+    expect(JSON.parse(partial.result.content[0].text).routinesOmitted).toBe(3);
+    routinesResponse = { now: "2026-08-28T10:30:00.000Z", timeZone: "Asia/Kolkata", routines: [], routinesOmitted: 100 };
+    const allCut = await callTool("list_routines", {});
+    expect(allCut.result.content[0].text).not.toContain("no routines");
+    expect(JSON.parse(allCut.result.content[0].text)).toMatchObject({ routines: [], routinesOmitted: 100 });
+    routinesResponse = { now: "2026-08-28T10:30:00.000Z", timeZone: "Asia/Kolkata", routines: [] };
+    expect((await callTool("list_routines", {})).result.content[0].text).toContain("no routines");
+  });
+
   it("requests full instructions by routine id while keeping the caller identity fixed", async () => {
     routinesResponse = {
       now: "2026-08-28T10:30:00.000Z",
