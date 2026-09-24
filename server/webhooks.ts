@@ -381,7 +381,9 @@ export function shouldIgnoreWebhookEvent(
       const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
       const hasLevelExclusion =
         verbFirstPattern.test(prompt) ||
+        verbFirstPattern.test(name) ||
         targetFirstPattern.test(prompt) ||
+        targetFirstPattern.test(name) ||
         positiveScopeException.test(prompt) ||
         positiveScopeException.test(name) ||
         bareNegativePattern.test(prompt) ||
@@ -566,20 +568,26 @@ export function shouldIgnoreWebhookEvent(
         );
         if (negatedTargetPattern.test(prompt) || negatedTargetPattern.test(name)) return true;
 
-        if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
+        if (
+          !verbFirstPattern.test(prompt) &&
+          !verbFirstPattern.test(name) &&
+          !targetFirstPattern.test(prompt) &&
+          !targetFirstPattern.test(name)
+        )
+          return false;
 
         const positiveTargetsAssignment = new RegExp(
           `${contrastingVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+(?:any\\s+)?)${assignmentTarget}` +
             `|${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
           "i",
         );
-        if (positiveTargetsAssignment.test(prompt)) return false;
+        if (positiveTargetsAssignment.test(prompt) || positiveTargetsAssignment.test(name)) return false;
 
         const interveningPattern = new RegExp(
           `${exclusionVerb}[^.;\\n]*?${contrastingVerb}[^.;\\n]*?${assignmentTarget}`,
           "i",
         );
-        if (interveningPattern.test(prompt)) return false;
+        if (interveningPattern.test(prompt) || interveningPattern.test(name)) return false;
 
         // A conditional carve-out ("ignore assignment updates unless assigned to
         // the on-call engineer", "except in production", "only for primary") qualifies the
@@ -593,7 +601,7 @@ export function shouldIgnoreWebhookEvent(
             `|${assignmentTarget}${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${conditional}\\b`,
           "i",
         );
-        if (conditionalPattern.test(prompt)) return false;
+        if (conditionalPattern.test(prompt) || conditionalPattern.test(name)) return false;
         return true;
       };
 

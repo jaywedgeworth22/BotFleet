@@ -1417,6 +1417,41 @@ describe("WebhookManager", () => {
     expect(negAllExceptWarningResult).toMatchObject({ duplicate: false });
     expect(negAllExceptWarningResult.runId).toBeDefined();
 
+    // 68. Honor level exclusions in trigger names with empty prompt
+    const { webhook: nameLevelHook, secret: nameLevelSecret } = h.manager.create({
+      name: "Ignore warning events",
+      prompt: "",
+      botId: "maus-1",
+    });
+    const nameLevelWarningResult = h.manager.receive(nameLevelHook.endpointId, nameLevelSecret, clauseWarning);
+    expect(nameLevelWarningResult).toMatchObject({ ignored: true });
+
+    const nameLevelErrorResult = h.manager.receive(nameLevelHook.endpointId, nameLevelSecret, clauseError);
+    expect(nameLevelErrorResult).toMatchObject({ duplicate: false });
+    expect(nameLevelErrorResult.runId).toBeDefined();
+
+    // 69. Honor assignment exclusions in trigger names with empty prompt
+    const { webhook: nameAssignHook, secret: nameAssignSecret } = h.manager.create({
+      name: "Ignore assignment updates",
+      prompt: "",
+      botId: "maus-1",
+    });
+    const nameAssignResult = h.manager.receive(nameAssignHook.endpointId, nameAssignSecret, {
+      payload: {
+        action: "assigned",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          issue: {
+            id: "i-assign-1",
+            title: "Assigned issue",
+            level: "error",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    });
+    expect(nameAssignResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
