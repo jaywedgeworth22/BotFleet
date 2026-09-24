@@ -374,6 +374,9 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
+  /** The server's host platform (`process.platform`).  Absent from older
+   * servers. */
+  host?: { platform: string };
   xai?: { configured: boolean };
   /** The two `install.apiKeyOnly` engines: an endpoint and a key, no CLI to
    * install and no interactive sign-in.  `url` is configuration, not a
@@ -528,7 +531,7 @@ export function getConversationMode(config?: ConfigStatus | null): ConversationM
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "botDefaults" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "botDefaults" | "host" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -543,6 +546,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     // surviving each SSE `config` frame — drop it here and
     // resolveCloudBackend() silently falls back to "box" fleet-wide.
     botDefaults: frame.botDefaults,
+    host: frame.host,
     ingress: frame.ingress,
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,
