@@ -39,6 +39,14 @@ export { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from
 
 const DRIVER_KIND = "codex";
 
+// A resumed thread keeps the model it was started with, so changing the bot's
+// model cannot fix a retired one there — only a fresh thread or a rewind can.
+function unknownModelMessage(model: string | undefined, resumed: boolean, detail: string): string {
+  return resumed
+    ? `The saved Codex session's model is unavailable for this account or CLI, and a resumed session keeps its model.  Start a fresh task or rewind this conversation to replay its visible history.  ${detail}`
+    : `Selected Codex model ${model ?? "default"} is unavailable for this account or CLI.  Pick another model in bot settings.  ${detail}`;
+}
+
 class CodexResumeError extends Error {
   constructor(options?: { cause?: unknown }) {
     super(
@@ -242,6 +250,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         settled: false,
         lastText: "",
         sawStreamDelta: false,
+        // this attempt continues a saved codex thread (thread/resume succeeded)
+        resumed: false,
         // codex reports token usage as a running THREAD total; the harness
         // wants this turn's figure, so the last report is banked on settle
         usage: undefined as { input: number; output: number; cachedInput?: number } | undefined,
@@ -487,9 +497,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const t = p.turn ?? {};
             const reason = t.error?.message ?? t.status ?? "failed";
             const unavailable = classifyError({ text: String(reason) }).reason === "unknown_model";
-            const failureMessage = unavailable
-              ? `Selected Codex model ${turn.model ?? "default"} is unavailable for this account or CLI.  Pick another model in bot settings.  ${reason}`
-              : reason;
+            const failureMessage = unavailable ? unknownModelMessage(turn.model, state.resumed, String(reason)) : reason;
             if (t.status !== "completed" && unavailable) {
               emit({ ...base(threadId, turnId), type: "runtime.error", message: failureMessage });
             }
@@ -589,6 +597,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           try {
             const resumed = await request("thread/resume", { threadId: cursor });
             codexThreadId = resumed?.thread?.id ?? cursor;
+            state.resumed = true;
           } catch (error) {
             throw new CodexResumeError({ cause: error });
           }
@@ -645,7 +654,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const message = resumeFailure
           ? failureMessage !== e.message ? `${e.message}  ${failureMessage}` : e.message
           : verdict.reason === "unknown_model"
-            ? `Selected Codex model ${turn.model ?? "default"} is unavailable for this account or CLI.  Pick another model in bot settings.  ${failureMessage}`
+            ? unknownModelMessage(turn.model, state.resumed, failureMessage)
             : failureMessage;
         if (!state.settled && !needsAuth && verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1 && state.sawStreamDelta === false) {
           const delayMs = computeBackoff(attempt);
