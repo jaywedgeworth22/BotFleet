@@ -219,11 +219,13 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(visibleA.last?.text, "old ask")
     }
 
-    func testConsumePendingMatchingTextRetiresBusyChip() {
+    func testConsumePendingMatchingTextLeavesBusyChipForQueueId() {
         var state = CompanionState()
         let threadId = "t-pending-busy"
         state.rememberPendingSend(threadId: threadId, id: "q-busy", text: "same text", queued: true)
         state.consumePendingMatchingText(threadId: threadId, text: "same text")
+        XCTAssertEqual(state.pendingQueued[threadId]?.map(\.queueId), ["q-busy"])
+        state.consumePendingQueued(threadId: threadId, queueId: "q-busy")
         XCTAssertNil(state.pendingQueued[threadId])
     }
 

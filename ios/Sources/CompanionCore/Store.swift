@@ -140,12 +140,10 @@ public struct CompanionState: Sendable {
 
     public mutating func consumePendingMatchingText(threadId: String, text: String) {
         let prev = pendingQueued[threadId] ?? []
-        // Prefer an idle (non-202) chip; fall back to any same-text entry so a
-        // busy queue line still retires when the real user row lands without
-        // a queueId (or with a mismatched one).
-        let index = prev.firstIndex(where: { $0.text == text && !$0.queued })
-            ?? prev.firstIndex(where: { $0.text == text })
-        guard let index else { return }
+        // Idle optimistic sends only.  Busy (202) chips must wait for their
+        // queueId-tagged drain — same-text matching would steal an older
+        // queued line when another client steers an identical prompt.
+        guard let index = prev.firstIndex(where: { $0.text == text && !$0.queued }) else { return }
         var rest = prev
         rest.remove(at: index)
         if rest.isEmpty { pendingQueued.removeValue(forKey: threadId) }
