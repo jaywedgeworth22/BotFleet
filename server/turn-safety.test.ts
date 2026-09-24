@@ -27,6 +27,24 @@ const candidate = (
 });
 
 describe("active turn ownership", () => {
+  it("records what a live dispatch mounted, and nothing for a replaced one", () => {
+    const owners = new ActiveTurnOwners();
+    const selection = { instanceId: "primary", model: "m" };
+    const claimed = owners.claim("thread-1", {
+      botId: "bot-1",
+      selection,
+      fallbackPolicy: selection,
+      computerInputs: { computers: undefined, cloudBackend: "box" },
+    });
+    owners.recordMounted("thread-1", claimed.dispatchId + 1, ["asciiBox"]);
+    expect(owners.forBot("bot-1")?.computerInputs?.mounted).toBeUndefined();
+    owners.recordMounted("thread-1", claimed.dispatchId, ["localMac"]);
+    expect(owners.forBot("bot-1")?.computerInputs).toEqual({ computers: undefined, cloudBackend: "box", mounted: ["localMac"] });
+    owners.settle("thread-1", "primary");
+    owners.recordMounted("thread-1", claimed.dispatchId, ["asciiBox"]);
+    expect(owners.forBot("bot-1")).toBeUndefined();
+  });
+
   it("keeps the computer settings a turn was dispatched with, whatever the bot says later", () => {
     const owners = new ActiveTurnOwners();
     const selection = { instanceId: "primary", model: "m" };
