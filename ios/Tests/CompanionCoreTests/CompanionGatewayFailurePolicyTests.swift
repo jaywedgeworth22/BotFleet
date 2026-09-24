@@ -2,87 +2,85 @@ import XCTest
 @testable import CompanionCore
 
 final class CompanionGatewayFailurePolicyTests: XCTestCase {
-    private var paired: Connection!
-
-    override func setUpWithError() throws {
-        let hosted = try XCTUnwrap(CompanionEndpoint(
-            url: "https://mac.companion.example",
-            kind: .hosted,
-            priority: 0
-        ))
-        paired = Connection(
-            name: "Mac",
-            host: "mac.companion.example",
-            port: 443,
-            activeEndpoint: hosted,
-            endpoints: [hosted],
-            allowedRouteKinds: [.hosted]
-        )
-    }
-
-    func testSuppressesExpectedOfflineStatusesFromPairedGateway() {
-        for statusCode in [502, 503, 530] {
-            XCTAssertTrue(
-                CompanionGatewayFailurePolicy.shouldSuppress(
-                    statusCode: statusCode,
-                    requestURL: "https://mac.companion.example/api/health",
-                    pairedConnection: paired
-                ),
-                "Expected status \(statusCode) from the paired gateway to be suppressed"
-            )
+    /// `CompanionEndpoint.init` is failable; every URL here is valid for its kind.
+    private static func endpoint(_ url: String, _ kind: CompanionEndpointKind, _ priority: Int) -> CompanionEndpoint {
+        guard let endpoint = CompanionEndpoint(url: url, kind: kind, priority: priority) else {
+            preconditionFailure("invalid test endpoint \(url)")
         }
+        return endpoint
     }
 
-    func testPreservesExpectedStatusesFromOtherHosts() {
-        XCTAssertFalse(
+    private let paired = Connection(
+        name: "Mac",
+        host: "mac.companion.example",
+        port: 443,
+        activeEndpoint: CompanionGatewayFailurePolicyTests.endpoint("https://mac.companion.example", .hosted, 0),
+        endpoints: [CompanionGatewayFailurePolicyTests.endpoint("https://mac.companion.example", .hosted, 0)],
+        allowedRouteKinds: [.hosted]
+    )
+
+    private let pairedWithTailnet = Connection(
+        name: "Mac",
+        host: "mac.companion.example",
+        port: 443,
+        activeEndpoint: CompanionGatewayFailurePolicyTests.endpoint("https://mac.companion.example", .hosted, 0),
+        endpoints: [
+            CompanionGatewayFailurePolicyTests.endpoint("https://mac.companion.example", .hosted, 0),
+            CompanionGatewayFailurePolicyTests.endpoint("http://mac.tail1234.ts.net:8810", .tailnet, 1)
+        ],
+        allowedRouteKinds: [.hosted, .tailnet]
+    )
+
+    func testSuppressesTheTunnelOfflineStatusFromThePairedHostedGateway() {
+        XCTAssertTrue(
             CompanionGatewayFailurePolicy.shouldSuppress(
-                statusCode: 503,
-                requestURL: "https://status.example/api/health",
+                statusCode: 530,
+                requestURL: "https://mac.companion.example/api/health",
                 pairedConnection: paired
             )
         )
     }
 
-    func testRecognizesAnAuthorizedFallbackRouteForThePairedGateway() throws {
-        let hosted = try XCTUnwrap(CompanionEndpoint(
-            url: "https://mac.companion.example",
-            kind: .hosted,
-            priority: 0
-        ))
-        let tailnet = try XCTUnwrap(CompanionEndpoint(
-            url: "http://mac.tail1234.ts.net:8810",
-            kind: .tailnet,
-            priority: 1
-        ))
-        let pairedWithFallback = Connection(
-            name: "Mac",
-            host: "mac.companion.example",
-            port: 443,
-            activeEndpoint: hosted,
-            endpoints: [hosted, tailnet],
-            allowedRouteKinds: [.hosted, .tailnet]
-        )
-
-        XCTAssertTrue(
-            CompanionGatewayFailurePolicy.shouldSuppress(
-                statusCode: 530,
-                requestURL: "http://mac.tail1234.ts.net:8810/api/health",
-                pairedConnection: pairedWithFallback
-            )
-        )
-    }
-
-    func testPreservesUnexpectedStatusesFromPairedGateway() {
-        for statusCode in [500, 501, 504, 599] {
+    func testKeepsCompanionAndHarnessFaultsReportableOnAReachableGateway() {
+        // The companion proxy answers 502 for its own faults and forwards the
+        // harness's 503s; neither means the gateway is offline.
+        for statusCode in [500, 501, 502, 503, 504, 599] {
             XCTAssertFalse(
                 CompanionGatewayFailurePolicy.shouldSuppress(
                     statusCode: statusCode,
                     requestURL: "https://mac.companion.example/api/health",
                     pairedConnection: paired
                 ),
-                "Unexpected status \(statusCode) from the paired gateway must remain reportable"
+                "Status \(statusCode) from the paired gateway must remain reportable"
             )
         }
+    }
+
+    func testPreservesTheOfflineStatusFromOtherHosts() {
+        XCTAssertFalse(
+            CompanionGatewayFailurePolicy.shouldSuppress(
+                statusCode: 530,
+                requestURL: "https://status.example/api/health",
+                pairedConnection: paired
+            )
+        )
+    }
+
+    func testDirectTailnetRoutesNeverCarryTheTunnelSignal() {
+        XCTAssertFalse(
+            CompanionGatewayFailurePolicy.shouldSuppress(
+                statusCode: 530,
+                requestURL: "http://mac.tail1234.ts.net:8810/api/health",
+                pairedConnection: pairedWithTailnet
+            )
+        )
+        XCTAssertTrue(
+            CompanionGatewayFailurePolicy.shouldSuppress(
+                statusCode: 530,
+                requestURL: "https://mac.companion.example/api/health",
+                pairedConnection: pairedWithTailnet
+            )
+        )
     }
 
     func testRequiresAnExactPairedOriginIncludingPortAndScheme() {
@@ -93,7 +91,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         ] {
             XCTAssertFalse(
                 CompanionGatewayFailurePolicy.shouldSuppress(
-                    statusCode: 502,
+                    statusCode: 530,
                     requestURL: requestURL,
                     pairedConnection: paired
                 ),
