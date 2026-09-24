@@ -37,6 +37,8 @@ export interface TelemetryOutboxStatus {
   corruptFilesQuarantined: number;
   terminalQuarantinedBatches: number;
   terminalQuarantineEvictedBatches: number;
+  lastTerminalStatus: 400 | 409 | null;
+  lastTerminalAt: string | null;
 }
 
 const DurableTelemetryBatchSchema = z.object({
@@ -288,6 +290,8 @@ export class UsageTelemetryOutbox {
       corruptFilesQuarantined: this.state.corruptFilesQuarantined,
       terminalQuarantinedBatches: this.state.terminalQuarantine.length,
       terminalQuarantineEvictedBatches: this.state.terminalQuarantineEvictedBatches,
+      lastTerminalStatus: this.state.terminalQuarantine.at(-1)?.status ?? null,
+      lastTerminalAt: this.state.terminalQuarantine.at(-1)?.quarantinedAt ?? null,
     };
   }
 

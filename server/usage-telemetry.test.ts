@@ -476,6 +476,8 @@ describe("ingest acknowledgement accounting", () => {
       await vi.waitFor(() => expect(manager.getStatus()).toMatchObject({
         queuedBatches: 0,
         terminalQuarantinedBatches: 1,
+        lastTerminalStatus: status,
+        lastTerminalAt: expect.any(String),
         totalSent: 1,
       }));
       expect(posted).toHaveLength(2);

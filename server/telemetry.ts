@@ -57,6 +57,8 @@ export interface TelemetryStatus {
   corruptFilesQuarantined: number;
   terminalQuarantinedBatches: number;
   terminalQuarantineEvictedBatches: number;
+  lastTerminalStatus: 400 | 409 | null;
+  lastTerminalAt: string | null;
   lastAckAt: string | null;
   lastError: string | null;
 }
@@ -523,6 +525,8 @@ export class UsageTelemetryManager {
       corruptFilesQuarantined: 0,
       terminalQuarantinedBatches: 0,
       terminalQuarantineEvictedBatches: 0,
+      lastTerminalStatus: null,
+      lastTerminalAt: null,
     };
     return {
       enabled: config !== null,

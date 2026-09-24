@@ -106,7 +106,12 @@ describe("UsageTelemetryOutbox", () => {
     await outbox.flushNow();
 
     expect(delivered).toEqual(["poison", "later"]);
-    expect(outbox.status()).toMatchObject({ queuedBatches: 0, terminalQuarantinedBatches: 1 });
+    expect(outbox.status()).toMatchObject({
+      queuedBatches: 0,
+      terminalQuarantinedBatches: 1,
+      lastTerminalStatus: status,
+      lastTerminalAt: expect.any(String),
+    });
     const stored = JSON.parse(readFileSync(path, "utf8"));
     expect(stored.terminalQuarantine[0]).toMatchObject({
       status,
@@ -115,7 +120,12 @@ describe("UsageTelemetryOutbox", () => {
     await outbox.dispose();
 
     const restarted = new UsageTelemetryOutbox({ path });
-    expect(restarted.status()).toMatchObject({ queuedBatches: 0, terminalQuarantinedBatches: 1 });
+    expect(restarted.status()).toMatchObject({
+      queuedBatches: 0,
+      terminalQuarantinedBatches: 1,
+      lastTerminalStatus: status,
+      lastTerminalAt: stored.terminalQuarantine[0].quarantinedAt,
+    });
     await restarted.dispose();
   });
 
