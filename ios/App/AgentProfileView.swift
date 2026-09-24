@@ -176,7 +176,7 @@ struct AgentProfileView: View {
                                 if !instance.models.options.contains(where: { $0.id == modelId }) {
                                     modelId = instance.models.default
                                 }
-                                if let effort, !(instance.capabilities?.effortLevels ?? []).contains(effort) {
+                                if let effort, !instance.effortLevels(for: modelId).contains(effort) {
                                     self.effort = nil
                                 }
                             }
@@ -189,8 +189,13 @@ struct AgentProfileView: View {
                                 }
                             }
                             .pickerStyle(.navigationLink)
+                            .onChange(of: modelId) { _, newModelId in
+                                if let effort, !selectedInstance.effortLevels(for: newModelId).contains(effort) {
+                                    self.effort = nil
+                                }
+                            }
 
-                            effortPicker(selection: $effort, instance: selectedInstance)
+                            effortPicker(selection: $effort, instance: selectedInstance, modelId: modelId)
                         }
                     }
 
@@ -205,7 +210,7 @@ struct AgentProfileView: View {
                                             fallbacks[index].model = inst.models.default
                                         }
                                         if let effort = fallbacks[index].effort,
-                                           !(inst.capabilities?.effortLevels ?? []).contains(effort) {
+                                           !inst.effortLevels(for: fallbacks[index].model).contains(effort) {
                                             fallbacks[index].effort = nil
                                         }
                                     }
@@ -222,6 +227,10 @@ struct AgentProfileView: View {
                                     get: { fallbacks[index].model },
                                     set: { newModel in
                                         fallbacks[index].model = newModel
+                                        if let effort = fallbacks[index].effort,
+                                           !fallbackInstance.effortLevels(for: newModel).contains(effort) {
+                                            fallbacks[index].effort = nil
+                                        }
                                     }
                                 )) {
                                     ForEach(fallbackInstance.models.options) { option in
@@ -235,7 +244,8 @@ struct AgentProfileView: View {
                                         get: { fallbacks[index].effort },
                                         set: { fallbacks[index].effort = $0 }
                                     ),
-                                    instance: fallbackInstance
+                                    instance: fallbackInstance,
+                                    modelId: fallbacks[index].model
                                 )
                             }
 
@@ -405,15 +415,15 @@ struct AgentProfileView: View {
     }
 
     @ViewBuilder
-    private func effortPicker(selection: Binding<String?>, instance: Instance) -> some View {
-        let levels = instance.capabilities?.effortLevels ?? []
+    private func effortPicker(selection: Binding<String?>, instance: Instance, modelId: String) -> some View {
+        let levels = instance.effortLevels(for: modelId)
         let saved = selection.wrappedValue
         if !levels.isEmpty {
             Picker("Reasoning", selection: Binding(
                 get: { selection.wrappedValue.flatMap { levels.contains($0) ? $0 : nil } },
                 set: { selection.wrappedValue = $0 }
             )) {
-                Text("Engine default").tag(String?.none)
+                Text("Default").tag(String?.none)
                 ForEach(levels, id: \.self) { level in
                     Text(effortLabel(level)).tag(Optional(level))
                 }
@@ -421,12 +431,12 @@ struct AgentProfileView: View {
             .pickerStyle(.navigationLink)
 
             if let saved, !levels.contains(saved) {
-                Text("Saved reasoning “\(saved)” is kept until you choose a supported level.")
+                Text("Saved reasoning “\(effortLabel(saved))” is kept until you choose a supported level.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         } else if let saved {
-            LabeledContent("Reasoning", value: "Saved: \(saved)")
+            LabeledContent("Reasoning", value: "Saved: \(effortLabel(saved))")
         }
     }
 
@@ -436,7 +446,7 @@ struct AgentProfileView: View {
         case "low": return "Low"
         case "medium": return "Medium"
         case "high": return "High"
-        case "xhigh": return "Extra High"
+        case "xhigh": return "X-High"
         case "max": return "Maximum"
         default: return effort
         }

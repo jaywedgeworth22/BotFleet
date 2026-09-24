@@ -44,7 +44,7 @@ export function readPackagedBuildIdentity(directory) {
 /** Capture once at build/startup, so moving a checkout cannot relabel a live process. */
 export function readSourceBuildIdentity(root) {
   const git = (...args) => execFileSync("git", ["-C", root, ...args], {
-    encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"],
   }).trim();
   const value = {
     app: "botfleet", version: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version,

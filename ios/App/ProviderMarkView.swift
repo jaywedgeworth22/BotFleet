@@ -11,7 +11,24 @@ import SwiftUI
 /// never becomes an empty placeholder.
 struct ProviderMarkView: View {
     let driverKind: String
+    var model: String? = nil
     var size: CGFloat = 15
+
+    static func resolvedDriverKind(for driverKind: String, model: String?) -> String {
+        guard let model = model?.lowercased() else { return driverKind }
+        if model.contains("minimax") { return "minimax" }
+        if model.contains("qwen") { return "qwenAgent" }
+        if model.contains("hermes") { return "hermesAgent" }
+        if model.contains("claude") { return "claude" }
+        if model.contains("deepseek") { return "deepseek" }
+        if model.contains("gpt") || model.contains("o1") || model.contains("o3") || model.contains("o4") { return "openai" }
+        if model.contains("gemini") { return "gemini" }
+        return driverKind
+    }
+
+    private var effectiveDriverKind: String {
+        Self.resolvedDriverKind(for: driverKind, model: model)
+    }
 
     private enum Mark {
         /// Full-color brand asset, rendered as-is.
@@ -27,7 +44,7 @@ struct ProviderMarkView: View {
     }
 
     private var mark: Mark {
-        switch driverKind {
+        switch effectiveDriverKind {
         case "claude", "claudeAgent":
             return .asset("ProviderMarkClaude")
         case "grok", "grokAgent":
@@ -67,13 +84,14 @@ struct ProviderMarkView: View {
 
     /// Human-readable provider name for VoiceOver — this mark is identity,
     /// not decoration, so it must never read as silent chrome.
-    private var displayName: String { Self.displayName(for: driverKind) }
+    private var displayName: String { Self.displayName(for: driverKind, model: model) }
 
     /// Shared so the chat-header profile button can fold the provider into
     /// its own accessibility label (SwiftUI replaces child labels on a
     /// Button with an explicit `.accessibilityLabel`).
-    static func displayName(for driverKind: String) -> String {
-        switch driverKind {
+    static func displayName(for driverKind: String, model: String? = nil) -> String {
+        let effective = resolvedDriverKind(for: driverKind, model: model)
+        switch effective {
         case "claude", "claudeAgent": return "Claude"
         case "grok", "grokAgent": return "Grok"
         case "grok-bot": return "Grok Bot"
@@ -90,13 +108,13 @@ struct ProviderMarkView: View {
         case "opencodeGo": return "OpenCode"
         case "hermesAgent": return "Hermes"
         case "piAgent": return "Pi"
-        default: return driverKind
+        default: return effective
         }
     }
 
     /// Mirrors the web fallback exactly: `driverKind.replace(/Agent$/i, "").slice(0, 1).toUpperCase()`.
     private var monogram: String {
-        var stripped = driverKind
+        var stripped = effectiveDriverKind
         if stripped.lowercased().hasSuffix("agent") {
             stripped = String(stripped.dropLast(5))
         }

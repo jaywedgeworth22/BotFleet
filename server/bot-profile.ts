@@ -84,6 +84,7 @@ export type BotProfilePatch = Partial<
     | "voice"
     | "speakReplies"
     | "modelSelection"
+    | "activeModelSelection"
     | "chiefOfStaff"
     | "approvePeerComms"
     | "autoApprove"
