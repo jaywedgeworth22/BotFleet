@@ -22,6 +22,11 @@ export interface ActiveTurnOwner {
   selection: ModelSelection;
   fallbackPolicy: ModelSelection;
   computerInputs?: TurnComputerInputs;
+  /** Set when a settings change took away a provider this dispatch holds or
+   * could reach.  A dispatch that has not reached its provider yet has no
+   * session to interrupt, so its own pre-dispatch checks must see this and
+   * stop instead of starting the turn with the revoked mount. */
+  revoked?: boolean;
 }
 
 /** The engine/model that owns each live dispatch.  A fallback is a per-turn
@@ -94,6 +99,28 @@ export class ActiveTurnOwners {
         mounted: [...mounted],
       };
     }
+  }
+
+  /** Fence one exact dispatch after its computer access was revoked.  A
+   * dispatch that already settled, or was replaced, is left alone. */
+  revoke(threadId: string, dispatchId: number): boolean {
+    const owners = this.byThread.get(threadId);
+    if (!owners) return false;
+    for (const owner of owners.values()) {
+      if (owner.dispatchId !== dispatchId) continue;
+      owner.revoked = true;
+      return true;
+    }
+    return false;
+  }
+
+  isRevoked(threadId: string, dispatchId: number): boolean {
+    const owners = this.byThread.get(threadId);
+    if (!owners) return false;
+    for (const owner of owners.values()) {
+      if (owner.dispatchId === dispatchId) return owner.revoked === true;
+    }
+    return false;
   }
 
   threadForBot(botId: string): string | undefined {
