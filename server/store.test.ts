@@ -86,6 +86,15 @@ describe("Store", () => {
     expect(roomBucket?.engineId).toBe("minimax");
     expect(roomBucket?.byModel?.["minimax-m3"]).toMatchObject({ input: 7, output: 3, turns: 1 });
     expect(typeof roomBucket?.lastAt).toBe("number");
+
+    // The slug comes back pointing at a DIFFERENT engine: the old bucket
+    // must keep its attribution, the new turns fork onto a suffixed key.
+    store.addTaskUsage(bot.id, bot.threadId, { input: 9, output: 4, costUsd: 0.001 }, "custom-work-mm", { engineId: "deepseek-harness", model: "deepseek-v4" });
+    const afterFork = store.taskByThread(bot.id, bot.threadId)?.usageByInstance;
+    expect(afterFork?.["custom-work-mm"]?.engineId).toBe("minimax");
+    expect(afterFork?.["custom-work-mm"]?.byModel?.["minimax-m3"]).toMatchObject({ input: 150, output: 30, turns: 2 });
+    expect(afterFork?.["custom-work-mm~deepseek-harness"]?.engineId).toBe("deepseek-harness");
+    expect(afterFork?.["custom-work-mm~deepseek-harness"]?.byModel?.["deepseek-v4"]).toMatchObject({ input: 9, output: 4, turns: 1 });
   });
 
   it("addTaskUsage accumulates settled-turn totals per task and survives a restart", () => {
