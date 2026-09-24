@@ -3728,10 +3728,30 @@ const routineRequests = new RoutineRequestService({
  * with headroom for the tool wrapper). */
 const ROUTINE_LIST_BUDGET_BYTES = 48_000;
 const ROUTINE_WEEKDAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
-const agentRoutine = (
-  routine: ReturnType<RoutineManager["listRoutines"]>[number],
+type ManagedRoutine = ReturnType<RoutineManager["listRoutines"]>[number];
+type AgentRoutineFields = {
+  id: string;
+  name: string;
+  nameTruncated?: true;
+  enabled: boolean;
+  runOn: ManagedRoutine["runOn"];
+  durationMinutes: number;
+  schedule:
+    | { type: "once"; at: string }
+    | { type: "weekly"; time: string; weekdays: (typeof ROUTINE_WEEKDAY_NAMES)[number][]; timeZone?: string };
+  nextRunAt: string | null;
+};
+type AgentRoutineSummary = AgentRoutineFields & {
+  instructionsPreview: string;
+  instructionsPreviewTruncated: boolean;
+};
+type AgentRoutineDetails = AgentRoutineFields & { instructions: string };
+function agentRoutine(routine: ManagedRoutine, includeInstructions: true): AgentRoutineDetails;
+function agentRoutine(routine: ManagedRoutine, includeInstructions?: false): AgentRoutineSummary;
+function agentRoutine(
+  routine: ManagedRoutine,
   includeInstructions = false,
-) => {
+): AgentRoutineSummary | AgentRoutineDetails {
   // Routines created in the calendar predate chat-card redaction and may
   // contain a credential in their instructions. The list result is handed
   // back to the model, so scrub the complete value before taking its preview.
