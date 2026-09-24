@@ -237,3 +237,20 @@ describe("Apply new default to all", () => {
     expect(applyDefaultsBody({})).toEqual({});
   });
 });
+
+describe("provider toggle saves say what they saw", () => {
+  it("sends the shown toggles with every provider save", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    expect(source).toContain("expectedComputerProviders: providers,");
+  });
+
+  it("reads the current config off a stale-save refusal only", async () => {
+    const { staleProviderConfig } = await import("./workspace-providers");
+    const config = { botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: false } } };
+    expect(staleProviderConfig({ status: 409, body: { code: "computer_providers_stale", config } })).toBe(config);
+    expect(staleProviderConfig({ status: 409, body: { error: "provider settings are already being updated" } })).toBeNull();
+    expect(staleProviderConfig(new Error("boom"))).toBeNull();
+    expect(staleProviderConfig(null)).toBeNull();
+  });
+});
