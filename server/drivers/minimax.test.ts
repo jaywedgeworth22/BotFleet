@@ -1564,4 +1564,45 @@ describe("MinimaxDriver", () => {
     recorder.stop();
     await instance.dispose();
   });
+
+  it("caps an oversized transcript before folding it into the chat-completions payload", async () => {
+    // The Codex review found that an unbounded transcript can grow past the
+    // model's prompt window or the provider's per-request size.  This test
+    // confirms the byte-cap is wired in: a 400 KiB transcript gets trimmed
+    // down to ~200 KiB on the wire, so a long thread no longer re-uploads
+    // its full history on every round.
+    const bodies: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return sse(
+        '{"choices":[{"delta":{"content":"ok"}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}',
+      );
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "test-key" },
+    });
+    try {
+      const big = "x".repeat(5_000);
+      const transcript = Array.from({ length: 80 }, () => ({ role: "user" as const, text: big }));
+      await instance.adapter.sendTurn({ threadId: "t-cap", transcript, text: "hi" });
+      await new Promise((r) => setTimeout(r, 50));
+      const body = bodies[0];
+      // Capped transcript + system + final user; default cap is 200 KiB
+      // which fits ~40 entries, not 80.
+      const userMsgs = body.messages.filter((m: any) => m.role === "user");
+      expect(userMsgs.length).toBeLessThan(80);
+      const total = userMsgs.reduce(
+        (s: number, m: any) => s + (typeof m.content === "string" ? m.content.length : 0),
+        0,
+      );
+      expect(total).toBeLessThan(80 * 5_000);
+    } finally {
+      await instance.dispose();
+    }
+  });
 });

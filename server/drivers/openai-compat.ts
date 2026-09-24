@@ -24,6 +24,7 @@ import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from
 
 import { httpErrorFor } from "./chat-completions/errors.ts";
 import { toTurnUsage } from "./chat-completions/usage.ts";
+import { capReplayedTranscript } from "./chat-completions/replay-cap.ts";
 
 const DRIVER_KIND = "openai-compat";
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -392,10 +393,14 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       const model = turn.model || catalog.default;
       // Round 1's prefix.  The loop owns this array from here and only ever
       // APPENDS to it, so rounds 2..N re-send a byte-identical prefix and the
-      // endpoint's prompt cache stays reachable.
+      // endpoint's prompt cache stays reachable.  The transcript is byte- and
+      // entry-count-capped first so a long thread cannot grow past the
+      // model's prompt window or the provider's per-request size — see
+      // chat-completions/replay-cap.ts.
+      const cappedTranscript = capReplayedTranscript(turn.transcript);
       const messages: ChatMessage[] = [
         ...(turn.system ? [{ role: "system" as const, content: turn.system }] : []),
-        ...(turn.transcript ?? []).flatMap((m): ChatMessage[] => {
+        ...cappedTranscript.flatMap((m): ChatMessage[] => {
           const res: ChatMessage[] = [];
           if (m.role === "assistant") {
             const assistantMsg: ChatMessage = { role: "assistant", content: m.text || "" };

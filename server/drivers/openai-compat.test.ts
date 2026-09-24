@@ -675,6 +675,50 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     recorder.stop();
     await instance.dispose();
   });
+
+  it("caps an oversized transcript before folding it into the chat-completions payload", async () => {
+    // Same intent as the matching tests on grok.ts and minimax.ts: the
+    // Codex review's replay-without-byte-limit finding applies equally to
+    // any chat-completions driver that re-uploads the prefix every round.
+    const bodies: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      }
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }));
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "openai-compat-cap",
+      displayName: "Cap Test",
+      enabled: true,
+      config: { url: "https://example.com/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY", key: "test-key" },
+      environment: {},
+    });
+    try {
+      const big = "x".repeat(5_000);
+      const transcript = Array.from({ length: 80 }, () => ({ role: "user" as const, text: big }));
+      await instance.adapter.sendTurn({ threadId: "t-cap", transcript, text: "hi" });
+      // The /models probe + the completion = 2 calls.  Body[0] is /models,
+      // body[1] is the chat-completions request.
+      await new Promise((r) => setTimeout(r, 50));
+      const body = bodies.find((b: any) => Array.isArray(b.messages));
+      expect(body).toBeDefined();
+      const userMsgs = body.messages.filter((m: any) => m.role === "user");
+      expect(userMsgs.length).toBeLessThan(80);
+      const total = userMsgs.reduce(
+        (s: number, m: any) => s + (typeof m.content === "string" ? m.content.length : 0),
+        0,
+      );
+      expect(total).toBeLessThan(80 * 5_000);
+    } finally {
+      await instance.dispose();
+    }
+  });
 });
 
 describe("Sentry provider for an OpenAI-compatible endpoint", () => {
