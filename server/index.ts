@@ -799,10 +799,19 @@ function turnComputerInputs(
   };
 }
 
-/** The providers a turn's resolved mounts hold, for `recordMounted`. */
-function mountedProviders(mounts: readonly { kind: "box" | "vps" | "vm" | "local" }[]): NonNullable<TurnComputerInputs["mounted"]> {
+/** The providers a turn's resolved computers hold, for `recordMounted`.
+ * Host tools count as This Computer even with no CUA mount: a tool-loop
+ * engine (MiniMax, Grok, OpenAI-compatible) on an explicit This Computer turn
+ * gets host bash and file tools through `hasHostComputer` alone, so turning
+ * This Computer off has to reach that turn too. */
+function mountedProviders(computers: {
+  mounts: readonly { kind: "box" | "vps" | "vm" | "local" }[];
+  hasHostComputer: boolean;
+}): NonNullable<TurnComputerInputs["mounted"]> {
   const byKind = { box: "asciiBox", vps: "selfHostedVps", vm: "localVm", local: "localMac" } as const;
-  return [...new Set(mounts.map((mount) => byKind[mount.kind]))];
+  const held: NonNullable<TurnComputerInputs["mounted"]>[number][] = computers.mounts.map((mount) => byKind[mount.kind]);
+  if (computers.hasHostComputer) held.push("localMac");
+  return [...new Set(held)];
 }
 
 /** Whether the Auto This Computer fallback can mount for a turn on this
@@ -3281,7 +3290,7 @@ async function startTurn(
       if (turnComputers.cancelled) return;
       // What this turn really holds from here on; a provider disable judges
       // the turn by it (see interruptTurnsUsingDisabledProviders).
-      activeTurnOwners.recordMounted(threadId, dispatchOwner.dispatchId, mountedProviders(turnComputers.mounts));
+      activeTurnOwners.recordMounted(threadId, dispatchOwner.dispatchId, mountedProviders(turnComputers));
       const granted_mounts = turnComputers.mounts;
       const previewCapture = turnComputers.previewCapture;
       applyComputerMounts(integrations, granted_mounts);
@@ -4821,7 +4830,7 @@ async function runGroupMemberTurn(
     releaseRoomSpeaker();
     return false;
   }
-  activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers.mounts));
+  activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers));
   // A provider this member holds was turned off during setup.  Same fence as
   // the 1:1 lane's dispatchStillCurrent: the interrupt found no session, so
   // unwind here instead of starting the turn with the revoked mount.  Nothing
