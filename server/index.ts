@@ -162,6 +162,7 @@ import { findCliCandidates, resetPathCache } from "./env-path.ts";
 import { cliProbeEnvironment } from "./cli-probe-env.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
+import { modelEffortLevels } from "../src/lib/model-effort.ts";
 import {
   isEffortLevel,
   type InstanceConfigMap,
@@ -379,6 +380,7 @@ telemetry.configure(() => ({
   projects: usageProjectRules(cfg),
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
+registry.setDiskCachePath(join(DATA_DIR, "engine-cache.json"));
 await registry.load(instanceConfigs(cfg));
 // The credential fingerprint the provider fleet was actually BUILT with, kept
 // in step with every `registry.load` from here on.  `applyResolvedSecrets`
@@ -721,9 +723,16 @@ function checkedModelSelection(
       };
     }
   }
-  const allowed: readonly string[] = target?.adapter.capabilities.effortLevels ?? [];
+  const targetOption = target?.models.options.find((option) => option.id === selection.model);
+  const allowed: readonly string[] = target
+    ? modelEffortLevels(
+        { driverKind: target.driverKind, capabilities: target.adapter.capabilities },
+        targetOption,
+        selection.model,
+      )
+    : [];
   if (target && selection.effort !== undefined && !allowed.includes(selection.effort)) {
-    return { ok: false, status: 400, error: `effort "${selection.effort}" is not offered by this bot's engine` };
+    return { ok: false, status: 400, error: `effort "${selection.effort}" is not offered by model "${selection.model}"` };
   }
   return { ok: true, selection };
 }
@@ -2356,6 +2365,9 @@ bus.subscribe((event: RuntimeEvent) => {
           const { nextUsed, instanceId, model, effort } = next;
           fallbackAttemptByTurn.set(fallbackKey, nextUsed);
           fallbackSelection = { instanceId, model, effort };
+          store.patchBot(fallbackBot.id, { activeModelSelection: fallbackSelection });
+          store.patchTask(fallbackBot.id, event.threadId, { activeModelSelection: fallbackSelection });
+          broadcast({ kind: "bot", bot: wireBot(store.bot(fallbackBot.id)!) });
           const resetNote = quotaInfo.resetsAt
             ? ` · resets at ${new Date(quotaInfo.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
             : quotaInfo.rawTimeText
@@ -2993,9 +3005,15 @@ async function startTurn(
   const effort = boxCloud ? undefined : selection.effort;
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
-  if (effort && !instance.adapter.capabilities.effortLevels?.includes(effort)) {
+  const targetOption = instance.models.options.find((o) => o.id === model);
+  const allowedEfforts = modelEffortLevels(
+    { driverKind: instance.driverKind, capabilities: instance.adapter.capabilities },
+    targetOption,
+    model,
+  );
+  if (effort && !allowedEfforts.includes(effort)) {
     throw Object.assign(
-      new Error(`effort "${effort}" is not offered by this bot's engine — choose another level in settings`),
+      new Error(`effort "${effort}" is not offered by model "${model}" — choose another level in settings`),
       { status: 409 },
     );
   }
@@ -3078,8 +3096,10 @@ async function startTurn(
   // busy flips immediately so the composer locks; the dispatch itself runs
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
+  const activeSelection: ModelSelection = { instanceId, model, effort };
   store.setActivity(bot.id, "working");
-  store.patchBot(bot.id, { unread: false, inflightThreadId: threadId });
+  store.patchBot(bot.id, { unread: false, inflightThreadId: threadId, activeModelSelection: activeSelection });
+  store.patchTask(bot.id, threadId, { activeModelSelection: activeSelection });
   const dispatchOwner = activeTurnOwners.claim(threadId, {
     botId: bot.id,
     selection: { instanceId, model, effort },
@@ -8085,6 +8105,7 @@ const server = createServer(async (req, res) => {
         );
         if (!checked.ok) return json(res, checked.status, { error: checked.error });
         parsed.patch.modelSelection = checked.selection;
+        parsed.patch.activeModelSelection = checked.selection;
       }
 
       const bot = store.patchBot(m[1], parsed.patch);
@@ -9528,11 +9549,12 @@ const server = createServer(async (req, res) => {
 
     // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
-      // Rescan PATH first: this endpoint is how the app answers "what can I
-      // run?", and the interesting case is a CLI installed since launch.
+      // Rescan PATH when explicitly refreshed: this endpoint is how the app answers
+      // "what can I run?", and the interesting case is a CLI installed since launch.
       // Windows never pushes PATH changes into a live process, so without
       // this the answer is frozen at boot and "check again" is a no-op.
-      resetPathCache();
+      const fresh = url.searchParams.get("fresh") === "1";
+      if (fresh) resetPathCache();
       // describe() probes every CLI (--version, auth status, model
       // discovery), which costs real seconds on a machine with many engines
       // installed. The engine rail's passive refreshes (initial hydrate, the
@@ -9540,7 +9562,6 @@ const server = createServer(async (req, res) => {
       // ?fresh=1 — sent by the client's explicit "Check again"/"Refresh"
       // actions and right after a CLI/fullAuto override is saved — bypasses
       // it so the user's own action is never served a stale answer.
-      const fresh = url.searchParams.get("fresh") === "1";
       return json(res, 200, {
         instances: await registry.describe(
           fresh ? undefined : { maxAgeMs: 15_000, staleWhileRevalidate: true },
@@ -10259,9 +10280,17 @@ const server = createServer(async (req, res) => {
         // good change — and the bot would then be reported as "skipped" for a
         // reason that has nothing to do with what the operator asked for.
         // Moving engines drops an effort the new one does not offer.
-        if (primary && bot.modelSelection.instanceId !== next.instanceId && next.effort !== undefined) {
+        if (primary && next.effort !== undefined) {
           const target = registry.get(next.instanceId);
-          const offered: readonly string[] = target?.adapter.capabilities.effortLevels ?? [];
+          const targetModel = next.model ?? target?.models.default;
+          const targetOpt = target?.models.options.find((o) => o.id === targetModel);
+          const offered: readonly string[] = target
+            ? modelEffortLevels(
+                { driverKind: target.driverKind, capabilities: target.adapter.capabilities },
+                targetOpt,
+                targetModel,
+              )
+            : [];
           if (target && !offered.includes(next.effort)) delete next.effort;
         }
         // The per-bot gate, now given the bot it is about.  One refused bot
@@ -10277,7 +10306,7 @@ const server = createServer(async (req, res) => {
           skipped.push({ id: bot.id, name: bot.name, reason: gate.error });
           continue;
         }
-        const patched = store.patchBot(bot.id, { modelSelection: next });
+        const patched = store.patchBot(bot.id, { modelSelection: next, activeModelSelection: next });
         if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
       }
       for (const { bot } of updated) broadcast({ kind: "bot", bot });

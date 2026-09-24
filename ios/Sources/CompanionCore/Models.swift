@@ -234,6 +234,7 @@ public struct BotTask: Codable, Hashable, Sendable {
     public var lastMessage: Message?
     public var usage: TaskUsage?
     public var modelSelection: ModelSelection?
+    public var activeModelSelection: ModelSelection?
 }
 
 public struct Bot: Codable, Hashable, Identifiable, Sendable {
@@ -251,6 +252,7 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var avatarCrop: AvatarCrop?
     public var unread: Bool
     public var modelSelection: ModelSelection
+    public var activeModelSelection: ModelSelection?
     public var createdAt: Double
     public var busy: Bool?
     public var pinned: Bool?
@@ -541,6 +543,15 @@ public struct ProviderSnapshot: Codable, Hashable, Sendable {
 public struct ModelOption: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var label: String
+    public var effortLevels: [String]?
+    public var supportsEffort: Bool?
+
+    public init(id: String, label: String, effortLevels: [String]? = nil, supportsEffort: Bool? = nil) {
+        self.id = id
+        self.label = label
+        self.effortLevels = effortLevels
+        self.supportsEffort = supportsEffort
+    }
 }
 
 public struct ModelCatalog: Codable, Hashable, Sendable {
@@ -561,6 +572,33 @@ public struct Instance: Codable, Hashable, Identifiable, Sendable {
     public var capabilities: InstanceCapabilities?
 
     public var id: String { instanceId }
+
+    public func effortLevels(for modelId: String) -> [String] {
+        guard let engineLevels = capabilities?.effortLevels, !engineLevels.isEmpty else {
+            return []
+        }
+        let option = models.options.first(where: { $0.id == modelId })
+        if let optionLevels = option?.effortLevels {
+            return optionLevels
+        }
+        if option?.supportsEffort == false {
+            return []
+        }
+        let lowerModel = modelId.lowercased()
+        let lowerDriver = driverKind.lowercased()
+        if (lowerDriver.contains("dsh") || lowerDriver.contains("deepseek")) && lowerModel.contains("minimax") {
+            return []
+        }
+        if lowerDriver.contains("claude") && lowerModel.contains("haiku") {
+            return []
+        }
+        if lowerDriver.contains("codex") {
+            if lowerModel.hasPrefix("gpt-4o") || lowerModel.hasPrefix("gpt-4-") || lowerModel == "gpt-4" || lowerModel.hasPrefix("gpt-3.5") || lowerModel.contains("chatgpt-4o") {
+                return []
+            }
+        }
+        return engineLevels
+    }
 }
 
 public struct InstanceList: Codable, Sendable {

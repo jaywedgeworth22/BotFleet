@@ -18,6 +18,7 @@ import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./Loc
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
 import { requiresLocalAutoConsent } from "../../shared/local-auto-consent";
+import { modelEffortLevels } from "@/lib/model-effort";
 
 function Field({
   label,
@@ -626,38 +627,43 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             )}
           </div>
 
-          {!!engine?.capabilities?.effortLevels?.length && (
-            <div className="rounded-xl bg-card p-4">
-              <div className="text-[15px] font-medium text-ink">Effort</div>
-              {/* Says what the app does, not what the engine ends up at:
-                  Codex applies a level to the whole thread and has no way to
-                  take one back, so "currently: engine default" was a promise
-                  we could not keep for a thread that had already been sent
-                  one. Sending nothing is true on every engine. */}
-              <div className="mt-0.5 text-[13px] text-ink-secondary">
-                How hard this bot thinks{bot.modelSelection.effort ? "" : " (Default: no level is sent)"}
+          {(() => {
+            const selectedOpt = engine?.models.options.find((o) => o.id === bot.modelSelection.model);
+            const effortLevels = modelEffortLevels(engine, selectedOpt, bot.modelSelection.model);
+            if (!effortLevels.length) return null;
+            return (
+              <div className="rounded-xl bg-card p-4">
+                <div className="text-[15px] font-medium text-ink">Effort</div>
+                {/* Says what the app does, not what the engine ends up at:
+                    Codex applies a level to the whole thread and has no way to
+                    take one back, so "currently: engine default" was a promise
+                    we could not keep for a thread that had already been sent
+                    one. Sending nothing is true on every engine. */}
+                <div className="mt-0.5 text-[13px] text-ink-secondary">
+                  How hard this bot thinks{bot.modelSelection.effort ? "" : " (Default: no level is sent)"}
+                </div>
+                <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
+                  {([undefined, ...effortLevels] as const).map((level, i) => (
+                    <button
+                      key={level ?? "default"}
+                      aria-pressed={bot.modelSelection.effort === level}
+                      onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: level } })}
+                      className={cn(
+                        "flex-1 py-1.5 text-[13px] capitalize",
+                        i > 0 && "border-l border-hairline/40",
+                        bot.modelSelection.effort === level
+                          ? "bg-control text-ink"
+                          : "text-ink-secondary hover:bg-control/60 hover:text-ink",
+                      )}
+                    >
+                      {/* the others capitalize cleanly; "xhigh" would read "X-High" */}
+                      {level === "xhigh" ? "X-High" : (level ?? "Default")}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
-                {([undefined, ...engine.capabilities.effortLevels] as const).map((level, i) => (
-                  <button
-                    key={level ?? "default"}
-                    aria-pressed={bot.modelSelection.effort === level}
-                    onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: level } })}
-                    className={cn(
-                      "flex-1 py-1.5 text-[13px] capitalize",
-                      i > 0 && "border-l border-hairline/40",
-                      bot.modelSelection.effort === level
-                        ? "bg-control text-ink"
-                        : "text-ink-secondary hover:bg-control/60 hover:text-ink",
-                    )}
-                  >
-                    {/* the others capitalize cleanly; "xhigh" would read "Xhigh" */}
-                    {level === "xhigh" ? "X-High" : (level ?? "Default")}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           <div className="rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">Computer</div>

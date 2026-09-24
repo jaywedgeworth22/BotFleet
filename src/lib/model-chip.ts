@@ -1,8 +1,8 @@
 import type { Bot, InstanceInfo } from "@/state/store";
 
 /** Driver mark + display name for the bot's current model. */
-export function modelChip(bot: Bot | undefined, instances: InstanceInfo[]): { driverKind: string; name: string } | null {
-  const selection = bot?.modelSelection;
+export function modelChip(bot: Bot | undefined, instances: InstanceInfo[]): { driverKind: string; name: string; model: string } | null {
+  const selection = bot?.activeModelSelection ?? bot?.modelSelection;
   if (!selection) return null;
   const engine = instances.find((instance) => instance.instanceId === selection.instanceId);
   const name =
@@ -13,5 +13,5 @@ export function modelChip(bot: Bot | undefined, instances: InstanceInfo[]): { dr
   else if (lower.includes("qwen")) driverKind = "qwenAgent";
   else if (lower.includes("hermes")) driverKind = "hermesAgent";
   
-  return { driverKind, name };
+  return { driverKind, name, model: selection.model };
 }

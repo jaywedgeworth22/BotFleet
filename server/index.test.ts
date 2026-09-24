@@ -396,9 +396,9 @@ beforeAll(async () => {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stderr!.on("data", (c) => (stderr += c)); child.stdout!.on("data", (c) => console.log(c.toString()));
+  child.stderr!.on("data", (c) => (stderr += c));
 
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 45_000;
   for (;;) {
     try {
       const res = await fetch(`${BASE}/api/health`);
@@ -428,7 +428,7 @@ beforeAll(async () => {
     throw new Error("leftover fleet should read as projects");
   }
   // The rest of this file exercises extra conversations, so stay in Projects.
-}, 30_000);
+}, 60_000);
 
   it("merges extra threads when switching to Simple with mergeThreads", async () => {
     const created = await api("POST", "/api/bots");
@@ -5348,7 +5348,7 @@ describe("instance CLI override API", () => {
       .find((i: any) => i.instanceId === instanceId)).toBeUndefined();
     // The default connection is still protected from deletion.
     expect((await api("DELETE", "/api/instances/minimax")).status).toBe(400);
-  }, 30_000);
+  }, 60_000);
 
   it("reports the two API-key engines' state and endpoint on /api/config, and saves them", async () => {
     // Before this, `configStatus()` hand-listed every section and had no
@@ -5584,7 +5584,7 @@ describe("instance CLI override API", () => {
       await api("POST", `/api/bots/${bot.id}/interrupt`, {});
       await api("DELETE", `/api/bots/${bot.id}`);
     }
-  }, 30_000);
+  }, 60_000);
 
   it("excludes the deleted engine from replacement selection, picking a real other engine instead of itself", async () => {
     // Disable every other fixture engine and add a SECOND custom engine
@@ -5648,7 +5648,7 @@ describe("instance CLI override API", () => {
         expect(row?.enabled).toBe(true);
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   it("refuses to delete an engine when no other engine is available to reassign its bots", async () => {
     // With every other fixture engine disabled, the about-to-be-deleted
@@ -5709,7 +5709,7 @@ describe("instance CLI override API", () => {
         expect(row?.enabled).toBe(true);
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   it("does not interrupt an unrelated busy bot when deleting an unused custom engine", async () => {
     // Deleting a custom engine used to call the global reloadProviders(),

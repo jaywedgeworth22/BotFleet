@@ -221,11 +221,28 @@ export function PiMark({ size = 16, className }: IconProps) {
   );
 }
 
-export function ProviderMark({ driverKind, size, className, iconUrl }: IconProps & { driverKind: string; iconUrl?: string }) {
+export function ProviderMark({
+  driverKind,
+  model,
+  size,
+  className,
+  iconUrl,
+}: IconProps & { driverKind: string; model?: string; iconUrl?: string }) {
   if (iconUrl) {
     return <img src={iconUrl} width={size} height={size} className={cn("object-contain", className)} alt="" aria-hidden />;
   }
-  switch (driverKind) {
+  let effectiveKind = driverKind;
+  if (model) {
+    const lower = model.toLowerCase();
+    if (lower.includes("minimax")) effectiveKind = "minimax";
+    else if (lower.includes("qwen")) effectiveKind = "qwenAgent";
+    else if (lower.includes("hermes")) effectiveKind = "hermesAgent";
+    else if (lower.includes("claude")) effectiveKind = "claude";
+    else if (lower.includes("deepseek")) effectiveKind = "deepseek";
+    else if (lower.includes("gpt") || lower.includes("o1") || lower.includes("o3") || lower.includes("o4")) effectiveKind = "openai";
+    else if (lower.includes("gemini")) effectiveKind = "gemini";
+  }
+  switch (effectiveKind) {
     case "grok":
     case "grokAgent":
       return <GrokMark size={size} className={className} />;

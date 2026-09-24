@@ -1,6 +1,9 @@
 // The registry's contract is forward/backward compatibility: a config
 // written by a newer or differently-built app must load as an
 // unavailable shadow, never crash the fleet. These tests pin that.
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setLastAntigravityQuotaSnapshot } from "../antigravity-quota.ts";
@@ -861,6 +864,48 @@ describe("ProviderRegistry", () => {
       await registry.load({ minimax: { driver: "minimax" } });
       const [described] = await registry.describe();
       expect(described.snapshot.quota?.capped).toBe(false);
+    });
+
+    it("pre-populates describe memo from disk cache and updates it after fresh describe", async () => {
+      const fake = makeFakeDriver();
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ test: { driver: "fake" } });
+
+      const tmpDir = join(tmpdir(), `bf-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const cachePath = join(tmpDir, "engine-cache.json");
+
+      mkdirSync(tmpDir, { recursive: true });
+      const cachedSnapshot = [{
+        instanceId: "cached-instance",
+        driverKind: "fake",
+        displayName: "Cached",
+        enabled: true,
+        snapshot: { state: "available" } as const,
+        models: { default: "cached-m", options: [] },
+        capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
+        computerReach: { local: false, box: false, vps: false },
+        access: "subscription",
+        install: undefined,
+        cli: undefined,
+        cliDefault: undefined,
+        cliCandidates: [],
+        fullAuto: false,
+      }];
+      writeFileSync(cachePath, JSON.stringify(cachedSnapshot));
+
+      registry.setDiskCachePath(cachePath);
+      // Since maxAgeMs is large and cache is present, returns cached instances immediately
+      const instant = await registry.describe({ maxAgeMs: 60_000 });
+      expect(instant[0].instanceId).toBe("cached-instance");
+
+      // Describe fresh overwrites disk cache with the actual live engines
+      const fresh = await registry.describeFresh();
+      expect(fresh[0].instanceId).toBe("test");
+
+      const saved = JSON.parse(readFileSync(cachePath, "utf8"));
+      expect(saved[0].instanceId).toBe("test");
+
+      rmSync(tmpDir, { recursive: true, force: true });
     });
   });
 });

@@ -31,7 +31,14 @@ export { dshWrapSpawn, isStockDshCli } from "./dsh-mcp.ts";
  * on context and is the canonical DSH-hosted MiniMax row). */
 export const STATIC_DSH_MODELS = {
   ...harnessDshModels,
-  options: harnessDshModels.options.filter((option) => option.id !== "MiniMax-M2.7"),
+  options: harnessDshModels.options
+    .filter((option) => option.id !== "MiniMax-M2.7")
+    .map((option) => {
+      if (option.id.startsWith("MiniMax")) {
+        return { ...option, effortLevels: [] as const, supportsEffort: false };
+      }
+      return { ...option, effortLevels: ["none", "high", "max"] as const, supportsEffort: true };
+    }),
 };
 
 export {

@@ -15,6 +15,7 @@ export const BOT_PROFILE_PATCH_FIELDS = [
   "voice",
   "speakReplies",
   "modelSelection",
+  "activeModelSelection",
   "chiefOfStaff",
   "approvePeerComms",
   "autoApprove",
@@ -56,6 +57,7 @@ const profilePatchSchema = z.object({
     .optional(),
   speakReplies: z.boolean({ error: "speakReplies must be true or false" }).optional(),
   modelSelection: z.any().optional(),
+  activeModelSelection: z.any().optional(),
   chiefOfStaff: z.boolean({ error: "chiefOfStaff must be true or false" }).optional(),
   approvePeerComms: z.boolean({ error: "approvePeerComms must be true or false" }).optional(),
   autoApprove: z.boolean({ error: "autoApprove must be true or false" }).optional(),
@@ -84,6 +86,7 @@ export type BotProfilePatch = Partial<
     | "voice"
     | "speakReplies"
     | "modelSelection"
+    | "activeModelSelection"
     | "chiefOfStaff"
     | "approvePeerComms"
     | "autoApprove"

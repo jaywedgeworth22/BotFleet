@@ -132,7 +132,7 @@ function GroupTextRow({
   onReply: (message: Message) => void;
   attachedImages: ReturnType<typeof splitAttachedImages> | null;
 }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const [copied, setCopied] = useState(false);
   const copyContent = attachedImages?.display ?? m.text ?? "";
   const requestId = m.card?.requestId;
@@ -243,12 +243,18 @@ function GroupTextRow({
             <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
               {formatHoverTime(m.at)}
               {m.from?.botId && (() => {
-                const bot = members.find(b => b.id === m.from?.botId);
-                return bot?.modelSelection ? (
-                  <span className="ml-1.5 flex items-center" title={bot.modelSelection.model}>
-                    <ProviderMark driverKind={bot.modelSelection.instanceId.includes('claude') ? 'claude' : bot.modelSelection.instanceId.includes('antigravity') ? 'antigravity' : bot.modelSelection.instanceId.includes('dsh') || bot.modelSelection.instanceId.includes('deepseek') ? 'dsh' : bot.modelSelection.instanceId.includes('grok') ? 'grok' : bot.modelSelection.instanceId.includes('codex') ? 'codex' : bot.modelSelection.instanceId.includes('cursor') ? 'cursor' : 'openai'} size={12} />
+                const bot = members.find((b) => b.id === m.from?.botId);
+                const currentSelection = bot?.activeModelSelection ?? bot?.modelSelection;
+                if (!currentSelection) return null;
+                const instance = state.instances.find((i) => i.instanceId === currentSelection.instanceId);
+                const modelOption = instance?.models.options.find((o) => o.id === currentSelection.model);
+                const modelName = modelOption?.label || currentSelection.model;
+                const title = instance ? `${modelName} (${instance.displayName || instance.driverKind})` : currentSelection.model;
+                return (
+                  <span className="ml-1.5 flex items-center" title={title}>
+                    <ProviderMark driverKind={instance?.driverKind ?? currentSelection.instanceId} model={currentSelection.model} size={12} />
                   </span>
-                ) : null;
+                );
               })()}
             </div>
           </div>
@@ -1543,7 +1549,7 @@ export function GroupView({ group }: { group: Group }) {
               startedAt={presenceSpeaker?.activityStartedAt}
               label={activityLabel}
               answering={popping !== null}
-              modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
+              modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} model={presenceModel.model} size={14} /> : undefined}
               modelName={presenceModel?.name}
             >
               {popping ? (
