@@ -466,6 +466,23 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(recorder.events.filter((event) => event.type === "runtime.error")).toHaveLength(1);
   });
 
+  it("keeps fresh-session guidance when a resumed session's model is rejected asynchronously", async () => {
+    await create({ mode: "resume-async-unknown-model" });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-resume-async-missing-model",
+      text: "continue",
+      model: "gpt-5.6-luna",
+      resumeCursor: "old-thread",
+    });
+    const error = await recorder.until((event) => event.type === "runtime.error");
+    const done = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(error).toMatchObject({ message: expect.stringMatching(/a resumed session keeps its model.*Start a fresh task or rewind this conversation/s) });
+    expect(JSON.stringify(error)).not.toMatch(/Pick another model in bot settings/);
+    expect(done).toMatchObject({ ok: false, stopReason: expect.stringMatching(/Start a fresh task or rewind/) });
+  });
+
   it("surfaces an approval request and forwards the user's decision", async () => {
     await create({ mode: "approval" });
     const dump = join(scratch, "dump.json");
