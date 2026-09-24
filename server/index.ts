@@ -5,6 +5,7 @@ import {
   COMPUTER_PROVIDER_LABEL,
   hostAwareAllowedComputers,
   matchesLocalAutoConsent,
+  migrateAllowedComputersToProviders,
   requiresLocalAutoConsent,
   type ComputerProviderId,
   type LocalAutoConsentCapability,
@@ -119,9 +120,10 @@ import {
 } from "./computer-grants.ts";
 import {
   computerProviderBlocked,
+  computerProvidersStale,
+  heldComputerProviders,
   providerReloadKeys,
-  revokedComputerProviders,
-  turnUsesComputerProvider,
+  revokedTurnProviders,
 } from "./config-reload-keys.ts";
 import { computerReach } from "./computer-capability.ts";
 import {
@@ -5878,40 +5880,39 @@ function settleInterruptedBots(
  * to `PUT /api/config` and its revocation gates. */
 const APPLY_DEFAULTS_POLICY_KEYS = ["computerProviders", "vpsMode", "allowedComputers"] as const;
 
-/** A Computer provider was turned off in Settings.  The fleet is not
- * rebuilt for that (see CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD), but a turn that
- * already mounted the provider must not keep driving it until the turn
- * happens to end.  So interrupt exactly the busy turns whose grant, resolved
- * under the settings they started with, includes a disabled provider, and
- * leave every other turn running.  The interrupt goes through the engine, so
- * the turn settles through its normal terminal path. */
+/** A `botDefaults` save does not rebuild the fleet (see
+ * CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD), but it can still take a mount away
+ * from a turn that is running: a provider toggled off, a destination dropped
+ * from the legacy allowlist, or a new workspace default or cloud backend that
+ * an Auto bot inherits.  So resolve each busy turn's providers under the
+ * settings before and after the save, the way turn mounting does, and
+ * interrupt exactly the turns that lost one.  Every other turn keeps running.
+ * The interrupt goes through the engine, so the turn settles through its
+ * normal terminal path. */
 async function interruptTurnsUsingDisabledProviders(
   before: typeof cfg,
   after: typeof cfg,
 ): Promise<void> {
-  // Both spellings of a revocation: a provider toggle turned off, and (from
-  // an older client that writes only the legacy field) a destination removed
-  // from `allowedComputers`.
-  const allowed = allowedBotComputers(before);
-  const disabled = revokedComputerProviders(
-    { providers: before.botDefaults?.computerProviders, allowed },
-    { providers: after.botDefaults?.computerProviders, allowed: allowedBotComputers(after) },
-  );
-  if (disabled.length === 0) return;
-  const autoAllows = autoDestinations(allowed);
+  if (JSON.stringify(before.botDefaults ?? null) === JSON.stringify(after.botDefaults ?? null)) return;
+  const held = (settings: typeof cfg, bot: NonNullable<ReturnType<typeof store.bot>>, runOn: RoutineRunOn | undefined) => {
+    const allowed = allowedBotComputers(settings);
+    const { granted, auto } = resolveGrants(storedComputerGrants(bot), runOn, settings.botDefaults?.computers, allowed);
+    return heldComputerProviders(
+      {
+        granted,
+        auto,
+        autoAllows: autoDestinations(allowed),
+        cloudBackend: resolveCloudBackend(bot.cloudBackend, settings.botDefaults?.cloudBackend),
+      },
+      settings.botDefaults?.computerProviders,
+    );
+  };
   await Promise.allSettled(activeInterruptedTurns().map(async (turn) => {
     const bot = store.bot(turn.botId);
     if (!bot) return;
     const run = routines?.activeRunForBot(bot.id);
     const runOn = run?.threadId === turn.threadId ? run.runOn : undefined;
-    const { granted, auto } = resolveGrants(
-      storedComputerGrants(bot),
-      runOn,
-      before.botDefaults?.computers,
-      allowed,
-    );
-    const cloudBackend = resolveCloudBackend(bot.cloudBackend, before.botDefaults?.cloudBackend);
-    if (!turnUsesComputerProvider({ granted, auto, autoAllows, cloudBackend }, disabled)) return;
+    if (revokedTurnProviders(held(before, bot, runOn), held(after, bot, runOn)).length === 0) return;
     // Latch the stop before anything is awaited, same as the full reload and
     // the Stop button.  The driver may settle the turn the instant it is
     // killed; without the latch an exit_before_result cancellation reads as
@@ -5919,7 +5920,7 @@ async function interruptTurnsUsingDisabledProviders(
     latchInterruptedTurns([turn]);
     const instance = registry.get(turn.instanceId ?? bot.modelSelection.instanceId);
     await instance?.adapter.interruptTurn(turn.threadId).catch((error: unknown) => {
-      console.error(`interrupt after computer provider disable failed for thread ${turn.threadId}:`, error);
+      console.error(`interrupt after computer settings change failed for thread ${turn.threadId}:`, error);
     });
   }));
 }
@@ -10440,6 +10441,30 @@ const server = createServer(async (req, res) => {
       const patch = parseConfigPatch(body);
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      // Compare-and-swap for the provider toggles.  The section merge replaces
+      // `computerProviders` whole, so a window that saw an older state would
+      // write it back over a newer one.  A save that says what it saw is
+      // refused when that is no longer the truth, and gets the current config
+      // to show instead.  A save without `expectedComputerProviders` (an
+      // older client) is taken as before.
+      if (patch.botDefaults?.computerProviders && Object.hasOwn(body, "expectedComputerProviders")) {
+        const stored = cfg.botDefaults?.computerProviders;
+        const current = stored
+          ? {
+              asciiBox: stored.asciiBox === true,
+              selfHostedVps: stored.selfHostedVps === true,
+              localVm: stored.localVm === true,
+              localMac: stored.localMac === true,
+            }
+          : migrateAllowedComputersToProviders(allowedBotComputers(cfg)).providers;
+        if (computerProvidersStale(body.expectedComputerProviders, current)) {
+          return json(res, 409, {
+            error: "Provider settings changed in another window. Review them and try again.",
+            code: "computer_providers_stale",
+            config: configStatus(),
+          });
+        }
+      }
       if (patch.vps !== undefined) {
         const currentAlias = vpsSshAlias(cfg);
         const nextAlias = vpsSshAlias({ ...cfg, vps: patch.vps });
