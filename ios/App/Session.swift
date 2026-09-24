@@ -158,6 +158,7 @@ final class Session: ObservableObject {
     /// One-in-flight feature PATCH chain with latest-wins coalesce.  Rapid
     /// toggle flips share pending field values so the server sees user order;
     /// a generation guard alone only picked which response updated the UI.
+    /// Queued work is pairing-bound and cleared on sign-out / re-pair.
     private var featuresUpdateTail: Task<ConfigStatus?, Never>?
     private var featuresUpdateGeneration = 0
     private var pendingFeaturesShowToolCalls: Bool?
@@ -215,6 +216,19 @@ final class Session: ObservableObject {
         Task { await refreshNotificationAuthorization() }
     }
 
+    /// Drop coalesced feature/profile PATCHes when the paired computer changes
+    /// so a queued name, email, or toggle cannot land on the next pairing.
+    private func cancelPendingSettingsMutations() {
+        pendingFeaturesShowToolCalls = nil
+        pendingFeaturesSummarizeToolCalls = nil
+        pendingProfileName = nil
+        pendingProfileEmail = nil
+        pendingProfileHasName = false
+        pendingProfileHasEmail = false
+        featuresUpdateGeneration += 1
+        profileUpdateGeneration += 1
+    }
+
     /// Rebuild the last connection at launch.
     ///
     /// Three outcomes, and keeping them apart is the whole point. No saved
@@ -258,6 +272,7 @@ final class Session: ObservableObject {
         let first = rotation.currentEndpoint.map(saved.dialing) ?? saved
         client = CompanionClient(connection: first, token: stored)
         pairingGeneration += 1
+        cancelPendingSettingsMutations()
         cachedInstances = []
         status = .connecting
     }
@@ -335,6 +350,7 @@ final class Session: ObservableObject {
             token: paired.token
         )
         pairingGeneration += 1
+        cancelPendingSettingsMutations()
         self.state = CompanionState()
         instanceDriverKinds = [:]
         cachedInstances = []
@@ -406,6 +422,7 @@ final class Session: ObservableObject {
         instanceDriverKinds = [:]
         cachedInstances = []
         pairingGeneration += 1
+        cancelPendingSettingsMutations()
         resetAvatarCache()
         NotificationCoordinator.shared.setBadge(0)
         status = .unpaired
@@ -1614,11 +1631,13 @@ final class Session: ObservableObject {
         }
         featuresUpdateGeneration += 1
         let generation = featuresUpdateGeneration
+        let enqueuePairing = pairingGeneration
         let previous = featuresUpdateTail
         let task = Task<ConfigStatus?, Never> { @MainActor in
             _ = await previous?.value
             // Latest-wins: a newer call already coalesced our fields into pending*.
             guard self.featuresUpdateGeneration == generation else { return nil }
+            guard self.pairingGeneration == enqueuePairing else { return nil }
             let show = self.pendingFeaturesShowToolCalls
             let summarize = self.pendingFeaturesSummarizeToolCalls
             self.pendingFeaturesShowToolCalls = nil
@@ -1630,12 +1649,24 @@ final class Session: ObservableObject {
                     showToolCalls: show,
                     summarizeToolCalls: summarize
                 )
-                guard self.featuresUpdateGeneration == generation else { return updated }
+                // Keep a confirmed server apply for this pairing even when a
+                // newer queued mutation superseded us; otherwise a later failure
+                // would leave switches at pre-update values after an earlier
+                // PATCH already persisted.
+                guard self.pairingGeneration == enqueuePairing else { return updated }
                 self.config = updated
                 return updated
             } catch {
                 guard self.featuresUpdateGeneration == generation else { return nil }
+                guard self.pairingGeneration == enqueuePairing else { return nil }
                 self.recordActionError(error)
+                // Earlier coalesced work may have landed; refresh so UI matches.
+                if let status = try? await client.config(),
+                   self.pairingGeneration == enqueuePairing,
+                   self.featuresUpdateGeneration == generation {
+                    self.config = status
+                    return status
+                }
                 return nil
             }
         }
@@ -1670,25 +1701,37 @@ final class Session: ObservableObject {
         guard pendingProfileHasName || pendingProfileHasEmail else { return config }
         profileUpdateGeneration += 1
         let generation = profileUpdateGeneration
+        let enqueuePairing = pairingGeneration
         let previous = profileUpdateTail
         let task = Task<ConfigStatus?, Never> { @MainActor in
             _ = await previous?.value
             guard self.profileUpdateGeneration == generation else { return nil }
+            guard self.pairingGeneration == enqueuePairing else { return nil }
             let sendName = self.pendingProfileHasName ? self.pendingProfileName : nil
             let sendEmail = self.pendingProfileHasEmail ? self.pendingProfileEmail : nil
             self.pendingProfileHasName = false
             self.pendingProfileHasEmail = false
             self.pendingProfileName = nil
             self.pendingProfileEmail = nil
+            guard sendName != nil || sendEmail != nil else { return self.config }
             guard let client = self.client else { return nil }
             do {
                 let updated = try await client.updateProfile(name: sendName, email: sendEmail)
-                guard self.profileUpdateGeneration == generation else { return updated }
+                // Same pairing-bound apply as features: a confirmed PATCH must
+                // not be dropped solely because a later queued edit superseded us.
+                guard self.pairingGeneration == enqueuePairing else { return updated }
                 self.config = updated
                 return updated
             } catch {
                 guard self.profileUpdateGeneration == generation else { return nil }
+                guard self.pairingGeneration == enqueuePairing else { return nil }
                 self.recordActionError(error)
+                if let status = try? await client.config(),
+                   self.pairingGeneration == enqueuePairing,
+                   self.profileUpdateGeneration == generation {
+                    self.config = status
+                    return status
+                }
                 return nil
             }
         }
