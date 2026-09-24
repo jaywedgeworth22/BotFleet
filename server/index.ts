@@ -2994,15 +2994,26 @@ async function startTurn(
   let selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
 
+  const downgradeInstance = registry.get(selection.instanceId);
   selection = unattendedModelDowngrade(selection, {
     // Only continuations and delegated work inherit the bot's marked state;
     // a scheduled or manual run decides from its own automation source so a
     // webhook's leftover mark cannot downgrade it.  An explicit flag wins.
     unattended: inheritedUnattended(opts, () => isUnattended(bot.id)),
     automationSource: opts?.automationSource,
-    driverKind: registry.get(selection.instanceId)?.driverKind,
+    driverKind: downgradeInstance?.driverKind,
     hasExplicitSelection: Boolean(opts?.modelSelection),
-    effortLevels: registry.get(selection.instanceId)?.adapter.capabilities.effortLevels,
+    // Gate "low" on the post-rewrite model's modelEffortLevels(), not the
+    // engine-wide capabilities.effortLevels list — a catalog that advertises
+    // some efforts but not "low" would otherwise stamp low and 409.
+    effortLevels: downgradeInstance
+      ? (modelId) =>
+          modelEffortLevels(
+            { driverKind: downgradeInstance.driverKind, capabilities: downgradeInstance.adapter.capabilities },
+            downgradeInstance.models.options.find((option) => option.id === modelId),
+            modelId,
+          )
+      : undefined,
     isCooling: (instanceId, model) => Boolean(quotaCooldowns.get(bot.id, instanceId, model)),
   });
   if (turnExternalCredentialPending(bot, selection.instanceId, opts?.runOn)) {

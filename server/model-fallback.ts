@@ -64,19 +64,26 @@ export function inheritedUnattended(
  *  automationSource, not unattended).  A caller-supplied modelSelection
  *  is the caller's choice and is never downgraded.
  *
- *  Effort goes only to engines that offer it: stamping "low" on an
- *  engine without effortLevels (Antigravity, some API drivers) trips the
- *  turn-start capability check and 409s the whole unattended turn, so
- *  the caller passes the target instance's supported levels. */
+ *  Effort goes only when the selected model offers "low": stamping it from
+ *  engine-wide effortLevels alone 409s startTurn when the model-specific
+ *  modelEffortLevels() list is nonempty but omits "low".  The caller may
+ *  pass a static list or a per-model resolver (preferred; evaluated on the
+ *  post-rewrite id). */
 export function unattendedModelDowngrade(
   selection: ModelSelection,
   opts: {
     unattended?: boolean;
     automationSource?: string;
     hasExplicitSelection?: boolean;
-    effortLevels?: readonly string[];
+    /** Model-specific allowed efforts for the (post-rewrite) model, or a
+     *  resolver that returns them.  Engine-wide capabilities.effortLevels
+     *  alone is not enough — gate "low" the same way startTurn does. */
+    effortLevels?: readonly string[] | ((model: string) => readonly string[] | undefined);
     /** Driver kind of the selected instance (e.g. "claudeAgent").  Custom
-     *  instances under arbitrary ids share their driver's downgrade family. */
+     *  instances under arbitrary ids share their driver's downgrade family.
+     *  When present but not a known family, do not fall back to instanceId
+     *  (a reserved-looking id mapped to openai-compat must not get Claude
+     *  Sonnet→Haiku).  Only use instanceId when driverKind is missing. */
     driverKind?: string;
     /** Quota cooldowns vetted the pre-downgrade model; the rewrite must not
      *  route onto a cheaper model that is itself cooling down. */
@@ -91,12 +98,16 @@ export function unattendedModelDowngrade(
   if (!automated) return selection;
   // Resolve the downgrade family from the driver kind so operator-added
   // instances ("claude2", "gravity") get the same cheaper-model treatment
-  // as the reserved ids; fall back to the instance id for callers (and
-  // tests) that do not resolve a driver kind.
+  // as the reserved ids.  Fall back to the instance id only when no kind
+  // is given (callers/tests that never resolve one).  A defined but unknown
+  // kind must not inherit the instance id — that would rewrite models for
+  // an openai-compat instance that happens to be named "claude".
+  const kind = opts.driverKind;
   const family =
-    opts.driverKind === "claudeAgent" ? "claude"
-    : opts.driverKind === "antigravityAgent" ? "antigravity"
-    : opts.driverKind?.includes("gemini") ? "gemini"
+    kind === "claudeAgent" ? "claude"
+    : kind === "antigravityAgent" ? "antigravity"
+    : kind?.includes("gemini") ? "gemini"
+    : kind != null && kind !== "" ? undefined
     : selection.instanceId;
   let model = selection.model;
   if (family === "gemini") {
@@ -119,7 +130,9 @@ export function unattendedModelDowngrade(
   if (model !== selection.model && opts.isCooling?.(selection.instanceId, model)) {
     return selection;
   }
-  return opts.effortLevels?.includes("low")
+  const levels =
+    typeof opts.effortLevels === "function" ? opts.effortLevels(model) : opts.effortLevels;
+  return levels?.includes("low")
     ? { ...selection, model, effort: "low" }
     : { ...selection, model };
 }
