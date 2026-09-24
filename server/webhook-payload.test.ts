@@ -198,6 +198,13 @@ describe("slimWebhookPayload", () => {
     };
     expect(isSentryWebhookPayload(generic)).toBe(false);
     expect(slimWebhookPayload(generic)).toEqual(generic);
+    // culprit reads Sentry-ish but is not provider-exclusive — generic
+    // issue trackers carry one — so it must not mark the payload.
+    const culpritOnly = {
+      data: { issue: { title: "Alert", culprit: "src/jobs/nightly.ts in run" } },
+    };
+    expect(isSentryWebhookPayload(culpritOnly)).toBe(false);
+    expect(slimWebhookPayload(culpritOnly)).toEqual(culpritOnly);
     expect(serializeWebhookPayload(generic)).toContain("foo");
   });
 
