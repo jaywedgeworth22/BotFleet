@@ -2998,6 +2998,7 @@ async function startTurn(
     automationSource: opts?.automationSource,
     hasExplicitSelection: Boolean(opts?.modelSelection),
     effortLevels: registry.get(selection.instanceId)?.adapter.capabilities.effortLevels,
+    isCooling: (instanceId, model) => Boolean(quotaCooldowns.get(bot.id, instanceId, model)),
   });
   if (turnExternalCredentialPending(bot, selection.instanceId, opts?.runOn)) {
     throw externalCredentialPendingError(selection.instanceId);
