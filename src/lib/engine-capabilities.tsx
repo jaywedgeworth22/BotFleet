@@ -185,6 +185,8 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
     defaultModels: [
       { id: "grok-4.7", display: "Grok 4.7", ctxTokens: 500_000 },
       { id: "grok-4.6", display: "Grok 4.6" },
+      // The Grok Build (ACP) catalog id — see server/drivers/acp/grok.ts.
+      { id: "grok-4.7-build-fast", display: "Grok 4.7 Build Fast" },
       { id: "grok-3-mini", display: "Grok 3 mini", ctxTokens: 131_072 },
       // Retired id kept so legacy tasks banked as model "grok-4" (no engine
       // metadata) still attribute to Grok via uniqueModelToEngineId.
