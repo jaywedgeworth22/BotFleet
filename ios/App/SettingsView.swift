@@ -137,6 +137,7 @@ struct SettingsView: View {
                             SettingsIcon(symbol: "square.grid.2x2", color: .teal)
                         }
                     }
+                    .disabled(!settingsLoaded)
 
                     Picker(selection: Binding(
                         get: { session.config?.terminology ?? "channels" },
@@ -169,8 +170,9 @@ struct SettingsView: View {
                             SettingsIcon(symbol: "text.bubble", color: .indigo)
                         }
                     }
+                    .disabled(!settingsLoaded)
                     if session.config?.terminology == "custom" {
-                        CustomRoomTermFields(session: session)
+                        CustomRoomTermFields(session: session, editable: settingsLoaded)
                     }
 
                     Toggle(isOn: showToolCallsBinding) {
@@ -180,6 +182,7 @@ struct SettingsView: View {
                             SettingsIcon(symbol: "wrench.and.screwdriver", color: .purple)
                         }
                     }
+                    .disabled(!settingsLoaded)
 
                     Toggle(isOn: summarizeToolCallsBinding) {
                         Label {
@@ -188,6 +191,7 @@ struct SettingsView: View {
                             SettingsIcon(symbol: "rectangle.stack", color: .mint)
                         }
                     }
+                    .disabled(!settingsLoaded)
                 } header: {
                     Text("Workspace")
                 } footer: {
@@ -259,7 +263,7 @@ struct SettingsView: View {
                     Text(
                         settingsLoaded
                             ? "Shown in the sidebar.  Saved when you leave a field."
-                            : "Settings load from your computer before you can edit name, email, or the channel turn timeout."
+                            : "Settings load from your computer before you can edit workspace, name, email, or the channel turn timeout."
                     )
                 }
 
@@ -517,7 +521,10 @@ struct SettingsView: View {
     }
 
     private var workspaceFooter: String {
-        session.config?.isProjectsMode == true
+        guard settingsLoaded else {
+            return "Workspace layout, terminology, and tool toggles unlock after settings load from your computer."
+        }
+        return session.config?.isProjectsMode == true
             ? "Projects hides named bots.  That word is a category that any number of threads can sit under."
             : "Simple is one conversation per bot.  That word is a group thread invited bots and you can all write in."
     }
@@ -837,6 +844,7 @@ private extension Session.Status {
 /// so the ordinary case is still one word to type.
 struct CustomRoomTermFields: View {
     @ObservedObject var session: Session
+    var editable: Bool = true
     @State private var singular = ""
     @State private var plural = ""
     @State private var pluralEdited = false
@@ -850,6 +858,7 @@ struct CustomRoomTermFields: View {
                 TextField("App", text: $singular)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
+                    .disabled(!editable)
                     .onChange(of: singular) { _, next in
                         if !pluralEdited { plural = Self.suggestPlural(next) }
                     }
@@ -857,11 +866,12 @@ struct CustomRoomTermFields: View {
                 TextField("Apps", text: $plural)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
+                    .disabled(!editable)
                     .onChange(of: plural) { _, _ in pluralEdited = true }
                     .onSubmit(save)
             }
             Button("Save", action: save)
-                .disabled(singular.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!editable || singular.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .onAppear {
             singular = session.config?.roomLabels?.singular ?? ""
@@ -871,6 +881,7 @@ struct CustomRoomTermFields: View {
     }
 
     private func save() {
+        guard editable else { return }
         let one = singular.trimmingCharacters(in: .whitespaces)
         guard !one.isEmpty else { return }
         let many = plural.trimmingCharacters(in: .whitespaces)

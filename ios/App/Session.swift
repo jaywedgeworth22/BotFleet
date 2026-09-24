@@ -1619,8 +1619,13 @@ final class Session: ObservableObject {
     @MainActor
     func configStatus() async -> ConfigStatus? {
         guard let client else { return nil }
+        // Capture before the GET so a settings mutation that lands while the
+        // request is in flight cannot be overwritten by this older full status.
+        let generation = settingsUpdateGeneration
         let status = try? await client.config()
-        if let status { self.config = status }
+        guard let status else { return nil }
+        guard settingsUpdateGeneration == generation else { return nil }
+        self.config = status
         return status
     }
 
