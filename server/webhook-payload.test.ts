@@ -820,6 +820,56 @@ describe("slimWebhookPayload", () => {
     expect((incLong.description as string).length).toBe(501); // 500 + '…'
     expect((incLong.description as string).endsWith("…")).toBe(true);
   });
+
+  it("preserves bounded body.details value alongside description in PagerDuty incidents", () => {
+    const pdIncidentWithBody = {
+      event: {
+        event_type: "incident.trigger",
+        resource_type: "incident",
+        data: {
+          id: "PD-BODY-1",
+          type: "incident",
+          title: "Alert",
+          body: {
+            type: "incident_body",
+            details: "Worker process killed: out of memory while rendering large report.",
+          },
+          status: "triggered",
+          urgency: "high",
+          html_url: "https://my-team.pagerduty.com/incidents/PD-BODY-1",
+        },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(pdIncidentWithBody)).toBe(true);
+    const slim = slimWebhookPayload(pdIncidentWithBody) as Record<string, JsonValue>;
+    const incident = slim.incident as Record<string, JsonValue>;
+    expect(incident.title).toBe("Alert");
+    expect(incident.body).toEqual({
+      details: "Worker process killed: out of memory while rendering large report.",
+    });
+    expect(incident.description).toBe("Worker process killed: out of memory while rendering large report.");
+  });
+
+  it("preserves canonical URL from self when html_url is missing in PagerDuty incidents", () => {
+    const pdSelfUrlOnly = {
+      event: {
+        event_type: "incident.trigger",
+        resource_type: "incident",
+        data: {
+          id: "PD-SELF-1",
+          type: "incident",
+          title: "Alert",
+          status: "triggered",
+          urgency: "high",
+          self: "https://api.pagerduty.com/incidents/PD-SELF-1",
+        },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(pdSelfUrlOnly)).toBe(true);
+    const slim = slimWebhookPayload(pdSelfUrlOnly) as Record<string, JsonValue>;
+    const incident = slim.incident as Record<string, JsonValue>;
+    expect(incident.html_url).toBe("https://api.pagerduty.com/incidents/PD-SELF-1");
+  });
 });
 
 

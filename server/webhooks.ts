@@ -371,8 +371,10 @@ export function shouldIgnoreWebhookEvent(
           `|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b(?:(?!${exclusionVerb})[^.;\\n])*?${contrastingVerb})`,
         "i",
       );
+      const allLevelsPattern = `(?:error|warning|info|debug)s?(?:\\s+events?)?`;
+      const levelCoordination = `(?:\\b${allLevelsPattern}\\b\\s*(?:,|/|\\bor\\b|\\band\\b|\\bnor\\b)\\s*)*`;
       const bareNegativePattern = new RegExp(
-        `(?:^|[.;\\n]|${contrastingVerb}[^.;\\n]*?)\\s*\\b(?:no|not|neither)\\s+(?:any\\s+)?\\b${lvl}s?(?:\\s+events?)?\\b`,
+        `(?:^|[.;\\n]|${contrastingVerb}[^.;\\n]*?)\\s*\\b(?:no|not|neither)\\s+(?:any\\s+)?${levelCoordination}\\b${lvl}s?(?:\\s+events?)?\\b`,
         "i",
       );
       const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);

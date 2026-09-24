@@ -1368,6 +1368,36 @@ describe("WebhookManager", () => {
     expect(noWarningNotOutOfScopeResult).toMatchObject({ duplicate: false });
     expect(noWarningNotOutOfScopeResult.runId).toBeDefined();
 
+    // 66. Coordinated bare negative level lists ("No warning or info events.")
+    // ignore all coordinated levels.
+    const { webhook: coordNegHook, secret: coordNegSecret } = h.manager.create({
+      name: "Coordinated Negative Handler",
+      prompt: "No warning or info events.",
+      botId: "maus-1",
+    });
+    const coordWarningResult = h.manager.receive(coordNegHook.endpointId, coordNegSecret, clauseWarning);
+    expect(coordWarningResult).toMatchObject({ ignored: true });
+
+    const coordInfoResult = h.manager.receive(coordNegHook.endpointId, coordNegSecret, {
+      payload: {
+        action: "created",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          issue: {
+            id: "i-info-1",
+            title: "Info level event",
+            level: "info",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    });
+    expect(coordInfoResult).toMatchObject({ ignored: true });
+
+    const coordErrorResult = h.manager.receive(coordNegHook.endpointId, coordNegSecret, clauseError);
+    expect(coordErrorResult).toMatchObject({ duplicate: false });
+    expect(coordErrorResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

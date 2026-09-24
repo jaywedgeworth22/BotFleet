@@ -497,9 +497,18 @@ function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefi
   if (description) {
     out.description = description.length > 500 ? `${description.slice(0, 500)}…` : description;
   }
+  const bodyRec = asRecord(rec.body);
+  const bodyDetails = pickStr(bodyRec, "details") ?? pickStr(rec, "details");
+  if (bodyDetails) {
+    const boundedDetails = bodyDetails.length > 500 ? `${bodyDetails.slice(0, 500)}…` : bodyDetails;
+    out.body = { details: boundedDetails };
+    if (!out.description) {
+      out.description = boundedDetails;
+    }
+  }
   assignDefined(out, "status", pickStr(rec, "status"));
   assignDefined(out, "urgency", pickStr(rec, "urgency"));
-  assignDefined(out, "html_url", pickStr(rec, "html_url"));
+  assignDefined(out, "html_url", pickStr(rec, "html_url") ?? pickStr(rec, "self"));
   assignDefined(out, "created_at", pickStr(rec, "created_at") ?? pickStr(rec, "created_on"));
   assignDefined(out, "created_on", pickStr(rec, "created_on") ?? pickStr(rec, "created_at"));
   const priorityRec = asRecord(rec.priority);
