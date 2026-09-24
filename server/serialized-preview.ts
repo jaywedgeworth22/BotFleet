@@ -26,9 +26,12 @@ export function fitListToBudget<T extends { instructionsPreview: string; instruc
   envelope: Record<string, unknown>,
   rows: readonly T[],
   maxBytes: number,
+  /** Rows the caller already cut before this call (the 100-row cap).  They
+   * count toward routinesOmitted, and the budget includes that field. */
+  alreadyOmitted = 0,
 ): { routines: T[]; routinesOmitted?: number } {
   const kept = rows.map((row) => ({ ...row }));
-  let omitted = 0;
+  let omitted = Math.max(0, alreadyOmitted);
   const body = () => (omitted > 0 ? { routines: kept, routinesOmitted: omitted } : { routines: kept });
   const fits = () => Buffer.byteLength(JSON.stringify({ ...envelope, ...body() }), "utf8") <= maxBytes;
   for (let i = kept.length - 1; i >= 0 && !fits(); i--) {
