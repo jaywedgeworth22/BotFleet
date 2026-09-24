@@ -11,6 +11,7 @@ import {
   providerReloadKeys,
   revokedComputerProviders,
   turnUsesComputerProvider,
+  unacknowledgedImpact,
 } from "./config-reload-keys.ts";
 
 describe("providerReloadKeys", () => {
@@ -137,12 +138,13 @@ describe("PUT /api/config provider disable", () => {
   });
 
   it("compares each turn's providers before and after the whole botDefaults save", () => {
-    expect(helper).toContain("revokedTurnProviders(held(before, bot, runOn), held(after, bot, runOn))");
+    expect(helper).toContain("revokedTurnProviders(heldProvidersFor(before, inputs, runOn), heldProvidersFor(after, inputs, runOn))");
     // Every input turn mounting reads, from the settings being compared.
-    expect(helper).toContain("allowedBotComputers(settings)");
-    expect(helper).toContain("settings.botDefaults?.computers");
-    expect(helper).toContain("settings.botDefaults?.cloudBackend");
-    expect(helper).toContain("settings.botDefaults?.computerProviders");
+    const held = source.slice(source.indexOf("function heldProvidersFor("), source.indexOf("function botsLosingProviders("));
+    expect(held).toContain("allowedBotComputers(settings)");
+    expect(held).toContain("settings.botDefaults?.computers");
+    expect(held).toContain("settings.botDefaults?.cloudBackend");
+    expect(held).toContain("settings.botDefaults?.computerProviders");
   });
 
   it("latches each targeted turn as stopped before interrupting the engine", () => {
@@ -258,5 +260,54 @@ describe("computerProvidersStale (PUT /api/config compare-and-swap)", () => {
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
     expect(source).toContain('"Provider settings changed in another window.\\u00a0 Review them and try again."');
     expect(source).not.toContain("another window. Review them");
+  });
+});
+
+describe("provider disable impact is judged by the running turn and the server's state", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+
+  it("interrupts by what a turn mounted, not the bot's grants after a mid-turn edit", () => {
+    // A turn started on Cloud keeps its Box mount after the bot is switched
+    // to Local VM; with the stored grants both sides read VM and the Box
+    // disable skipped it.
+    const mounted = heldComputerProviders({ granted: ["cloud"], auto: false, autoAllows: [], cloudBackend: "box" }, {
+      asciiBox: true, selfHostedVps: true, localVm: true, localMac: true,
+    });
+    const afterDisable = heldComputerProviders({ granted: ["cloud"], auto: false, autoAllows: [], cloudBackend: "box" }, {
+      asciiBox: false, selfHostedVps: true, localVm: true, localMac: true,
+    });
+    expect(revokedTurnProviders(mounted, afterDisable)).toEqual(["asciiBox"]);
+    const fn = source.slice(source.indexOf("async function interruptTurnsUsingDisabledProviders("), source.indexOf("async function runProviderReload()"));
+    expect(fn).toContain("const inputs = turn.computerInputs ?? turnComputerInputs(bot);");
+    expect(fn).not.toContain("storedComputerGrants(bot)");
+    // Both dispatch paths snapshot the inputs when they claim the turn.
+    expect(source.match(/computerInputs: turnComputerInputs\(bot\),/g)?.length).toBe(2);
+    expect(source).toContain("computerInputs: owner?.computerInputs,");
+  });
+
+  it("names only the bots the confirm did not list", () => {
+    const impacted = [{ id: "a", name: "A" }, { id: "b", name: "B" }];
+    expect(unacknowledgedImpact(["a", "b"], impacted)).toEqual([]);
+    expect(unacknowledgedImpact(["a", "b", "gone"], impacted)).toEqual([]);
+    expect(unacknowledgedImpact(["a"], impacted)).toEqual([{ id: "b", name: "B" }]);
+    expect(unacknowledgedImpact(undefined, impacted)).toEqual(impacted);
+    expect(unacknowledgedImpact([1, null, "a"], impacted)).toEqual([{ id: "b", name: "B" }]);
+  });
+
+  it("recomputes the impact on PUT /api/config before anything is saved", () => {
+    const route = source.slice(source.indexOf('path === "/api/config") {'));
+    const check = route.indexOf("botsLosingProviders(cfg,");
+    expect(check).toBeGreaterThan(route.indexOf("computerProvidersStale(body.expectedComputerProviders, current)"));
+    expect(route.indexOf("providerConfigBusy = true;")).toBeGreaterThan(check);
+    expect(route).toContain("unacknowledgedImpact(\n          body.acknowledgedImpact,");
+    expect(route).toContain('code: "computer_impact_changed"');
+    // Nothing is awaited between the check and the write it guards.
+    expect(route.slice(check, route.indexOf("providerConfigBusy = true;"))).not.toContain("await ");
+    // The server's list counts cloud automations, as the window's does.
+    const fn = source.slice(source.indexOf("function botsLosingProviders("), source.indexOf("/** A `botDefaults` save does not rebuild"));
+    expect(fn).toContain("routines?.listRoutines()");
+    expect(fn).toContain("webhooks.list()");
+    expect(fn).toContain("resourceTriggers.list()");
+    expect(fn).toContain('item.enabled && item.runOn === "cloud"');
   });
 });
