@@ -267,6 +267,14 @@ describe("VPS computer", () => {
     expect(() => vpsSshTunnelArgs("production-vps", 45678, "203.0.113.8")).toThrow(/private/);
   });
 
+  it("gives status probes the 30s docker-over-SSH deadline slow WAN links need", async () => {
+    const fake = fixture();
+    await vpsComputerStatus(CONFIG, BOT_ID, fake.runner);
+    const probes = fake.calls.filter((call) => ["image", "inspect"].includes(call.args[2] ?? ""));
+    expect(probes.length).toBeGreaterThan(0);
+    for (const probe of probes) expect(probe.options?.timeoutMs).toBe(30_000);
+  });
+
   it("reports a ready container only when image, labels, limits, mounts, network, and Cua pass", async () => {
     const fake = fixture();
     const status = await vpsComputerStatus(CONFIG, BOT_ID, fake.runner);

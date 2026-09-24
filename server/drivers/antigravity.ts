@@ -603,7 +603,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         ok: boolean,
         stopReason: string | null,
         cost: number | null = null,
-        usage?: { input: number; output: number },
+        usage?: { input: number; output: number; cachedInput?: number },
       ) => {
         if (settled) return;
         settled = true;
@@ -842,11 +842,15 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: payload.text_delta });
               }
               if (payload.usage) {
+                const cacheRead = payload.usage.cache_read_tokens;
                 emit({
                   ...base(threadId, turnId),
                   type: "thread.token-usage.updated",
                   input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
                   output: payload.usage.output_tokens || 0,
+                  ...(typeof cacheRead === "number" && Number.isFinite(cacheRead) && cacheRead >= 0
+                    ? { cachedInput: cacheRead }
+                    : {}),
                 });
               }
             }
@@ -861,11 +865,15 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: response });
             }
             if (payload.usage) {
+              const cacheRead = payload.usage.cache_read_tokens;
               emit({
                 ...base(threadId, turnId),
                 type: "thread.token-usage.updated",
                 input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
                 output: payload.usage.output_tokens || 0,
+                ...(typeof cacheRead === "number" && Number.isFinite(cacheRead) && cacheRead >= 0
+                  ? { cachedInput: cacheRead }
+                  : {}),
               });
             }
             // agy has no separate error event: a provider quota, a failed
@@ -891,6 +899,10 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                 ? {
                     input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
                     output: payload.usage.output_tokens || 0,
+                    ...(typeof payload.usage.cache_read_tokens === "number" &&
+                    Number.isFinite(payload.usage.cache_read_tokens) && payload.usage.cache_read_tokens >= 0
+                      ? { cachedInput: payload.usage.cache_read_tokens }
+                      : {}),
                   }
                 : undefined,
             );

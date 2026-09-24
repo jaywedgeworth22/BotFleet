@@ -35,8 +35,8 @@ function scratchHome(files: Record<string, string>): string {
 
 describe("decodeCodexSelection", () => {
   it("forces official rows onto the ChatGPT provider", () => {
-    expect(decodeCodexSelection("gpt-5.6-sol")).toEqual({
-      model: "gpt-5.6-sol",
+    expect(decodeCodexSelection("gpt-6-sol")).toEqual({
+      model: "gpt-6-sol",
       modelProvider: OFFICIAL_CODEX_PROVIDER,
     });
   });
@@ -59,12 +59,12 @@ describe("decodeCodexSelection", () => {
 describe("readCodexModelCatalog", () => {
   it("keeps the static fallback aligned with the current visible Codex rows", () => {
     expect(STATIC_CODEX_MODELS).toEqual({
-      default: "gpt-5.6-luna",
+      default: "gpt-6-luna",
       options: [
         { id: "gpt-6-astra", label: "GPT-6 Astra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
-        { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-6-sol", label: "GPT-6 Sol", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
         { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
-        { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-6-luna", label: "GPT-6 Luna", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
         { id: "gpt-5.5", label: "GPT-5.5", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
         { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
       ],
@@ -173,11 +173,11 @@ model = "gpt-5.4"
 
   it("preserves profile models when the main provider defaults to OpenAI", async () => {
     const home = scratchHome({
-      "config.toml": 'model = "gpt-5.6-sol"\n',
+      "config.toml": 'model = "gpt-6-sol"\n',
       "legacy.config.toml": 'model = "gpt-5.4"\n',
     });
     const catalog = await readCodexModelCatalog({ HOME: home });
-    expect(catalog.default).toBe("gpt-5.6-sol");
+    expect(catalog.default).toBe("gpt-6-sol");
     expect(catalog.options).toContainEqual({
       id: encodeCodexSelection("openai", "gpt-5.4"),
       label: "gpt-5.4",
@@ -233,10 +233,10 @@ name = "oMLX"
 `,
     });
     const catalog = await readCodexModelCatalog({ HOME: home });
-    // Default flipped from gpt-6-astra to gpt-5.6-luna (the owner-facing
+    // Default flipped from gpt-6-astra to gpt-6-luna (the owner-facing
     // default most owners reach for first); Astra still appears as a
     // selectable option rather than being removed.
-    expect(catalog.default).toBe("gpt-5.6-luna");
+    expect(catalog.default).toBe("gpt-6-luna");
     expect(catalog.options.every((option) => !option.custom)).toBe(true);
   });
 });

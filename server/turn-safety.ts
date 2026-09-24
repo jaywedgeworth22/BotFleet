@@ -1,4 +1,5 @@
-import type { CloudBackend, ModelSelection } from "./contracts.ts";
+import { EFFORT_LEVELS, type CloudBackend, type ModelSelection, type EffortLevel } from "./contracts.ts";
+import { modelEffortLevels } from "../src/lib/model-effort.ts";
 
 /** The bot's computer settings as they were when a turn was dispatched, which
  * is what that turn mounted.  A later bot edit changes the stored grants but
@@ -279,7 +280,35 @@ export interface AutoFallbackCandidate {
       models?: Record<string, { capped: boolean }>;
     };
   };
-  models: { default: string };
+  driverKind?: string;
+  capabilities?: { effortLevels?: readonly string[] };
+  models: {
+    default: string;
+    options?: ReadonlyArray<{ id: string; effortLevels?: readonly EffortLevel[]; supportsEffort?: boolean }>;
+  };
+}
+
+/** Fit the failing dispatch's effort to what the fallback model offers.  The
+ * turn-start check 409s an effort the model does not list (max on a Codex
+ * model that tops out at xhigh), which would lose the turn the failover was
+ * meant to save.  Keep a supported effort as-is, otherwise step down to the
+ * highest offered level below it, otherwise send no effort. */
+function fallbackEffort(candidate: AutoFallbackCandidate, effort: EffortLevel | undefined): EffortLevel | undefined {
+  if (!effort) return undefined;
+  const model = candidate.models.default;
+  const allowed = modelEffortLevels(
+    {
+      driverKind: candidate.driverKind,
+      capabilities: { effortLevels: candidate.capabilities?.effortLevels as readonly EffortLevel[] | undefined },
+    },
+    candidate.models.options?.find((option) => option.id === model),
+    model,
+  );
+  if (allowed.includes(effort)) return effort;
+  const requested = EFFORT_LEVELS.indexOf(effort);
+  return [...allowed]
+    .filter((level) => EFFORT_LEVELS.indexOf(level) < requested)
+    .sort((a, b) => EFFORT_LEVELS.indexOf(b) - EFFORT_LEVELS.indexOf(a))[0];
 }
 
 /** Preserve the existing one-hop automatic failover while refusing candidates
@@ -289,6 +318,7 @@ export function eligibleAutoFallbackChain(
   input: {
     botId: string;
     currentInstanceId: string;
+    effort?: EffortLevel;
     isCooling: (botId: string, instanceId: string, model: string) => boolean;
     priority: readonly string[];
   },
@@ -316,7 +346,11 @@ export function eligibleAutoFallbackChain(
       return rank(a.candidate.instanceId) - rank(b.candidate.instanceId) || a.order - b.order;
     });
   const pick = viable[0]?.candidate;
-  return pick ? [{ instanceId: pick.instanceId, model: pick.models.default }] : [];
+  if (!pick) return [];
+  const selection: ModelSelection = { instanceId: pick.instanceId, model: pick.models.default };
+  const effort = fallbackEffort(pick, input.effort);
+  if (effort) selection.effort = effort;
+  return [selection];
 }
 
 export interface ThreadRuntimeInstance {

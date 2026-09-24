@@ -425,9 +425,7 @@ function EngineRow({
         </div>
       )}
       {["minimax", "claude", "grok", "codex", "antigravity", "cursorAgent", "deepseekAgent", "dshAgent", "antigravityAgent", "grokAgent", "claudeAgent"].includes(instance.driverKind) && (
-        <div className="mt-2">
-          <EngineCallout driverKind={instance.driverKind} />
-        </div>
+        <EngineCallout driverKind={instance.driverKind} instanceId={instance.instanceId} />
       )}
       {instance.driverKind === "boxAgent" && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
