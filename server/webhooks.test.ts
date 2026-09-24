@@ -700,8 +700,64 @@ describe("WebhookManager", () => {
     expect(smartAposResult).toMatchObject({ duplicate: false });
     expect(smartAposResult.runId).toBeDefined();
 
+    // 27. "Stop ignoring warning events" should NOT ignore warnings
+    const { webhook: stopIgnoreHook, secret: stopIgnoreSecret } = h.manager.create({
+      name: "Stop Ignore Handler",
+      prompt: "Stop ignoring warning events and triage them now.",
+      botId: "maus-1",
+    });
+    const stopIgnoreResult = h.manager.receive(stopIgnoreHook.endpointId, stopIgnoreSecret, clauseWarning);
+    expect(stopIgnoreResult).toMatchObject({ duplicate: false });
+    expect(stopIgnoreResult.runId).toBeDefined();
+
+    // 28. Compile gates pre-filter handles check_suite and workflow_job
+    const successfulSuiteEvent = {
+      eventName: "check_suite",
+      payload: {
+        action: "completed",
+        check_suite: { id: 701, status: "completed", conclusion: "success" },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    expect(h.manager.receive(compileHook.endpointId, compileSecret, successfulSuiteEvent)).toMatchObject({ ignored: true });
+
+    const failedSuiteEvent = {
+      eventName: "check_suite",
+      payload: {
+        action: "completed",
+        check_suite: { id: 702, status: "completed", conclusion: "failure" },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const failedSuiteResult = h.manager.receive(compileHook.endpointId, compileSecret, failedSuiteEvent);
+    expect(failedSuiteResult).toMatchObject({ duplicate: false });
+    expect(failedSuiteResult.runId).toBeDefined();
+
+    const inProgressJobEvent = {
+      eventName: "workflow_job",
+      payload: {
+        action: "in_progress",
+        workflow_job: { id: 801, status: "in_progress" },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    expect(h.manager.receive(compileHook.endpointId, compileSecret, inProgressJobEvent)).toMatchObject({ ignored: true });
+
+    const failedJobEvent = {
+      eventName: "workflow_job",
+      payload: {
+        action: "completed",
+        workflow_job: { id: 802, status: "completed", conclusion: "failure" },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const failedJobResult = h.manager.receive(compileHook.endpointId, compileSecret, failedJobEvent);
+    expect(failedJobResult).toMatchObject({ duplicate: false });
+    expect(failedJobResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
+
 
 

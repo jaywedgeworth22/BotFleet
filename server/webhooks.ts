@@ -339,7 +339,7 @@ export function shouldIgnoreWebhookEvent(
     const isLevelExcluded = (lvl: string): boolean => {
       // Find exclusion phrases, stopping at clause boundaries (;, \n, .)
       // Distinguish noun usages like "drop in warning", "drop of warning", or "recent drop of" from imperative drop commands
-      const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)drop(?!\\s+(?:in|of)\\b))`;
+      const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b))`;
       // Positive handling/investigation verbs that govern events
       const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
       // An exception word, contrast word (not), or positive handling verb stops exclusion scanning so exclusions bind to their target
@@ -367,7 +367,7 @@ export function shouldIgnoreWebhookEvent(
       );
       if (interveningPattern.test(prompt)) return false;
 
-      const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither)`;
+      const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit)`;
       const negationPattern = new RegExp(
         `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
@@ -406,7 +406,7 @@ export function shouldIgnoreWebhookEvent(
 
     if (action === "assigned" || action === "unassigned") {
       const isAssignmentExcluded = (): boolean => {
-        const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)drop(?!\\s+(?:in|of)\\b))`;
+        const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b))`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
         const assignmentTarget = `\\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}`;
@@ -432,7 +432,7 @@ export function shouldIgnoreWebhookEvent(
         );
         if (interveningPattern.test(prompt)) return false;
 
-        const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither)`;
+        const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit)`;
         const negationPattern = new RegExp(
           `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
             `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
@@ -522,6 +522,40 @@ export function shouldIgnoreWebhookEvent(
         return {
           ignore: true,
           reason: `GitHub check_run ${desc} ignored: compile gates wait for concluded failure or merged PR`,
+        };
+      }
+    } else if (eventName === "check_suite") {
+      const checkSuite = asRecord(root?.check_suite);
+      const suiteStatus = pickStr(checkSuite, "status");
+      const suiteConclusion = pickStr(checkSuite, "conclusion");
+      const isTerminalFailure =
+        suiteStatus === "completed" &&
+        (suiteConclusion === "failure" ||
+          suiteConclusion === "timed_out" ||
+          suiteConclusion === "action_required" ||
+          suiteConclusion === "startup_failure");
+      if (!isTerminalFailure) {
+        const desc = suiteStatus ? `status '${suiteStatus}'` : (action ? `action '${action}'` : "pending");
+        return {
+          ignore: true,
+          reason: `GitHub check_suite ${desc} ignored: compile gates wait for concluded failure or merged PR`,
+        };
+      }
+    } else if (eventName === "workflow_job") {
+      const workflowJob = asRecord(root?.workflow_job);
+      const jobStatus = pickStr(workflowJob, "status");
+      const jobConclusion = pickStr(workflowJob, "conclusion");
+      const isTerminalFailure =
+        jobStatus === "completed" &&
+        (jobConclusion === "failure" ||
+          jobConclusion === "timed_out" ||
+          jobConclusion === "action_required" ||
+          jobConclusion === "startup_failure");
+      if (!isTerminalFailure) {
+        const desc = jobStatus ? `status '${jobStatus}'` : (action ? `action '${action}'` : "pending");
+        return {
+          ignore: true,
+          reason: `GitHub workflow_job ${desc} ignored: compile gates wait for concluded failure or merged PR`,
         };
       }
     } else if (eventName === "pull_request") {
