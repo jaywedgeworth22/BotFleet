@@ -114,3 +114,25 @@ export function revalidateImpact(
   const changed = current.some((bot) => seen.get(bot.id) !== bot.usage);
   return changed ? { kind: "changed", impacted: [...current] } : { kind: "confirmed" };
 }
+
+/** Fold the bots the server named when it refused a disable (409
+ * `computer_impact_changed`) into this window's own list.  The server judges
+ * on its own bots and automations, so it can know a bot this window has not
+ * heard about yet; such a bot is listed by name with a plain usage line, and
+ * the confirm then acknowledges every bot either side found. */
+export function mergeServerImpact(
+  local: readonly ImpactedBot[],
+  server: readonly { id: string; name: string }[],
+  provider: ComputerProviderId,
+): ImpactedBot[] {
+  const known = new Set(local.map((bot) => bot.id));
+  const extra = server
+    .filter((bot) => !known.has(bot.id))
+    .map((bot): ImpactedBot => ({
+      id: bot.id,
+      name: bot.name,
+      usage: COMPUTER_PROVIDER_LABEL[provider],
+      providers: { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false, [provider]: true },
+    }));
+  return [...local, ...extra];
+}
