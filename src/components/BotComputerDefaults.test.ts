@@ -34,6 +34,13 @@ describe("AllowedComputersSummary", () => {
     // affected-bot confirmation instead.
     const source = readFileSync(new URL("./BotComputerDefaults.tsx", import.meta.url), "utf8");
     expect(source).not.toMatch(/save\(\{\s*allowed:/);
-    expect(source).toContain("const nextAllowed = allowed;");
+    // Nor any other provider policy: a save sends only the computer defaults,
+    // so a stale card cannot write old provider flags back.
+    const save = source.slice(source.indexOf("const save = ("), source.indexOf("const applyDefaults = ()"));
+    expect(save).toContain("computers: nextComputers,");
+    expect(save).toContain("cloudBackend: nextBackend,");
+    expect(save).not.toContain("computerProviders");
+    expect(save).not.toContain("allowedComputers");
+    expect(save).not.toContain("vpsMode");
   });
 });
