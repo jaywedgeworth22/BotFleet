@@ -22,6 +22,7 @@ import {
   turnQuotaOrCapEvidence,
   turnProducedAssistantOutput,
   unattendedModelDowngrade,
+  inheritedUnattended,
   type FallbackScanMessage,
 } from "./model-fallback.ts";
 import { eligibleAutoFallbackChain, type AutoFallbackCandidate } from "./turn-safety.ts";
@@ -884,6 +885,24 @@ describe("QuotaCooldownRegistry", () => {
   });
 });
 
+describe("inheritedUnattended", () => {
+  const marked = () => true;
+  it("does not let a leftover mark downgrade a scheduled, manual, or typed turn", () => {
+    expect(inheritedUnattended({}, marked)).toBe(false);
+    expect(inheritedUnattended(undefined, marked)).toBe(false);
+    expect(inheritedUnattended({ commsDepth: 0 }, marked)).toBe(false);
+  });
+  it("inherits the mark for card continuations and delegated work", () => {
+    expect(inheritedUnattended({ cardContinuation: true }, marked)).toBe(true);
+    expect(inheritedUnattended({ commsDepth: 1 }, marked)).toBe(true);
+    expect(inheritedUnattended({ cardContinuation: true }, () => false)).toBe(false);
+  });
+  it("honors an explicit caller flag", () => {
+    expect(inheritedUnattended({ unattended: true }, () => false)).toBe(true);
+    expect(inheritedUnattended({ unattended: false, cardContinuation: true }, marked)).toBe(false);
+  });
+});
+
 describe("unattendedModelDowngrade", () => {
   const gemini: ModelSelection = { instanceId: "gemini", model: "gemini-3.1-pro-preview" };
   const claude: ModelSelection = { instanceId: "claude", model: "claude-sonnet-5" };
@@ -1040,6 +1059,18 @@ describe("unattendedModelDowngrade", () => {
         { unattended: true, driverKind: "claudeAgent" },
       ).model,
     ).toBe("claude-haiku-4-5");
+  });
+
+  it("rewrites only built-in Claude Sonnet/Opus ids, not custom look-alikes", () => {
+    const down = (model: string) =>
+      unattendedModelDowngrade({ instanceId: "claude", model }, { unattended: true, driverKind: "claudeAgent" }).model;
+    for (const model of ["claude-sonnet-5-custom", "claude-opus-5-local", "claude-sonnet-latest-proxy"]) {
+      expect(down(model)).toBe(model);
+    }
+    // Catalog ids and older official version ids still downgrade.
+    for (const model of ["claude-sonnet-5", "claude-opus-5", "claude-sonnet-4-5", "claude-opus-4-1-20250805"]) {
+      expect(down(model)).toBe("claude-haiku-4-5");
+    }
   });
 
   it("pins Claude downgrades to the driver's current Haiku", () => {
