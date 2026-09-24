@@ -79,7 +79,9 @@ function EngineCalloutDisclosure(props: {
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        aria-controls={detailId}
+        // Only point at the detail region while it is rendered; a collapsed
+        // callout has no element with this id.
+        aria-controls={open ? detailId : undefined}
         className="flex w-full items-start gap-1.5 rounded text-left text-ink hover:text-ink"
       >
         <span className="min-w-0 flex-1">
