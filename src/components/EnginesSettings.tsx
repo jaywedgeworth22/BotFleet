@@ -9,7 +9,8 @@ import { Check, ChevronDown, Loader2, Plus, TriangleAlert, Upload, X } from "luc
 
 import { api, useStore, type InstanceInfo } from "@/state/store";
 import { EngineGroupLabel } from "./EngineGroupLabel";
-import { MiniMaxCallout } from "./MiniMaxCallout";
+import { EngineCallout } from "./EngineCallout";
+import { EngineCapabilitiesMatrix } from "./EngineCapabilitiesMatrix";
 import { ProviderMark } from "./ProviderIcons";
 import { splitEngineRail } from "@/lib/engine-rail";
 import { cn } from "@/lib/cn";
@@ -423,8 +424,10 @@ function EngineRow({
           permission guards do not apply.
         </div>
       )}
-      {["minimax"].includes(instance.driverKind) && (
-        <MiniMaxCallout instanceId={instance.instanceId} />
+      {["minimax", "claude", "grok", "codex", "antigravity", "cursorAgent", "deepseekAgent", "dshAgent", "antigravityAgent", "grokAgent", "claudeAgent"].includes(instance.driverKind) && (
+        <div className="mt-2">
+          <EngineCallout driverKind={instance.driverKind} />
+        </div>
       )}
       {instance.driverKind === "boxAgent" && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
@@ -809,6 +812,7 @@ export function EnginesSettings() {
       {rows.length === 0 && (
         <div className="text-[13px] text-ink-secondary">No engines detected yet.</div>
       )}
+      <EngineCapabilitiesMatrix />
       {(() => {
         const enabled = rows.filter(isEngineEnabled);
         const disabled = rows.filter((row) => !isEngineEnabled(row));

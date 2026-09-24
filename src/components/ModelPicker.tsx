@@ -9,7 +9,7 @@ import { isCustomOnly, splitEngineRail } from "@/lib/engine-rail";
 import { ProviderMark } from "./ProviderIcons";
 import { EngineSetup, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
-import { MiniMaxCallout } from "./MiniMaxCallout";
+import { EngineCallout } from "./EngineCallout";
 import { formatDualQuotaBadge } from "@/lib/quota-display";
 import { cn } from "@/lib/cn";
 import { COMPACT_SQUARE } from "@/lib/compact-chip";
@@ -403,8 +403,8 @@ export function ModelPicker({
                       <strong>Usage cap in effect:</strong> {railInstance.snapshot.quota?.error ?? "Session limit or quota reached."} Turns automatically fail over to configured fallbacks until reset.
                     </div>
                   )}
-                  {["minimax"].includes(railInstance.driverKind) && (
-                    <MiniMaxCallout instanceId={railInstance.instanceId} />
+                  {["minimax", "claude", "grok", "codex", "antigravity", "cursorAgent", "deepseekAgent", "dshAgent", "antigravityAgent", "grokAgent", "claudeAgent"].includes(railInstance.driverKind) && (
+                    <EngineCallout driverKind={railInstance.driverKind} />
                   )}
                   {railInstance.driverKind === "boxAgent" && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">

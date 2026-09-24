@@ -4,14 +4,16 @@
 // summed here; nothing is fetched.
 import * as React from "react";
 import { Check, CheckCircle, ChevronDown, Loader2, RefreshCw, XCircle } from "lucide-react";
-import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/store";
+import { api, useSecretSources, useStore, type ConfigStatus, type TaskUsage } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
+import type { MausColor } from "@/lib/mascot";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import { UsageMonitorQuotaGrid } from "./UsageMonitorQuotaGrid";
-import { minimaxPriceRows } from "@/lib/minimax-prices";
+import { UsageWhatIfProjection } from "./UsageWhatIfProjection";
+import { ENGINE_CAPABILITIES, engineIdFromDriverKind } from "@/lib/engine-capabilities";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, headlinesExhausted, headlinesNearCap, isEngineUnconfigured, localQuotaStatusLine, minimaxQuotaLine, providerIssueLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines, type LocalQuotaFreshnessView } from "@/lib/quota-display";
@@ -65,6 +67,22 @@ interface DeepSeekBalanceView {
   error: string | null;
 }
 
+/** Mirror of server/grok-quota.ts GrokUsageSnapshot, narrowed to what the
+ *  Settings panel reads.  Kept inline so the Vite client does not import
+ *  server modules (same boundary as the Antigravity/DeepSeek siblings). */
+interface GrokUsageSnapshot {
+  timestamp: string;
+  method: "no-source" | "cli-quota" | "http-api";
+  noSourceReason?: string;
+  models: Array<{
+    label: string;
+    modelId: string;
+    remainingPercentage: number | null;
+    isExhausted: boolean;
+    resetTime?: string;
+  }>;
+}
+
 const cnSwitch = (on: boolean) =>
   `relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${on ? "bg-accent" : "bg-control"}`;
 const cnKnob = (on: boolean) =>
@@ -99,6 +117,7 @@ export function UsageSection() {
   const [telemetryFetchError, setTelemetryFetchError] = React.useState<string | null>(null);
   const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
   const [antigravityQuota, setAntigravityQuota] = React.useState<AntigravityUsageSnapshot | null>(null);
+  const [grokQuota, setGrokQuota] = React.useState<GrokUsageSnapshot | null>(null);
   const [deepseekBalance, setDeepSeekBalance] = React.useState<DeepSeekBalanceView | null>(null);
   const [engineSpend, setEngineSpend] = React.useState<Record<string, { spend5hUsd: number; spend7dUsd: number }>>({});
   const [quotaWindows, setQuotaWindows] = React.useState<Array<{
@@ -179,6 +198,14 @@ export function UsageSection() {
           }
           if (data?.antigravity && Array.isArray(data.antigravity.models)) {
             setAntigravityQuota(data.antigravity);
+          }
+          // Grok's quota poller returns a no-source stub today (see
+          // server/grok-quota.ts); still set state so the Settings panel
+          // can render the "no quota source available yet" line and the
+          // future swap to a real reader doesn't have to change this
+          // block.
+          if (data?.grok && typeof data.grok === "object") {
+            setGrokQuota(data.grok);
           }
           if (Array.isArray(data?.windows)) {
             setQuotaWindows(data.windows);
@@ -326,9 +353,66 @@ export function UsageSection() {
       ? localQuotaStatusLine(localQuota)
       : null;
 
+  // "Expand all / collapse all" sits in the Card header; state lives at the
+  // UsageSection level so a click anywhere on the page flips every bot at
+  // once.  Persist-in-row expansion is local — same shape the engine picker
+  // already uses for its cloud/local rail.
+  const [expandedBots, setExpandedBots] = React.useState<Record<string, boolean>>({});
+  const [allExpanded, setAllExpanded] = React.useState(false);
+  const toggleBot = React.useCallback((botId: string) => {
+    setExpandedBots((prev) => {
+      const next = { ...prev, [botId]: !prev[botId] };
+      return next;
+    });
+  }, []);
+  const setAll = React.useCallback((on: boolean) => {
+    setAllExpanded(on);
+    if (on) {
+      const next: Record<string, boolean> = {};
+      for (const { bot } of rows) next[bot.id] = true;
+      setExpandedBots(next);
+    } else {
+      setExpandedBots({});
+    }
+  }, [rows]);
+
+  // Map every bot's instanceId back to the registry key.  A user can
+  // add a second MiniMax connection with a custom instanceId (the
+  // multi-instance route in server/index.ts permits it), and that
+  // custom id does not equal "minimax" verbatim.  Without this map,
+  // those tokens fall through every aggregation filter and the
+  // projection's MiniMax row stays at zero — Codex flagged it.
+  const instanceIdToEngineId = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const instance of state.instances) {
+      const registryId = engineIdFromDriverKind(instance.driverKind) ?? engineIdFromDriverKind(instance.instanceId);
+      if (registryId) map.set(instance.instanceId, registryId);
+    }
+    // Always map the canonical id verbatim so the default instance
+    // aggregates into the registry row.
+    for (const id of Object.keys(ENGINE_CAPABILITIES)) {
+      if (!map.has(id)) map.set(id, id);
+    }
+    return map;
+  }, [state.instances]);
+
   return (
     <div className="flex flex-col gap-4">
-      <Card title="Usage" subtitle="Tokens and cost per bot, added up from every settled turn.  A turn that ran on a fallback is billed as that fallback reported it, not as the bot's current model.  Only engines that report a price show one.">
+      <Card
+        title="Usage"
+        subtitle={`Tokens and cost per bot, added up from every settled turn.\u00A0  Click a bot to expand its sessions and see model, tokens in/out, $/turn, and the per-session cumulative.\u00A0  A turn that ran on a fallback is billed as that fallback reported it, not as the bot's current model.\u00A0  Only engines that report a price show one.`}
+        actions={
+          rows.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setAll(!allExpanded)}
+              className="rounded-md border border-hairline/40 bg-inset/30 px-2 py-0.5 text-[11.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+            >
+              {allExpanded ? "Collapse all" : "Expand all"}
+            </button>
+          ) : null
+        }
+      >
         {rows.length === 0 ? (
           <div className="text-[13px] text-ink-secondary">Nothing spent yet — figures appear after a bot's first turn.</div>
         ) : (
@@ -339,19 +423,21 @@ export function UsageSection() {
               <span className="text-right">Tokens</span>
               <span className="text-right">Cost</span>
             </div>
-            {rows.map(({ bot, usage }) => (
-              <div key={bot.id} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-5 border-b border-hairline/20 py-2 text-[13px]">
-                <span className="flex min-w-0 items-center gap-2 text-ink">
-                  <MausAvatar color={bot.color} state="idle" size={22} animated={false} />
-                  <span className="truncate" title={bot.name}>{bot.name}</span>
-                </span>
-                <span className="text-right tabular-nums text-ink-secondary">{usage.turns}</span>
-                <span className="text-right tabular-nums text-ink" title={usageDetail(usage)}>
-                  {formatTokens(usage.input + usage.output)}
-                </span>
-                <span className="text-right tabular-nums text-ink">{hasFiniteCost(usage.costUsd) ? formatUsd(usage.costUsd) : <span className="text-ink-secondary">—</span>}</span>
-              </div>
-            ))}
+            {rows.map(({ bot, usage }) => {
+              const open = allExpanded || Boolean(expandedBots[bot.id]);
+              return (
+                <UsageRow
+                  key={bot.id}
+                  bot={bot}
+                  usage={usage}
+                  open={open}
+                  onToggle={() => {
+                    toggleBot(bot.id);
+                    if (allExpanded) setAllExpanded(false);
+                  }}
+                />
+              );
+            })}
             <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-5 pt-2.5 text-[13px] font-medium text-ink">
               <span>All bots</span>
               <span className="text-right tabular-nums">{total.turns}</span>
@@ -404,6 +490,11 @@ export function UsageSection() {
               instanceCooldowns.length > 0 ||
               instanceWindows.length > 0 ||
               (instance.instanceId === "antigravity" && (antigravityQuota?.models?.length ?? 0) > 0) ||
+              // Grok's quota poller returns a no-source stub today
+              // (see server/grok-quota.ts); a configured Grok instance
+              // still renders because we want the "no quota source
+              // available yet" line to show under the row.
+              instance.instanceId === "grok" ||
               (isDeepSeek && deepseekBalance?.balanceUsd != null) ||
               // MiniMax's row must render whenever the engine is configured,
               // not only once it's capped or has spent something — a fresh
@@ -644,8 +735,20 @@ export function UsageSection() {
             // DeepSeek balance chip) sitting where "At Usage Cap" or
             // "Disabled in settings" belongs is what let the DeepSeek row
             // read "balance unavailable" forever instead of its real status.
+            // Grok quota poller returns a no-source snapshot today — render an
+            // honest "no quota source available yet" line instead of a
+            // fabricated 100% / Ready chip.  When xAI ships a quota
+            // endpoint the swap is in `server/grok-quota.ts`, not here.
+            const isGrokNoSource =
+              instance.instanceId === "grok" && (!grokQuota || grokQuota.method === "no-source");
+            const grokNoSourceLine = isGrokNoSource
+              ? (grokQuota?.noSourceReason ?? "No quota source available yet for Grok.")
+              : null;
+
             // The headline/fullSummary lines are shown only for the healthy,
-            // uncapped path they were designed for.
+            // uncapped path they were designed for.  Grok's no-source line
+            // sits with them — below the capped/partial/disabled/unavailable
+            // branches, because the engine's real state must outrank it.
             const statusLine = isCapped
               // MiniMax's own line already names the binding window's real
               // reset time (minimaxQuotaLine); the generic cooldown-based
@@ -660,6 +763,8 @@ export function UsageSection() {
               ? "Disabled in settings · subscription inactive"
               : isUnavailable
               ? instance.snapshot.reason ?? "Unavailable"
+              : grokNoSourceLine
+              ? grokNoSourceLine
               : isNearCap
               ? (minimaxLine ?? (allHeadlineLines.length > 0 ? allHeadlineLines.join("  ·  ") : "Approaching its usage cap"))
               : allHeadlineLines.length > 0
@@ -777,34 +882,214 @@ export function UsageSection() {
       </Card>
 
       <Card
-        title="Model Rates & Pricing Breakdown"
-        subtitle="Standard per-token pricing comparison across API-billed fleet engines and models."
+        title="Pricing Mode by Engine"
+        subtitle={'What you actually pay on each engine.  Subscription engines show "included in plan" — never an API rate, even when one exists for reference.'}
       >
         <div className="flex flex-col">
-          <div className="grid grid-cols-[1.5fr_1fr_1fr_1fr] gap-x-3 border-b border-hairline/40 pb-2 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">
-            <span>Model</span>
-            <span className="text-right">Input / 1M</span>
-            <span className="text-right">Cache Hit</span>
-            <span className="text-right">Output / 1M</span>
+          <div className="grid grid-cols-[1.4fr_1.1fr_1.4fr_0.9fr_0.9fr] gap-x-3 border-b border-hairline/40 pb-2 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">
+            <span>Engine</span>
+            <span>Plan / Pricing mode</span>
+            <span>Notes</span>
+            <span className="text-right">Subscription</span>
+            <span className="text-right">PAYG / 1k in</span>
           </div>
-          {[
-            ...minimaxPriceRows(),
-          ].map((row) => (
-            <div key={row.model} className="grid grid-cols-[1.5fr_1fr_1fr_1fr] items-center gap-x-3 border-b border-hairline/20 py-2.5 text-[13px]">
-              <div className="flex min-w-0 flex-col">
-                <span className="truncate font-medium text-ink" title={row.model}>{row.model}</span>
-                <span className="text-[11px] text-ink-secondary">{row.provider} · {row.badge}</span>
+          {Object.entries(ENGINE_CAPABILITIES).map(([id, entry]) => {
+            const sub = entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
+              ? entry.pricing.subscription
+              : null;
+            const api = entry.pricing.kind === "api" || entry.pricing.kind === "subscription+api"
+              ? entry.pricing.api
+              : null;
+            // Group display rule from the task: only show a numeric rate
+            // when EVERY engine in the displayed set has API pricing.  In
+            // practice that is never (subscription engines always exist),
+            // so we collapse the API column to a single label per row.
+            const subCost = sub?.costPerMonth != null ? `$${sub.costPerMonth.toFixed(2)}/mo` : "Bundled";
+            // Group display rule from the task: only show a numeric rate
+            // when EVERY engine in the displayed set has API pricing.
+            // The displayed set is `ENGINE_CAPABILITIES`, which always
+            // contains subscription-only engines (Claude, Codex, Cursor),
+            // so this check is always false.  The "Included" pill is
+            // what shows for every row.  When the registry grows past
+            // seven engines and the user filters down to only
+            // subscription+api engines, this guard will start to return
+            // the numeric rate — that is intentional.
+            const allRowsHaveApi = Object.values(ENGINE_CAPABILITIES).every((entry) =>
+              entry.pricing.kind === "subscription+api" || entry.pricing.kind === "api",
+            );
+            const showNumericApi = api != null && allRowsHaveApi;
+            const apiCost = showNumericApi ? `$${api.inputPer1k.toFixed(5)}` : "—";
+            // The `??` and `?:` operators don't compose the way a reader
+            // might expect — `a ?? b ? c : d` parses as
+            // `a ?? (b ? c : d)`.  Pin each branch in a parens block so a
+            // future edit cannot silently swap the meaning again.
+            const planLabel = sub
+              ? sub.tierLabel
+              : entry.pricing.kind === "api"
+                ? "API only"
+                : entry.pricing.kind === "free"
+                  ? "Free"
+                  : "n/a";
+            const notes = entry.pricing.notes ?? sub?.notes ?? api?.notes ?? "";
+            return (
+              <div key={id} className="grid grid-cols-[1.4fr_1.1fr_1.4fr_0.9fr_0.9fr] items-start gap-x-3 border-b border-hairline/20 py-2.5 text-[13px]">
+                <div className="flex min-w-0 flex-col">
+                  <span className="truncate font-medium text-ink" title={entry.displayName}>{entry.displayName}</span>
+                </div>
+                <span className="truncate text-ink-secondary" title={planLabel}>{planLabel}</span>
+                <span className="truncate text-[11px] text-ink-secondary/90" title={notes}>{notes}</span>
+                <span className="text-right tabular-nums text-ink">{subCost}</span>
+                <span className="text-right tabular-nums text-ink-secondary" title={showNumericApi ? `${api.inputPer1k}/1k in · ${api.outputPer1k}/1k out` : "Subscription pricing"}>
+                  {showNumericApi ? apiCost : <span className="text-emerald-700 dark:text-emerald-300">Included</span>}
+                </span>
               </div>
-              <span className="text-right tabular-nums text-ink">{row.input}</span>
-              <span className="text-right tabular-nums text-ink-secondary">{row.cache}</span>
-              <span className="text-right tabular-nums text-ink font-medium">{row.output}</span>
-            </div>
-          ))}
+            );
+          })}
           <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-            API rates are reference estimates; actual charges depend on the provider, billing window, cache usage, and context tier.{'\u00A0'} Subscription limits are separate.{'\u00A0'} MiniMax M3 prompts over 512K input tokens use twice its listed input, cache-read, and output rates.
+            The "PAYG / 1k in" column shows the public API rate only when the engine's
+            pricing block carries an API rate — subscription-only engines render{" "}
+            <span className="text-emerald-700 dark:text-emerald-300">Included</span>{" "}
+            instead.  MiniMax sits on the Mavis Token Plan Max subscription ($55/mo flat)
+            — its PAYG column is reference data for the "what-if API" projection below,
+            never what you are billed.  The same registry backs the Capability Matrix at
+            the top of the Settings → Engines panel so the two views cannot drift.
           </div>
         </div>
       </Card>
+
+      <UsageWhatIfProjection
+        periodLabel="Last 30 days"
+        byEngine={[
+          // Populated from the same rows we render above: each engine that
+          // has a registered api or subscription+api pricing block gets a
+          // row here, regardless of whether it actually ran turns.  An
+          // engine that never ran reports 0 tokens and 0 cost — honest,
+          // and the projection handles "actual cost is 0 and API cost is
+          // 0" cleanly.
+          ...Object.entries(ENGINE_CAPABILITIES).flatMap(([id, entry]) => {
+            if (entry.pricing.kind !== "subscription+api" && entry.pricing.kind !== "api") return [];
+            // For MiniMax we want the actual subscription cost: $55/mo for
+            // the period.  Every other engine's "actual cost" is its
+            // subscription fee in full — subscription engines bill a flat
+            // monthly fee regardless of how many turns ran, so prorating
+            // by turns (the previous shape) understated what the user
+            // actually pays.  Bundle-only engines (costPerMonth null)
+            // report 0; the projection card then shows "Your cost:
+            // bundled" instead of a fabricated number.
+            //
+            // Attribution walks each task's own records so a bot that
+            // switched engines mid-history attributes its old tokens to
+            // the engine that ran them.  We iterate `state.bots` rather
+            // than the per-bot `rows` shape because rows aggregates the
+            // task totals — we need the per-task detail.
+            //
+            // "Last 30 days": only activity inside the window counts —
+            // the card compares this usage against ONE monthly
+            // subscription fee, so lifetime usage would overstate the
+            // API-equivalent by an unbounded factor.
+            const periodStartMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            // Map the raw instanceId back to a registry key so a user
+            // with a second MiniMax connection under a custom id still
+            // aggregates into the canonical row; engineIdFromDriverKind
+            // covers instances deleted since the turn ran, including the
+            // legacy deepseek/dshAgent aliases.
+            const engineFor = (instanceId: string) =>
+              instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
+            let tokensForEngine = 0;
+            let cachedForEngine = 0;
+            let inputForEngine = 0;
+            let outputForEngine = 0;
+            for (const bot of state.bots) {
+              // Archived (hidden) bots are NOT skipped: their in-window
+              // usage still ran on the engine, and the subscription fee
+              // on the other side of the comparison still counts — dropping
+              // them understated the API-equivalent (review flagged it).
+              const botInstanceId = bot.modelSelection?.instanceId;
+              for (const task of bot.tasks ?? []) {
+                if ((task.lastActivity ?? task.createdAt) < periodStartMs) continue;
+                // The per-instance breakdown records the engine that
+                // ACTUALLY ran each turn (fallbacks included); legacy
+                // tasks without it attribute the whole task to the
+                // configured selection, the only attribution they have.
+                const buckets = task.usageByInstance && Object.keys(task.usageByInstance).length > 0
+                  ? Object.entries(task.usageByInstance)
+                  : null;
+                if (buckets) {
+                  let bucketedTurns = 0;
+                  let bucketedInput = 0;
+                  let bucketedOutput = 0;
+                  let bucketedCached = 0;
+                  for (const [bucketInstanceId, bucketUsage] of buckets) {
+                    bucketedTurns += bucketUsage.turns ?? 0;
+                    bucketedInput += bucketUsage.input;
+                    bucketedOutput += bucketUsage.output;
+                    bucketedCached += cachedInput(bucketUsage);
+                    if ((bucketUsage.turns ?? 0) <= 0) continue;
+                    if (engineFor(bucketInstanceId) !== id) continue;
+                    tokensForEngine += bucketUsage.input + bucketUsage.output;
+                    cachedForEngine += cachedInput(bucketUsage);
+                    inputForEngine += bucketUsage.input;
+                    outputForEngine += bucketUsage.output;
+                  }
+                  // The first post-upgrade turn banks only ITSELF into
+                  // usageByInstance; the task's pre-upgrade aggregate still
+                  // lives in `usage`.  Attribute the un-bucketed remainder
+                  // through the legacy configured-selection path so the
+                  // projection does not drop that history.
+                  const legacy = task.usage;
+                  if (legacy && (legacy.turns ?? 0) - bucketedTurns > 0) {
+                    const legacyInstanceId = task.modelSelection?.instanceId ?? botInstanceId;
+                    if (legacyInstanceId && engineFor(legacyInstanceId) === id) {
+                      const rInput = Math.max(0, legacy.input - bucketedInput);
+                      const rOutput = Math.max(0, legacy.output - bucketedOutput);
+                      const rCached = Math.max(0, cachedInput(legacy) - bucketedCached);
+                      tokensForEngine += rInput + rOutput;
+                      cachedForEngine += rCached;
+                      inputForEngine += rInput;
+                      outputForEngine += rOutput;
+                    }
+                  }
+                  continue;
+                }
+                if ((task.usage?.turns ?? 0) <= 0) continue;
+                const instanceId = task.modelSelection?.instanceId ?? botInstanceId;
+                if (!instanceId) continue;
+                if (engineFor(instanceId) !== id) continue;
+                tokensForEngine += task.usage!.input + task.usage!.output;
+                cachedForEngine += cachedInput(task.usage!);
+                inputForEngine += task.usage!.input;
+                outputForEngine += task.usage!.output;
+              }
+              // Shared-room turns bank per engine on the speaking bot —
+              // they have no task thread, so without this the room's
+              // spend reached telemetry only and the projection's
+              // API-equivalent understated the engine's real volume.
+              for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
+                if (roomUsage.lastAt < periodStartMs) continue;
+                if ((roomUsage.turns ?? 0) <= 0) continue;
+                if (engineFor(roomInstanceId) !== id) continue;
+                tokensForEngine += roomUsage.input + roomUsage.output;
+                cachedForEngine += cachedInput(roomUsage);
+                inputForEngine += roomUsage.input;
+                outputForEngine += roomUsage.output;
+              }
+            }
+            const actualCostUsd = id === "minimax"
+              ? 55
+              : entry.pricing.kind === "subscription+api" && entry.pricing.subscription.costPerMonth != null
+                ? entry.pricing.subscription.costPerMonth
+                : 0;
+            return [{
+              engineId: id,
+              totalTokens: tokensForEngine,
+              inputTokens: inputForEngine,
+              outputTokens: outputForEngine,
+              cachedTokens: cachedForEngine,
+              actualCostUsd,
+            }];
+          }),
+        ]}
+      />
 
       <Card
         title="Usage Monitor & Central Accounting"
@@ -1010,4 +1295,182 @@ export function UsageSection() {
       </Card>
     </div>
   );
+}
+
+/** One bot's expanded/collapsed usage row.  The header stays visible —
+ *  avatar + name + turns + tokens + cost.  Clicking flips the disclosure
+ *  and shows a sub-table of every task (session) the bot has accumulated,
+ *  with model, tokens in/out, cached, $/turn, and the running cumulative
+ *  for both tokens and cost.  The "Pricing-mode pill" lives on each
+ *  session row when the engine has a `subscription+api` or `subscription`
+ *  pricing mode in the capability registry — exactly the engines where
+ *  showing a PAYG number next to the user's plan would mislead. */
+function UsageRow({
+  bot,
+  usage,
+  open,
+  onToggle,
+}: {
+  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }> };
+  usage: TaskUsage;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  // Local state for the "expand all" / "collapse all" toggle.  When the
+  // parent flips `open` true or false the row expands/collapses — no
+  // local override needed.
+  // Shared-room turns bank per engine on the speaking bot, not on a task
+  // thread — without them the expanded detail disagreed with the header
+  // totals, which count the room buckets via botUsage.  Each engine bucket
+  // becomes one "Shared rooms" row, slotted into the chronological run by
+  // its lastAt.
+  const roomRows: TaskLike[] = Object.entries(bot.roomUsageByInstance ?? {})
+    .filter(([, u]) => (u.turns ?? 0) > 0 || u.input + u.output > 0)
+    .map(([instanceId, u]) => ({
+      threadId: `room:${instanceId}`,
+      title: "Shared rooms",
+      createdAt: u.lastAt,
+      lastActivity: u.lastAt,
+      usage: u,
+      modelSelection: { instanceId, model: "" },
+    }));
+  const tasks: TaskLike[] = [
+    ...(bot.tasks ?? []).filter((task) => (task.usage?.turns ?? 0) > 0 || (task.usage?.input ?? 0) + (task.usage?.output ?? 0) > 0),
+    ...roomRows,
+  ];
+  // Sort newest first so the most recent turn sits at the top of the list
+  // for the user.  The cumulative-cost and cumulative-tokens columns
+  // run oldest-first so the values grow monotonically down the page —
+  // a reader scrolling the table sees a running total that ticks up,
+  // not a value that shrinks as they read.  Codex flagged the old
+  // shape (newest-first accumulation) as misleading.
+  tasks.sort((a, b) => (b.lastActivity ?? b.createdAt) - (a.lastActivity ?? a.createdAt));
+  const chronological = [...tasks].sort((a, b) => (a.lastActivity ?? a.createdAt) - (b.lastActivity ?? b.createdAt));
+  const cumulativeByThread = new Map<string, { tokens: number; cost: number }>();
+  let runTokens = 0;
+  let runCost = 0;
+  for (const task of chronological) {
+    const taskUsage = task.usage ?? { input: 0, output: 0, costUsd: null, turns: 0 };
+    runTokens += taskUsage.input + taskUsage.output;
+    if (hasFiniteCost(taskUsage.costUsd)) runCost += taskUsage.costUsd ?? 0;
+    cumulativeByThread.set(task.threadId, { tokens: runTokens, cost: runCost });
+  }
+  const modelSet = new Set<string>();
+  const cumulative = tasks.map((task) => {
+    const taskUsage = task.usage ?? { input: 0, output: 0, costUsd: null, turns: 0 };
+    const isRoomRow = task.threadId.startsWith("room:");
+    const model = isRoomRow
+      ? task.modelSelection?.instanceId ?? "room"
+      : task.modelSelection?.model ?? bot.modelSelection.model;
+    if (model && !isRoomRow) modelSet.add(model);
+    const running = cumulativeByThread.get(task.threadId) ?? { tokens: 0, cost: 0 };
+    return {
+      task,
+      taskUsage,
+      model,
+      cumulativeTokens: running.tokens,
+      cumulativeCost: running.cost,
+    };
+  });
+
+  const modelCount = modelSet.size;
+
+  return (
+    <div className="border-b border-hairline/20">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="grid w-full grid-cols-[1fr_auto_auto_auto] items-center gap-x-5 py-2 text-left text-[13px] hover:bg-control/30"
+      >
+        <span className="flex min-w-0 items-center gap-2 text-ink">
+          <MausAvatar color={bot.color ?? "blue"} state="idle" size={22} animated={false} />
+          <span className="truncate" title={bot.name}>{bot.name}</span>
+          {open && modelCount > 0 && (
+            <span
+              className="ml-1 shrink-0 rounded-full bg-inset/60 px-2 py-0.5 text-[10.5px] font-medium text-ink-secondary"
+              title={`${modelCount} model${modelCount === 1 ? "" : "s"} across this bot's sessions`}
+            >
+              {modelCount} model{modelCount === 1 ? "" : "s"}
+            </span>
+          )}
+        </span>
+        <span className="text-right tabular-nums text-ink-secondary">{usage.turns}</span>
+        <span className="text-right tabular-nums text-ink" title={usageDetail(usage)}>
+          {formatTokens(usage.input + usage.output)}
+        </span>
+        <span className="text-right tabular-nums text-ink">
+          {hasFiniteCost(usage.costUsd) ? formatUsd(usage.costUsd) : <span className="text-ink-secondary">—</span>}
+        </span>
+      </button>
+      {open && cumulative.length > 0 && (
+        <div className="mb-2 ml-9 mr-1 rounded-lg border border-hairline/20 bg-inset/25 p-2.5">
+          <div className="grid grid-cols-[1.4fr_1fr_0.9fr_0.9fr_0.7fr_0.9fr_0.9fr] gap-x-3 border-b border-hairline/30 pb-1 text-[10.5px] font-medium uppercase tracking-wide text-ink-secondary">
+            <span>Session</span>
+            <span>Model</span>
+            <span className="text-right">Tokens in</span>
+            <span className="text-right">Cached</span>
+            <span className="text-right">Out</span>
+            <span className="text-right">$/turn</span>
+            <span className="text-right">Cum. cost</span>
+          </div>
+          {cumulative.map(({ task, taskUsage, model, cumulativeTokens: cumTokens, cumulativeCost: cumCost }, index) => {
+            const turnCount = taskUsage.turns || 0;
+            const perTurnCost = hasFiniteCost(taskUsage.costUsd) && turnCount > 0
+              ? (taskUsage.costUsd ?? 0) / turnCount
+              : null;
+            const cached = cachedInput(taskUsage);
+            const last = task.lastActivity ?? task.createdAt;
+            const date = new Date(last).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+            return (
+              <div
+                key={`${task.threadId}:${index}`}
+                className="grid grid-cols-[1.4fr_1fr_0.9fr_0.9fr_0.7fr_0.9fr_0.9fr] items-center gap-x-3 border-b border-hairline/10 py-1.5 text-[12px]"
+              >
+                <span className="min-w-0 truncate text-ink" title={task.title || task.threadId}>
+                  {task.title || task.threadId.slice(0, 12)}
+                  <span className="ml-1 text-ink-secondary/80">{date}</span>
+                </span>
+                <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-secondary" title={model}>
+                  {model}
+                </span>
+                <span className="text-right tabular-nums text-ink">{formatTokens(taskUsage.input)}</span>
+                <span className="text-right tabular-nums text-ink-secondary">{cached > 0 ? formatTokens(cached) : "—"}</span>
+                <span className="text-right tabular-nums text-ink">{formatTokens(taskUsage.output)}</span>
+                <span className="text-right tabular-nums text-ink-secondary">
+                  {perTurnCost != null ? formatUsd(perTurnCost) : "—"}
+                </span>
+                <span className="text-right tabular-nums text-ink">
+                  {hasFiniteCost(taskUsage.costUsd) ? formatUsd(cumCost) : "—"}
+                  <span className="block text-[10.5px] text-ink-secondary">{formatTokens(cumTokens)} cumulative</span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Lightweight local types — kept inline so UsageSection does not import
+// the full store interface just to render this row.  Mirrors
+// src/state/store.tsx `Task` / `ModelSelection` / `TaskUsage` shapes.
+// Lightweight local types — kept inline so UsageSection does not import
+// the full store interface just to render this row.  Mirrors
+// src/state/store.tsx `Task` / `ModelSelection` / `TaskUsage` shapes.
+interface TaskLike {
+  threadId: string;
+  title: string;
+  createdAt: number;
+  lastActivity?: number;
+  usage?: TaskUsage;
+  /** Per-instance breakdown of `usage`, banked from the selection that
+   *  actually ran each turn (post-fallback).  Absent on older records. */
+  usageByInstance?: Record<string, TaskUsage>;
+  modelSelection?: ModelSelectionLike;
+}
+interface ModelSelectionLike {
+  instanceId: string;
+  model: string;
 }

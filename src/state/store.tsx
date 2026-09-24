@@ -225,6 +225,9 @@ export interface Task {
   lastActivity?: number;
   /** what this task has spent, banked once per settled turn */
   usage?: TaskUsage;
+  /** Per-instance breakdown of `usage`, banked from the selection that
+   *  actually ran each turn (post-fallback).  Absent on older records. */
+  usageByInstance?: Record<string, TaskUsage>;
   /** folder this task's turns run in, pinned on its first turn; null =
    * legacy home-folder session; absent = not pinned yet */
   cwd?: string | null;
@@ -255,6 +258,10 @@ export interface Bot {
   createdAt?: number;
   /** every context this bot has, newest first */
   tasks?: Task[];
+  /** Shared-room turns this bot spoke, banked per engine instance (room
+   *  threads are not bot tasks).  `lastAt` is the bucket's most recent
+   *  turn, for period windows. */
+  roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }>;
   name: string;
   title: string;
   description: string;

@@ -12,6 +12,7 @@ export default defineConfig({
       "shared/**/*.test.ts",
       "electron/**/*.test.mjs",
       "src/**/*.test.ts",
+      "src/**/*.test.tsx",
       "companion/**/*.test.ts",
       "scripts/**/*.test.mjs",
     ],

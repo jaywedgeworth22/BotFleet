@@ -23,8 +23,13 @@ export function sumUsage(items: Array<TaskUsage | undefined>): TaskUsage {
   return out;
 }
 
-export function botUsage(bot: Pick<Bot, "tasks">): TaskUsage {
-  return sumUsage((bot.tasks ?? []).map((t) => t.usage));
+export function botUsage(bot: Pick<Bot, "tasks" | "roomUsageByInstance">): TaskUsage {
+  // Room turns bank per engine on the speaking bot (they have no task
+  // thread of their own); the bot's totals include them.
+  return sumUsage([
+    ...(bot.tasks ?? []).map((t) => t.usage),
+    ...Object.values(bot.roomUsageByInstance ?? {}),
+  ]);
 }
 
 /** 950 → "950", 12_400 → "12.4k", 2_300_000 → "2.3M" */

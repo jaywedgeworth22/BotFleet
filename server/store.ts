@@ -239,6 +239,12 @@ export interface TaskRecord {
   lastInstanceId?: string;
   /** what this task has spent: banked once per turn from turn.completed */
   usage?: TaskUsage;
+  /** Per-instance breakdown of `usage`, banked from the selection that
+   *  ACTUALLY ran each turn (post-fallback), so cost attribution follows
+   *  the engine that ran, not the configured one.  Absent on records from
+   *  before the field existed; those attribute whole-task, by the
+   *  configured selection. */
+  usageByInstance?: Record<string, TaskUsage>;
   /** the folder this task's turns run in, pinned on its first turn from
    * the bot's `cwd` at that moment. Pinned, not read live: Claude keeps
    * sessions per project directory and Codex threads carry their cwd, so
@@ -273,6 +279,37 @@ export interface TaskUsage {
    * written by builds before cost existed lack the field; read as null. */
   costUsd: number | null;
   turns: number;
+}
+
+/** Merge one settled turn into a running usage tally.  Shared by the
+ *  per-task ledger, its per-instance breakdown, and the per-bot room
+ *  ledger so all three clean and accumulate identically. */
+function mergeTaskUsage(
+  prev: TaskUsage | undefined,
+  turn: { input?: number; output?: number; cachedInput?: number; costUsd: number | null; billingMode?: TurnBillingMode },
+): TaskUsage {
+  const base: TaskUsage = { input: 0, output: 0, costUsd: null, turns: 0, ...prev };
+  const cost = turn.billingMode !== "estimated" && typeof turn.costUsd === "number" && Number.isFinite(turn.costUsd)
+    ? turn.costUsd
+    : null;
+  const prevCost = typeof base.costUsd === "number" ? base.costUsd : null;
+  // providers occasionally report NaN or a negative on a partial turn —
+  // never let that poison a running tally
+  const clean = (n: number | undefined) => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0);
+  // the cached share exists on a record only once a driver has reported
+  // it — a driver that never does leaves the record shaped as before
+  const cachedKnown = typeof base.cachedInput === "number" || typeof turn.cachedInput === "number";
+  const prevInput = clean(base.input);
+  const turnInput = clean(turn.input);
+  const nextCachedInput = Math.min(clean(base.cachedInput), prevInput)
+    + Math.min(clean(turn.cachedInput), turnInput);
+  return {
+    input: prevInput + turnInput,
+    output: base.output + clean(turn.output),
+    ...(cachedKnown ? { cachedInput: nextCachedInput } : {}),
+    costUsd: cost === null ? prevCost : (prevCost ?? 0) + cost,
+    turns: base.turns + 1,
+  };
 }
 
 /** Everything the BOT authored is scrubbed of content-shaped secrets before
@@ -376,6 +413,10 @@ export function titleFromMessage(text: string): string {
 }
 
 export interface BotRecord {
+  /** Shared-room turns this bot spoke, banked per engine instance (room
+   *  threads are not bot tasks, so they cannot live on the task ledger).
+   *  `lastAt` is the most recent turn in the bucket, for period windows. */
+  roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }>;
   id: string;
   /** the ACTIVE task's thread — everything that runs a turn reads this */
   threadId: ThreadId;
@@ -1543,39 +1584,44 @@ export class Store {
 
   /** Bank one settled turn onto its task. Called once per turn.completed;
    * the running per-driver token indicator is deliberately not used here
-   * because its meaning differs by driver. */
+   * because its meaning differs by driver.  When the caller passes the
+   * instanceId that ACTUALLY ran the turn (post-fallback), the turn is
+   * also banked into the task's per-instance breakdown, so cost
+   * attribution follows the engine that ran, not the configured one. */
   addTaskUsage(
     botId: string,
     threadId: string,
     turn: { input?: number; output?: number; cachedInput?: number; costUsd: number | null; billingMode?: TurnBillingMode },
+    instanceId?: string,
   ): TaskUsage | null {
     const task = this.taskByThread(botId, threadId);
     if (!task) return null;
-    const prev: TaskUsage = { input: 0, output: 0, costUsd: null, turns: 0, ...task.usage };
-    const cost = turn.billingMode !== "estimated" && typeof turn.costUsd === "number" && Number.isFinite(turn.costUsd)
-      ? turn.costUsd
-      : null;
-    const prevCost = typeof prev.costUsd === "number" ? prev.costUsd : null;
-    // providers occasionally report NaN or a negative on a partial turn —
-    // never let that poison a running tally
-    const clean = (n: number | undefined) => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0);
-    // the cached share exists on a record only once a driver has reported
-    // it — a driver that never does leaves the record shaped as before
-    const cachedKnown = typeof prev.cachedInput === "number" || typeof turn.cachedInput === "number";
-    const prevInput = clean(prev.input);
-    const turnInput = clean(turn.input);
-    const nextCachedInput = Math.min(clean(prev.cachedInput), prevInput)
-      + Math.min(clean(turn.cachedInput), turnInput);
-    task.usage = {
-      input: prevInput + turnInput,
-      output: prev.output + clean(turn.output),
-      ...(cachedKnown ? { cachedInput: nextCachedInput } : {}),
-      costUsd: cost === null ? prevCost : (prevCost ?? 0) + cost,
-      turns: prev.turns + 1,
-    };
+    task.usage = mergeTaskUsage(task.usage, turn);
+    if (instanceId) {
+      const byInstance = (task.usageByInstance ??= {});
+      byInstance[instanceId] = mergeTaskUsage(byInstance[instanceId], turn);
+    }
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task.usage;
+  }
+
+  /** Bank one settled SHARED-ROOM turn onto the speaking bot, keyed by the
+   * instance that ran it.  Room threads are not bot tasks, so they cannot
+   * go through addTaskUsage — without this the room's spend reached
+   * telemetry only and the Usage tab never saw it.  `lastAt` lets period
+   * windows (the 30-day projection) decide whether the bucket counts. */
+  addRoomUsage(
+    botId: string,
+    instanceId: string,
+    turn: { input?: number; output?: number; cachedInput?: number; costUsd: number | null; billingMode?: TurnBillingMode },
+  ): void {
+    const bot = this.bot(botId);
+    if (!bot) return;
+    const byInstance = (bot.roomUsageByInstance ??= {});
+    byInstance[instanceId] = { ...mergeTaskUsage(byInstance[instanceId], turn), lastAt: Date.now() };
+    this.saveBots();
+    this.emit({ type: "bot", botId });
   }
 
   /** The folder a task's turn runs in. Pins on first call from the bot's
