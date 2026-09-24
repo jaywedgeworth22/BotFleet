@@ -77,38 +77,74 @@ const DESTINATIONS: Destination[] = ["cloud", "vm", "local"];
  * that would lose a leg of their grant.  An editable copy here would let an
  * operator turn Cloud, Local VM or This Computer off with no such
  * confirmation, so this card only mirrors what the Providers card saved. */
-export function AllowedComputersSummary({ allowed }: { allowed: Destination[] | null }) {
-  const isAllowed = (d: Destination) => allowed === null || allowed.includes(d);
+/** One row in the read-only summary. */
+type SummaryRow = { key: string; label: string; enabled: boolean };
+
+/** Rows for the read-only summary.  The per-provider shape splits the
+ * legacy "cloud" destination into ASCII.dev Box and Self-hosted VPS, so
+ * when the Providers card saved that shape each gets its own row: with
+ * Box off and VPS on, the Box row must read "not allowed", matching the
+ * Box toggle, instead of lighting up because the VPS keeps "cloud" open.
+ * Installs that only have the legacy allowlist keep the three rows. */
+export function allowedSummaryRows(allowed: Destination[] | null, providers?: ComputerProviders | null): SummaryRow[] {
+  if (providers) {
+    return [
+      { key: "box", label: "ASCII.dev Box (VM)", enabled: providers.asciiBox === true },
+      { key: "vps", label: "Self-hosted VPS", enabled: providers.selfHostedVps === true },
+      { key: "vm", label: DESTINATION_LABEL.vm, enabled: providers.localVm === true },
+      { key: "local", label: DESTINATION_LABEL.local, enabled: providers.localMac === true },
+    ];
+  }
+  return DESTINATIONS.map((d) => ({
+    key: d,
+    label: DESTINATION_LABEL[d],
+    enabled: allowed === null || allowed.includes(d),
+  }));
+}
+
+/** Read-only view of the workspace allowlist in the legacy card.
+ *
+ * The Providers card (`<LocalComputerSection>`) owns this state and gates
+ * every disable behind `<ComputerImpactConfirmModal>`, which lists the bots
+ * that would lose a leg of their grant.  An editable copy here would let an
+ * operator turn Cloud, Local VM or This Computer off with no such
+ * confirmation, so this card only mirrors what the Providers card saved. */
+export function AllowedComputersSummary({
+  allowed,
+  providers,
+}: {
+  allowed: Destination[] | null;
+  providers?: ComputerProviders | null;
+}) {
+  const rows = allowedSummaryRows(allowed, providers);
+  const enabledCount = rows.filter((r) => r.enabled).length;
   return (
     <Card
       title="Allowed Computers"
-      subtitle="The destinations any bot in this workspace is allowed to use.  This mirrors the Providers card above; change it there, where turning a provider off first shows which bots it affects."
+      subtitle={"The destinations any bot in this workspace is allowed to use.\u00a0 This mirrors the Providers card above; change it there, where turning a provider off first shows which bots it affects."}
     >
       <div className="flex overflow-hidden rounded-lg border border-hairline/40" role="list">
-        {DESTINATIONS.map((mode, i) => {
-          const enabled = isAllowed(mode);
-          return (
-            <div
-              key={mode}
-              role="listitem"
-              aria-label={`${DESTINATION_LABEL[mode]}: ${enabled ? "allowed" : "not allowed"}`}
-              className={cn(
-                "flex-1 py-1.5 text-center text-[13px]",
-                i > 0 && "border-l border-hairline/40",
-                enabled ? "bg-control text-ink font-medium" : "text-ink-secondary",
-              )}
-            >
-              {DESTINATION_LABEL[mode]}
-            </div>
-          );
-        })}
+        {rows.map((row, i) => (
+          <div
+            key={row.key}
+            role="listitem"
+            aria-label={`${row.label}: ${row.enabled ? "allowed" : "not allowed"}`}
+            className={cn(
+              "flex-1 py-1.5 text-center text-[13px]",
+              i > 0 && "border-l border-hairline/40",
+              row.enabled ? "bg-control text-ink font-medium" : "text-ink-secondary",
+            )}
+          >
+            {row.label}
+          </div>
+        ))}
       </div>
       <div className="mt-2 text-[11.5px] text-ink-secondary">
-        {allowed === null
+        {enabledCount === rows.length
           ? "Every destination is allowed — the shipped default."
-          : allowed.length === 0
-            ? "No destination is allowed.  Every bot is locked to its current choice (or auto) until you re-enable one."
-            : `${allowed.length} of 3 destinations allowed.  A bot that picked a disabled destination keeps that choice, but the run is refused.`}
+          : enabledCount === 0
+            ? "No destination is allowed.\u00a0 Every bot is locked to its current choice (or auto) until you re-enable one."
+            : `${enabledCount} of ${rows.length} destinations allowed.\u00a0 A bot that picked a disabled destination keeps that choice, but the run is refused.`}
       </div>
     </Card>
   );
@@ -225,11 +261,11 @@ export function BotComputerDefaults() {
 
   return (
     <>
-      <AllowedComputersSummary allowed={allowed} />
+      <AllowedComputersSummary allowed={allowed} providers={saved?.computerProviders ?? null} />
 
       <Card
         title="New Bots"
-        subtitle="Which computers a bot gets before anyone opens its settings.  Pick more than one and it chooses per task.  Leave all of them off to keep the shipped behavior: reuse whatever already exists, create nothing."
+        subtitle={"Which computers a bot gets before anyone opens its settings.\u00a0 Pick more than one and it chooses per task.\u00a0 Leave all of them off to keep the shipped behavior: reuse whatever already exists, create nothing."}
       >
         <div className="flex overflow-hidden rounded-lg border border-hairline/40">
           {options.map(([mode, label], i) => (
@@ -282,7 +318,7 @@ export function BotComputerDefaults() {
         <div className="mt-2 text-[11.5px] text-ink-secondary">
           {computers.length === 0
             ? "New bots use whatever computer already exists, and create nothing."
-            : `New bots get ${computers.length > 1 ? "all of these" : "this"}.  Bots you have already set up keep their own choice, and a bot you turned off stays off.`}
+            : `New bots get ${computers.length > 1 ? "all of these" : "this"}.\u00a0 Bots you have already set up keep their own choice, and a bot you turned off stays off.`}
         </div>
         <div className="mt-3 flex items-center gap-2">
           <button
