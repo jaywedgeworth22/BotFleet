@@ -343,7 +343,7 @@ export function shouldIgnoreWebhookEvent(
       // Distinguish noun usages like "drop in warning", "drop of warning", or "recent drop of" from imperative drop commands
       const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b))`;
       // Positive handling/investigation verbs that govern events
-      const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
+      const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
       const inScopePhrase = String.raw`\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
       // An exception word, contrast word (not), positive handling verb, or in-scope assertion stops exclusion scanning so exclusions bind to their target
       const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
@@ -454,7 +454,7 @@ export function shouldIgnoreWebhookEvent(
     if (action === "assigned" || action === "unassigned") {
       const isAssignmentExcluded = (): boolean => {
         const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b))`;
-        const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
+        const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
         const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const inScopePhrase = String.raw`\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
         const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
