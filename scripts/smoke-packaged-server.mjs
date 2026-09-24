@@ -36,7 +36,7 @@ const child = spawn(process.execPath, [join(staging, "server", "index.js")], {
     OMB_PORT: String(port),
     // This fake loopback DSN exercises SDK loading without contacting the
     // owner's Sentry project.  The staged server has no node_modules.
-    SENTRY_DSN: "http://0123456789abcdef0123456789abcdef@127.0.0.1:1/1",
+    SENTRY_DSN: "https://0123456789abcdef0123456789abcdef@127.0.0.1:1/1",
     SENTRY_TRACES_SAMPLE_RATE: "0",
   },
   stdio: ["ignore", "pipe", "pipe"],
