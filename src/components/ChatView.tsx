@@ -1056,7 +1056,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     if (!pendingQueued.length) return serverMessages;
     const queued: Message[] = pendingQueued.map((entry) => ({
       id: entry.queueId,
-      at: Date.now(),
+      at: entry.at,
       role: "user",
       kind: "text",
       text: entry.text,

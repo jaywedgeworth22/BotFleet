@@ -21,6 +21,7 @@ import {
   turnHitQuotaOrCap,
   turnQuotaOrCapEvidence,
   turnProducedAssistantOutput,
+  inheritedUnattended,
   type FallbackScanMessage,
   unattendedModelDowngrade,
 } from "./model-fallback.ts";
@@ -884,6 +885,24 @@ describe("QuotaCooldownRegistry", () => {
   });
 });
 
+describe("inheritedUnattended", () => {
+  const marked = () => true;
+  it("does not let a leftover mark downgrade a scheduled, manual, or typed turn", () => {
+    expect(inheritedUnattended({}, marked)).toBe(false);
+    expect(inheritedUnattended(undefined, marked)).toBe(false);
+    expect(inheritedUnattended({ commsDepth: 0 }, marked)).toBe(false);
+  });
+  it("inherits the mark for card continuations and delegated work", () => {
+    expect(inheritedUnattended({ cardContinuation: true }, marked)).toBe(true);
+    expect(inheritedUnattended({ commsDepth: 1 }, marked)).toBe(true);
+    expect(inheritedUnattended({ cardContinuation: true }, () => false)).toBe(false);
+  });
+  it("honors an explicit caller flag", () => {
+    expect(inheritedUnattended({ unattended: true }, () => false)).toBe(true);
+    expect(inheritedUnattended({ unattended: false, cardContinuation: true }, marked)).toBe(false);
+  });
+});
+
 describe("unattendedModelDowngrade", () => {
   const gemini: ModelSelection = { instanceId: "gemini", model: "gemini-3.1-pro-preview" };
   const claude: ModelSelection = { instanceId: "claude", model: "claude-sonnet-5" };
@@ -974,13 +993,69 @@ describe("unattendedModelDowngrade", () => {
         { unattended: true, driverKind: "antigravityAgent" },
       ).model,
     ).toBe("gemini-3.8-flash-high");
-    // An unknown driver kind with no instance-id match downgrades nothing.
+    // An unknown driver kind downgrades nothing — even when the instance id
+    // looks like a reserved family (openai-compat mounted as "claude").
     expect(
       unattendedModelDowngrade(
         { instanceId: "mystery", model: "mystery-large" },
         { unattended: true, driverKind: "mysteryDriver" },
       ).model,
     ).toBe("mystery-large");
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        { unattended: true, driverKind: "openai-compat" },
+      ).model,
+    ).toBe("claude-sonnet-5");
+    // Missing driverKind still falls back to the instance id (tests / callers
+    // that never resolve a kind).
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        { unattended: true },
+      ).model,
+    ).toBe("claude-haiku-4-5");
+  });
+
+  it("gates effort:low on the model-specific allowed efforts, not engine-wide", () => {
+    // Engine advertises low, but this model's catalog omits it — stamping
+    // low would 409 at startTurn's modelEffortLevels check.
+    const selection: ModelSelection = { instanceId: "codex", model: "gpt-special" };
+    const engineWide = ["low", "medium", "high"] as const;
+    const modelOnly = ["medium", "high"] as const;
+    expect(
+      unattendedModelDowngrade(selection, {
+        unattended: true,
+        effortLevels: modelOnly,
+      }),
+    ).toEqual(selection);
+    expect(
+      unattendedModelDowngrade(selection, {
+        unattended: true,
+        effortLevels: engineWide,
+      }),
+    ).toEqual({ ...selection, effort: "low" });
+    // Resolver is evaluated on the post-rewrite model id.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        {
+          unattended: true,
+          driverKind: "claudeAgent",
+          effortLevels: (model) => (model === "claude-haiku-4-5" ? ["medium", "high"] : engineWide),
+        },
+      ),
+    ).toEqual({ instanceId: "claude", model: "claude-haiku-4-5" });
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        {
+          unattended: true,
+          driverKind: "claudeAgent",
+          effortLevels: (model) => (model === "claude-haiku-4-5" ? ["low", "medium"] : []),
+        },
+      ),
+    ).toEqual({ instanceId: "claude", model: "claude-haiku-4-5", effort: "low" });
   });
 
   it("maps Antigravity Pro ids to Flash ids the catalog actually offers", () => {

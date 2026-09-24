@@ -1965,7 +1965,10 @@ function turnComputerDeps(
 
 // A running VM may have survived an app/server restart. Start its idle
 // backstop even if nobody opens Settings or begins a turn this session.
-void (async () => {
+// Awaited before listen so an in-flight startup `inspect botfleet-computer`
+// cannot land after a lifecycle fixture snapshots the docker log while
+// mode cleanup holds the info gate (macOS CI flake on exact log equality).
+const localVmStartupProbe = (async () => {
   const targets = [SHARED_LOCAL_VM_TARGET];
   for (const target of targets) {
     const status = await containerComputerStatus(undefined, undefined, target).catch(() => null);
@@ -2994,16 +2997,26 @@ async function startTurn(
   let selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
 
-  // Unattended turns run on the cheaper catalog model: an explicit flag, a
-  // fresh webhook/resource delivery, or the bot's marked state inherited by
-  // connector/secret-card continuations.  Candidate ids are resolved through
-  // the static catalogs so stale aliases never reach the CLI.
+  const downgradeInstance = registry.get(selection.instanceId);
   selection = unattendedModelDowngrade(selection, {
+    // Only continuations and delegated work inherit the bot's marked state;
+    // a scheduled or manual run decides from its own automation source so a
+    // webhook's leftover mark cannot downgrade it.  An explicit flag wins.
     unattended: inheritedUnattended(opts, () => isUnattended(bot.id)),
     automationSource: opts?.automationSource,
-    driverKind: registry.get(selection.instanceId)?.driverKind,
+    driverKind: downgradeInstance?.driverKind,
     hasExplicitSelection: Boolean(opts?.modelSelection),
-    effortLevels: registry.get(selection.instanceId)?.adapter.capabilities.effortLevels,
+    // Gate "low" on the post-rewrite model's modelEffortLevels(), not the
+    // engine-wide capabilities.effortLevels list — a catalog that advertises
+    // some efforts but not "low" would otherwise stamp low and 409.
+    effortLevels: downgradeInstance
+      ? (modelId) =>
+          modelEffortLevels(
+            { driverKind: downgradeInstance.driverKind, capabilities: downgradeInstance.adapter.capabilities },
+            downgradeInstance.models.options.find((option) => option.id === modelId),
+            modelId,
+          )
+      : undefined,
     isCooling: (instanceId, model) => Boolean(quotaCooldowns.get(bot.id, instanceId, model)),
   });
   if (turnExternalCredentialPending(bot, selection.instanceId, opts?.runOn)) {
@@ -3300,6 +3313,7 @@ async function startTurn(
         threadId,
         dispatchId: dispatchOwner.dispatchId,
         runOn: opts?.runOn,
+        unattended: isUnattended(bot.id),
         allowed: allowedBotComputers(cfg),
         deps: turnComputerDeps(
           bot.id,
@@ -4857,6 +4871,9 @@ async function runGroupMemberTurn(
       },
       threadId,
       dispatchId: roomDispatch.dispatchId,
+      // Same unattended signal as the 1:1 lane: a room member running a
+      // routine/webhook chain gets the same computer policy it would alone.
+      unattended: isUnattended(bot.id),
       allowed: allowedBotComputers(cfg),
       deps: turnComputerDeps(
         bot.id,
@@ -11590,6 +11607,9 @@ if (credentialFingerprint(cfg) !== loadedCredentialFingerprint) {
   });
 }
 
+// Drain the startup idle-backstop probe before accepting traffic so early
+// lifecycle routes (and their exclusion tests) never race its docker inspect.
+await localVmStartupProbe.catch(() => {});
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
 });

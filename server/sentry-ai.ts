@@ -86,7 +86,7 @@ const turns = new Map<string, AgentTurn>();
 const reportedProviderErrors = new Set<string>();
 // An ACP "initialize timed out" is breadcrumbed as an expected condition,
 // but the turn then finishes as a generic rpc_error.  Remember those turns
-// so the completion stays a breadcrumb too.
+// so the completion breadcrumbs too instead of paging a second report.
 const initTimeoutTurns = new Set<string>();
 
 let identityResolver: ((threadId: string) => TurnIdentity | null) | null = null;
@@ -547,7 +547,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // OpenAI-compatible, Grok, BoxAgent, and chat-completions drivers
         // report a user-initiated stop as "interrupted" rather than
         // "cancelled" — both are the expected, benign shape of a stop.
-        // "request_timeout" is the driver's own model-request timeout: the
+        // "request_timeout" is the driver's own model-request timeout:  the
         // matching runtime.error was already breadcrumbed as an expected
         // operational condition, so the completion must not page an Issue.
         // request_timeout + ACP init→rpc_error covered via expectedStop above.
