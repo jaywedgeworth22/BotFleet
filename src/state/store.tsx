@@ -2152,6 +2152,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // persist through the existing card route so an older server that
           // does not auto-dismiss still hides the quiz on this client
           if (quizBeforeSend) persistCard(action.botId, quizBeforeSend.id, { dismissed: true });
+          // Stamp before the POST so a slow 202 still shows send-time, not
+          // response-receipt time (Codex P2 on #587).
+          const sentAt = Date.now();
           void api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
             body: JSON.stringify({ text: action.text, replyToId: action.replyToId }),
@@ -2167,6 +2170,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                   threadId: body.threadId,
                   queueId: body.queueId,
                   text: action.text,
+                  at: sentAt,
                 });
               }
             })
