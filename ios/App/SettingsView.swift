@@ -17,6 +17,13 @@ struct SettingsView: View {
     @State private var roomTimeoutText = "5"
     @State private var roomTimeoutError = ""
     @State private var savingRoomTimeout = false
+    // Server values the drafts were last seeded from or saved as.  Departure
+    // saves only fire after a successful load, and only for fields that
+    // differ from these, so placeholders never PATCH over real settings.
+    @State private var settingsLoaded = false
+    @State private var savedProfileName = ""
+    @State private var savedProfileEmail = ""
+    @State private var savedRoomTimeout = 5
     private let onConnect: (() -> Void)?
 
     init(onConnect: (() -> Void)? = nil) {
@@ -283,12 +290,15 @@ struct SettingsView: View {
             Task { await loadSettingsExtras() }
         }
         .onChange(of: session.config?.profile?.name) { _, name in
+            savedProfileName = name ?? ""
             if profileName != (name ?? "") { profileName = name ?? "" }
         }
         .onChange(of: session.config?.profile?.email) { _, email in
+            savedProfileEmail = email ?? ""
             if profileEmail != (email ?? "") { profileEmail = email ?? "" }
         }
         .onChange(of: session.config?.rooms?.turnTimeoutMinutes) { _, minutes in
+            if let minutes { savedRoomTimeout = minutes }
             if !savingRoomTimeout, let minutes {
                 roomTimeoutText = String(minutes)
             }
@@ -297,9 +307,16 @@ struct SettingsView: View {
             EngineSetupSheet(instance: engine)
         }
         .onDisappear {
+            // Only persist drafts the user actually changed after the real
+            // values loaded.  Leaving before `loadSettingsExtras()` finishes
+            // must not PATCH the "" / "" / "5" placeholders.
+            guard settingsLoaded else { return }
+            let profileDirty = profileIsDirty
+            let timeoutDirty = roomTimeoutIsDirty
+            guard profileDirty || timeoutDirty else { return }
             Task {
-                await saveProfile()
-                await saveRoomTimeout()
+                if profileDirty { await saveProfile() }
+                if timeoutDirty { await saveRoomTimeout() }
             }
         }
         .refreshable {
@@ -344,6 +361,7 @@ struct SettingsView: View {
     }
 
     private func loadSettingsExtras() async {
+        settingsLoaded = false
         guard session.connection != nil else {
             engines = []
             profileName = ""
@@ -355,6 +373,10 @@ struct SettingsView: View {
             profileName = status.profile?.name ?? ""
             profileEmail = status.profile?.email ?? ""
             roomTimeoutText = String(status.rooms?.turnTimeoutMinutes ?? 5)
+            savedProfileName = profileName
+            savedProfileEmail = profileEmail
+            savedRoomTimeout = status.rooms?.turnTimeoutMinutes ?? 5
+            settingsLoaded = true
         }
         loadingEngines = true
         let fetched = await session.instances()
@@ -362,13 +384,37 @@ struct SettingsView: View {
         loadingEngines = false
     }
 
+    private var normalizedProfileName: String {
+        profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedProfileEmail: String {
+        profileEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var profileIsDirty: Bool {
+        normalizedProfileName != savedProfileName
+            || normalizedProfileEmail != savedProfileEmail.lowercased()
+    }
+
+    private var roomTimeoutIsDirty: Bool {
+        let trimmed = roomTimeoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int(trimmed) != savedRoomTimeout
+    }
+
     private func saveProfile() async {
-        let name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let email = profileEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        _ = await session.updateProfile(name: name, email: email)
+        // Never write drafts that were not seeded from the server.
+        guard settingsLoaded else { return }
+        let name = normalizedProfileName
+        let email = normalizedProfileEmail
+        if await session.updateProfile(name: name, email: email) != nil {
+            savedProfileName = name
+            savedProfileEmail = email
+        }
     }
 
     private func saveRoomTimeout() async {
+        guard settingsLoaded else { return }
         let trimmed = roomTimeoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let minutes = Int(trimmed), minutes >= 1, minutes <= 1_440 else {
             roomTimeoutError = "Enter a whole number from 1 to 1,440."
@@ -380,6 +426,7 @@ struct SettingsView: View {
             roomTimeoutError = "Could not save the channel turn limit."
         } else {
             roomTimeoutText = String(minutes)
+            savedRoomTimeout = minutes
         }
         savingRoomTimeout = false
     }
