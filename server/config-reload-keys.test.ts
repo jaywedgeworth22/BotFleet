@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import {
   CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD,
   disabledComputerProviders,
+  legacyAllowlistRevokedProviders,
   providerReloadKeys,
+  revokedComputerProviders,
   turnUsesComputerProvider,
 } from "./config-reload-keys.ts";
 
@@ -79,9 +81,68 @@ describe("turnUsesComputerProvider", () => {
   });
 });
 
+describe("legacyAllowlistRevokedProviders", () => {
+  it("counts destinations an older client removed from allowedComputers", () => {
+    expect(legacyAllowlistRevokedProviders(null, ["cloud", "vm"])).toEqual(["localMac"]);
+    expect(legacyAllowlistRevokedProviders(["cloud", "vm", "local"], ["local"])).toEqual([
+      "asciiBox", "selfHostedVps", "localVm",
+    ]);
+    expect(legacyAllowlistRevokedProviders(["vm"], null)).toEqual([]);
+    expect(legacyAllowlistRevokedProviders(null, null)).toEqual([]);
+    expect(legacyAllowlistRevokedProviders(["vm"], ["vm", "local"])).toEqual([]);
+  });
+});
+
+describe("revokedComputerProviders", () => {
+  const all = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+  it("revokes on a legacy-only narrowing with the provider toggles untouched", () => {
+    expect(revokedComputerProviders(
+      { providers: all, allowed: null },
+      { providers: all, allowed: ["cloud", "vm"] },
+    )).toEqual(["localMac"]);
+    expect(revokedComputerProviders(
+      { providers: undefined, allowed: null },
+      { providers: undefined, allowed: [] },
+    )).toEqual(["asciiBox", "selfHostedVps", "localVm", "localMac"]);
+  });
+
+  it("merges both spellings without duplicates", () => {
+    expect(revokedComputerProviders(
+      { providers: all, allowed: null },
+      { providers: { ...all, localMac: false, localVm: false }, allowed: ["cloud", "vm"] },
+    )).toEqual(["localVm", "localMac"]);
+  });
+
+  it("revokes nothing when a save only grants more", () => {
+    expect(revokedComputerProviders(
+      { providers: { ...all, localVm: false }, allowed: ["cloud"] },
+      { providers: all, allowed: null },
+    )).toEqual([]);
+  });
+});
+
 describe("PUT /api/config provider disable", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const helper = source.slice(
+    source.indexOf("async function interruptTurnsUsingDisabledProviders("),
+    source.indexOf("async function runProviderReload()"),
+  );
+
   it("interrupts only the affected turns when no rebuild runs", () => {
-    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
     expect(source).toContain("await interruptTurnsUsingDisabledProviders(configBeforeSave, cfg);");
+  });
+
+  it("reads the legacy allowlist as well as the provider toggles", () => {
+    expect(helper).toContain("revokedComputerProviders(");
+    expect(helper).toContain("allowed: allowedBotComputers(after)");
+  });
+
+  it("latches each targeted turn as stopped before interrupting the engine", () => {
+    const latch = helper.indexOf("latchInterruptedTurns([turn]);");
+    const interrupt = helper.indexOf("await instance?.adapter.interruptTurn(turn.threadId)");
+    expect(latch).toBeGreaterThan(0);
+    expect(interrupt).toBeGreaterThan(latch);
+    // Nothing awaited between the latch and the interrupt call.
+    expect(helper.slice(latch, interrupt)).not.toContain("await ");
   });
 });
