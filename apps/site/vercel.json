@@ -2,6 +2,7 @@
   "outputDirectory": ".",
   "cleanUrls": true,
   "trailingSlash": false,
+  "silent": true,
   "ignoreCommand": "bash vercel-ignore-hourly.sh",
   "headers": [
     {
