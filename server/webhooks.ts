@@ -411,7 +411,7 @@ export function shouldIgnoreWebhookEvent(
       );
       if (interveningPattern.test(prompt)) return false;
 
-      const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit)`;
+      const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
       const negationPattern = new RegExp(
         `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
@@ -479,7 +479,7 @@ export function shouldIgnoreWebhookEvent(
         );
         if (interveningPattern.test(prompt)) return false;
 
-        const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit)`;
+        const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
         const negationPattern = new RegExp(
           `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
             `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
@@ -626,6 +626,11 @@ export function shouldIgnoreWebhookEvent(
           reason: `GitHub status ${desc} ignored: compile gates wait for concluded failure or merged PR`,
         };
       }
+    } else {
+      return {
+        ignore: true,
+        reason: `GitHub event '${eventName ?? "unknown"}' ignored: compile gates wait for concluded failure or merged PR`,
+      };
     }
   }
 

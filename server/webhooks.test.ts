@@ -933,7 +933,28 @@ describe("WebhookManager", () => {
     const orWarningResult = h.manager.receive(orHook.endpointId, orSecret, exceptProdWarning);
     expect(orWarningResult).toMatchObject({ duplicate: false });
     expect(orWarningResult.runId).toBeDefined();
-    expect(orWarningResult.ignored).toBeUndefined();
+    // 38. "Avoid ignoring warning events" treats 'avoid' as a negation boundary
+    const { webhook: avoidHook, secret: avoidSecret } = h.manager.create({
+      name: "Avoid Ignorer",
+      prompt: "Avoid ignoring warning events. Investigate them promptly.",
+      botId: "maus-1",
+    });
+    const avoidWarningResult = h.manager.receive(avoidHook.endpointId, avoidSecret, exceptProdWarning);
+    expect(avoidWarningResult).toMatchObject({ duplicate: false });
+    expect(avoidWarningResult.runId).toBeDefined();
+    expect(avoidWarningResult.ignored).toBeUndefined();
+
+    // 39. Compile gates ignores push events
+    const pushEvent = {
+      eventName: "push",
+      deliveryId: "push-1",
+      payload: {
+        ref: "refs/heads/main",
+        repository: { full_name: "jaywedgeworth22/BotFleet" },
+      },
+    };
+    const pushResult = h.manager.receive(compileHook.endpointId, compileSecret, pushEvent);
+    expect(pushResult).toMatchObject({ ignored: true });
 
     expect(dropNounResult.runId).toBeDefined();
   });
