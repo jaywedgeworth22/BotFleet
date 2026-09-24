@@ -76,6 +76,32 @@ export function boundNativeTranscript(
   return kept;
 }
 
+/** Room turns send recent messages as one prompt, including the newest message
+ * that triggered the turn.  Bound older room history without silently cutting
+ * that current message; an oversized current message needs a separate explicit
+ * size error rather than truncation (board 93034769). */
+export function boundRoomContextLines(lines: string[]): string {
+  if (lines.length === 0) return "";
+  const newest = lines[lines.length - 1];
+  const earlierBudget = Math.max(
+    0,
+    MAX_REPLAY_BYTES - Buffer.byteLength(OMITTED_HISTORY, "utf8") - 1 - Buffer.byteLength(newest, "utf8"),
+  );
+  const kept = [newest];
+  let bytes = 0;
+  let omitted = false;
+  for (let i = lines.length - 2; i >= 0; i--) {
+    const entryBytes = Buffer.byteLength(lines[i], "utf8") + 1;
+    if (bytes + entryBytes > earlierBudget) {
+      omitted = true;
+      break;
+    }
+    kept.unshift(lines[i]);
+    bytes += entryBytes;
+  }
+  return (omitted ? [OMITTED_HISTORY, ...kept] : kept).join("\n");
+}
+
 /** Clip a string to at most `maxBytes` of UTF-8 without splitting a character. */
 function clipUtf8(value: string, maxBytes: number): string {
   const buf = Buffer.from(value, "utf8");

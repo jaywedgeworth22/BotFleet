@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { boundNativeTranscript, buildTurnContext, engineIsFresh } from "./turn-context.ts";
+import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 
 const transcript = [
   { role: "user" as const, text: "my dog is named Biscuit" },
@@ -33,6 +33,24 @@ describe("boundNativeTranscript", () => {
     expect(bounded[1].text).not.toContain("\uFFFD");
     expect(bounded[1].text.length).toBeLessThan(100 * 1024);
     expect(Buffer.byteLength(bounded.map((entry) => entry.text).join(""), "utf8")).toBeLessThanOrEqual(128 * 1024);
+  });
+});
+
+describe("boundRoomContextLines", () => {
+  it("preserves short room conversations", () => {
+    expect(boundRoomContextLines(["User: hello", "Bot: hi"])).toBe("User: hello\nBot: hi");
+  });
+
+  it("omits a huge prior room message while retaining the newest request", () => {
+    const current = "User: answer my latest question";
+    const bounded = boundRoomContextLines(["Bot: " + "x".repeat(200 * 1024), current]);
+    expect(bounded).toBe(`[Earlier conversation omitted for length]\n${current}`);
+    expect(Buffer.byteLength(bounded, "utf8")).toBeLessThan(128 * 1024);
+  });
+
+  it("keeps a deliberately large current room request intact", () => {
+    const current = "User: " + "z".repeat(200 * 1024);
+    expect(boundRoomContextLines(["Bot: older", current])).toBe(`[Earlier conversation omitted for length]\n${current}`);
   });
 });
 

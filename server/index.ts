@@ -248,7 +248,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
-import { boundNativeTranscript, buildTurnContext, engineIsFresh } from "./turn-context.ts";
+import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
   ensureWorkspace,
@@ -4136,11 +4136,11 @@ const MAX_GROUP_HOPS = 1;
 function serializeRoomContext(threadId: string, userName: string): string {
   const messages = store.messagesFor(threadId);
   const messagesById = new Map(messages.map((message) => [message.id, message]));
-  return messages
+  return boundRoomContextLines(messages
     .filter((m) => m.kind === "text" && m.text)
     .slice(-GROUP_CONTEXT_MESSAGES)
     .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
-    .join("\n");
+  );
 }
 
 
