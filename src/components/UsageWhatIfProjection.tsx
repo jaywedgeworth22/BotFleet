@@ -68,7 +68,12 @@ export function apiEquivalentCost(
   usage: EngineUsageAggregate,
   pricing: Extract<PricingMode, { kind: "subscription+api" | "api" }>,
 ): number {
-  const apiRates = pricing.api;
+  // A long-context tier (Grok: prompts of 200k+ tokens) bills every token
+  // of that request at its own rates.  Like the 512K rule below, it needs
+  // the real input count; the 70/30 fallback cannot tell the prompt size.
+  const tier = pricing.api.longContext;
+  const longPrompt = tier !== undefined && usage.inputTokens !== undefined && usage.inputTokens >= tier.minPromptTokens;
+  const apiRates = longPrompt && tier ? { ...pricing.api, ...tier } : pricing.api;
   // Use the real input/output split when the parent supplied it
   // (`inputTokens` / `outputTokens`); fall back to a 70/30 heuristic
   // only when the parent did not.  Codex flagged inventing the ratio
@@ -88,8 +93,9 @@ export function apiEquivalentCost(
   // known; the legacy 70/30 fallback cannot trigger the tier because
   // we cannot tell whether the workload actually exceeded 512K
   // tokens of input.
+  // An engine with its own long-context tier never also takes this 2x.
   const longContextMultiplier =
-    usage.inputTokens !== undefined && usage.inputTokens > 512_000 ? 2 : 1;
+    tier === undefined && usage.inputTokens !== undefined && usage.inputTokens > 512_000 ? 2 : 1;
   const outputCost = (outputTokens * apiRates.outputPer1k) / 1000;
   return (inputCost + outputCost) * longContextMultiplier;
 }
