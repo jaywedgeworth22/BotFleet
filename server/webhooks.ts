@@ -340,8 +340,8 @@ export function shouldIgnoreWebhookEvent(
       const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)drop(?!\\s+(?:in|of)\\b))`;
       // Positive handling/investigation verbs that govern events
       const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
-      // An exception word or positive handling verb stops exclusion scanning so exclusions bind to their target
-      const exceptionBoundary = String.raw`(?:except|but|other\s+than|apart\s+from|aside\s+from|${contrastingVerb})`;
+      // An exception word, contrast word (not), or positive handling verb stops exclusion scanning so exclusions bind to their target
+      const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}`;
       const verbFirstPattern = new RegExp(
         `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b`,
         "i",
@@ -404,7 +404,7 @@ export function shouldIgnoreWebhookEvent(
         const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)drop(?!\\s+(?:in|of)\\b))`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
         const assignmentTarget = `\\b(?:assign(?:ed|ment|ee)?s?|ownership)\\b`;
-        const exceptionBoundary = String.raw`(?:except|but|other\s+than|apart\s+from|aside\s+from|${contrastingVerb})`;
+        const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}`;
         const verbFirstPattern = new RegExp(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}`,
           "i",
@@ -486,35 +486,34 @@ export function shouldIgnoreWebhookEvent(
       const workflowRun = asRecord(root?.workflow_run);
       const runStatus = pickStr(workflowRun, "status");
       const runConclusion = pickStr(workflowRun, "conclusion");
-      const isTerminal = runStatus === "completed" && Boolean(runConclusion);
-      if (
-        !isTerminal &&
-        (action === "requested" ||
-          action === "in_progress" ||
-          runStatus === "queued" ||
-          runStatus === "in_progress")
-      ) {
+      const isTerminalFailure =
+        runStatus === "completed" &&
+        (runConclusion === "failure" ||
+          runConclusion === "timed_out" ||
+          runConclusion === "action_required" ||
+          runConclusion === "startup_failure");
+      if (!isTerminalFailure) {
+        const desc = action ? `action '${action}'` : `status '${runStatus ?? "unknown"}'`;
         return {
           ignore: true,
-          reason: `GitHub workflow_run action '${action}' ignored: compile gates wait for concluded failure or merged PR`,
+          reason: `GitHub workflow_run ${desc} ignored: compile gates wait for concluded failure or merged PR`,
         };
       }
     } else if (eventName === "check_run") {
       const checkRun = asRecord(root?.check_run);
       const checkStatus = pickStr(checkRun, "status");
       const checkConclusion = pickStr(checkRun, "conclusion");
-      const isTerminal = checkStatus === "completed" && Boolean(checkConclusion);
-      if (
-        !isTerminal &&
-        (action === "created" ||
-          action === "rerequested" ||
-          action === "requested" ||
-          checkStatus === "queued" ||
-          checkStatus === "in_progress")
-      ) {
+      const isTerminalFailure =
+        checkStatus === "completed" &&
+        (checkConclusion === "failure" ||
+          checkConclusion === "timed_out" ||
+          checkConclusion === "action_required" ||
+          checkConclusion === "startup_failure");
+      if (!isTerminalFailure) {
+        const desc = checkStatus ? `status '${checkStatus}'` : (action ? `action '${action}'` : "pending");
         return {
           ignore: true,
-          reason: `GitHub check_run status '${checkStatus ?? action}' ignored: compile gates wait for concluded failure or merged PR`,
+          reason: `GitHub check_run ${desc} ignored: compile gates wait for concluded failure or merged PR`,
         };
       }
     }

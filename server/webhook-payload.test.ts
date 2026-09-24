@@ -501,4 +501,19 @@ describe("slimWebhookPayload", () => {
     expect(slimWebhookPayload(generic)).toEqual(generic);
     expect(serializeWebhookPayload(generic)).toContain("important provider note");
   });
+
+  it("does not classify payloads with non-PagerDuty URL hostnames as PagerDuty", () => {
+    const fakePdUrl = {
+      event: { data: { html_url: "https://not-pagerduty.com/incidents/1", details: { foo: "bar" } } },
+      note: "important provider note",
+    };
+    expect(isPagerDutyWebhookPayload(fakePdUrl)).toBe(false);
+    expect(slimWebhookPayload(fakePdUrl)).toEqual(fakePdUrl);
+
+    const fakePdDocUrl = {
+      messages: [{ incident: { html_url: "https://example.com/docs/pagerduty.com", details: { foo: "bar" } } }],
+    };
+    expect(isPagerDutyWebhookPayload(fakePdDocUrl)).toBe(false);
+    expect(slimWebhookPayload(fakePdDocUrl)).toEqual(fakePdDocUrl);
+  });
 });

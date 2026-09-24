@@ -468,6 +468,22 @@ describe("WebhookManager", () => {
     const activeCheckResult = h.manager.receive(compileHook.endpointId, compileSecret, activeCheckEvent);
     expect(activeCheckResult).toMatchObject({ ignored: true });
 
+    // Completed check run with a success conclusion should be ignored by compile gates
+    const successfulCheckEvent = {
+      eventName: "check_run",
+      payload: {
+        action: "completed",
+        check_run: {
+          id: 54323,
+          status: "completed",
+          conclusion: "success",
+        },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const successfulCheckResult = h.manager.receive(compileHook.endpointId, compileSecret, successfulCheckEvent);
+    expect(successfulCheckResult).toMatchObject({ ignored: true });
+
     // 10. Prompt like "Investigate a drop in warning event volume" should NOT ignore warning events
     const { webhook: dropNounHook, secret: dropNounSecret } = h.manager.create({
       name: "Warning Volume Investigator",
@@ -582,6 +598,19 @@ describe("WebhookManager", () => {
     const onlyForAssignResult = h.manager.receive(onlyForAssignHook.endpointId, onlyForAssignSecret, assignEvent);
     expect(onlyForAssignResult).toMatchObject({ duplicate: false });
     expect(onlyForAssignResult.runId).toBeDefined();
+
+    // 21. "Ignore debug events, not warning events" uses "not" as a contrast boundary
+    // and should NOT ignore warning events.
+    const { webhook: notBoundaryHook, secret: notBoundarySecret } = h.manager.create({
+      name: "Not Boundary Warning Handler",
+      prompt: "Ignore debug events, not warning events.",
+      botId: "maus-1",
+    });
+    const notBoundaryWarningResult = h.manager.receive(notBoundaryHook.endpointId, notBoundarySecret, clauseWarning);
+    expect(notBoundaryWarningResult).toMatchObject({ duplicate: false });
+    expect(notBoundaryWarningResult.runId).toBeDefined();
+    const notBoundaryDebugResult = h.manager.receive(notBoundaryHook.endpointId, notBoundarySecret, clauseDebug);
+    expect(notBoundaryDebugResult).toMatchObject({ ignored: true });
 
     expect(dropNounResult.runId).toBeDefined();
   });

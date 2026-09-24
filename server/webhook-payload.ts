@@ -531,6 +531,16 @@ function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefi
   return Object.keys(out).length ? out : undefined;
 }
 
+function isPagerDutyUrl(val: unknown): boolean {
+  if (typeof val !== "string" || !val) return false;
+  try {
+    const parsed = new URL(val);
+    return parsed.hostname === "pagerduty.com" || parsed.hostname.endsWith(".pagerduty.com");
+  } catch {
+    return false;
+  }
+}
+
 export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
   const root = asRecord(payload);
   if (!root) return false;
@@ -540,7 +550,7 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
     if (eventType?.startsWith("incident.")) return true;
     const data = asRecord(event.data);
     const htmlUrl = pickStr(data, "html_url") ?? pickStr(event, "html_url");
-    if (htmlUrl?.includes("pagerduty.com")) return true;
+    if (isPagerDutyUrl(htmlUrl)) return true;
   }
   if (Array.isArray(root.messages) && root.messages.length > 0) {
     return root.messages.some((msg) => {
@@ -551,7 +561,7 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
       if (eventName?.startsWith("incident.") && inc) {
         return true;
       }
-      if (inc && typeof inc.html_url === "string" && inc.html_url.includes("pagerduty.com")) {
+      if (inc && isPagerDutyUrl(inc.html_url)) {
         return true;
       }
       return false;
