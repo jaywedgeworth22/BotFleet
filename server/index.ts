@@ -181,6 +181,7 @@ import {
   type CloudBackend,
   type InstanceConfigMap,
   type ModelSelection,
+  type EffortLevel,
   type ProviderInstance,
   type RequestOutcome,
   type RuntimeEvent,
@@ -248,7 +249,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
-import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
+import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
   ensureWorkspace,
@@ -2423,7 +2424,7 @@ bus.subscribe((event: RuntimeEvent) => {
         let chain = configuredChain && configuredChain.length > 0 ? configuredChain : undefined;
         if (!chain && quotaOrCap) {
           deferredAutoFallback = true;
-          chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+          chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId, actualSelection.effort);
         }
         // A provider reload fences every dispatch, including a fallback to an
         // unrelated instance.  Keep this completion fold and its busy owner
@@ -2444,7 +2445,7 @@ bus.subscribe((event: RuntimeEvent) => {
               await waitForProviderReloads();
             }
             const refreshedAt = providerReloadGeneration;
-            chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+            chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId, actualSelection.effort);
             if (!providerReloadInProgress && providerReloadGeneration === refreshedAt) break;
           }
         }
@@ -2686,12 +2687,13 @@ bus.subscribe((event: RuntimeEvent) => {
  * instance (by fleet priority) is offered as a one-step chain. The caller
  * still runs it through selectTurnFallback, so the produced / quota /
  * stop-reason rules apply exactly as they do for a configured chain. */
-async function autoFallbackChain(botId: string, currentInstanceId: string): Promise<ModelSelection[]> {
+async function autoFallbackChain(botId: string, currentInstanceId: string, effort?: EffortLevel): Promise<ModelSelection[]> {
   try {
     const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
     return eligibleAutoFallbackChain(described, {
       botId,
       currentInstanceId,
+      effort,
       // The fleet ladder itself lives in model-fallback.ts so the ordering
       // is unit-testable without booting the server — minimax sits after
       // codex and ahead of openaiCompat, per the PR 10 owner decision.
@@ -3215,6 +3217,9 @@ async function startTurn(
     // driver gets this for free by declaring it.
     replaysNatively: instance.adapter.capabilities.replaysTranscript === true,
   });
+  const driverTranscript = instance.adapter.capabilities.replaysTranscript === true
+    ? boundNativeTranscript(transcript)
+    : transcript;
 
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
@@ -3523,7 +3528,7 @@ async function startTurn(
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
         resumeCursor: resume ? task.resumeCursors[instanceId] : undefined,
-        transcript,
+        transcript: driverTranscript,
         // `buildTurnTools` only returns tool surfaces the harness can
         // actually execute in-process: agents, host computer, fleet
         // recall, phone, and github today.  Composio and real GUI/cloud
@@ -4130,14 +4135,14 @@ const groupQueues = new Map<string, Promise<void>>();
 const GROUP_CONTEXT_MESSAGES = 30;
 const MAX_GROUP_HOPS = 1;
 
-function serializeRoomContext(threadId: string, userName: string): string {
+function serializeRoomContext(threadId: string, userName: string, preserveNewest = true): string {
   const messages = store.messagesFor(threadId);
   const messagesById = new Map(messages.map((message) => [message.id, message]));
-  return messages
+  const lines = messages
     .filter((m) => m.kind === "text" && m.text)
     .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
-    .join("\n");
+    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`);
+  return boundRoomContextLines(lines, preserveNewest);
 }
 
 
@@ -4817,7 +4822,7 @@ async function runGroupMemberTurn(
     .filter(Boolean)
     .join("\n");
 
-  const text = `${serializeRoomContext(threadId, userName)}\n\n(Reply to the conversation above as ${bot.name}.)${
+  const text = `${serializeRoomContext(threadId, userName, !cardContinuation)}\n\n(Reply to the conversation above as ${bot.name}.)${
     cardContinuation ? `\n\n${cardContinuation}` : ""
   }`;
 
