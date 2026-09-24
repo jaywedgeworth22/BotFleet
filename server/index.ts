@@ -10465,7 +10465,7 @@ const server = createServer(async (req, res) => {
           : migrateAllowedComputersToProviders(allowedBotComputers(cfg)).providers;
         if (computerProvidersStale(body.expectedComputerProviders, current)) {
           return json(res, 409, {
-            error: "Provider settings changed in another window. Review them and try again.",
+            error: "Provider settings changed in another window.\u00a0 Review them and try again.",
             code: "computer_providers_stale",
             config: configStatus(),
           });
