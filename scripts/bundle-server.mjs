@@ -40,6 +40,12 @@ const yamlEsmPlugin = {
   },
 };
 
+// Both the harness and the standalone MCP bundle lazy-load @sentry/node.
+// Its CommonJS parts can require Node built-ins after esbuild emits ESM.
+const nodeRequireBanner = {
+  js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);',
+};
+
 // Every file run as its own process. Keep in sync with the spawn sites above.
 const ENTRY_POINTS = [
   "index.ts",
@@ -68,10 +74,8 @@ await build({
   platform: "node",
   target: "node20",
   format: "esm",
-  // Some bundled CommonJS dependencies (including @sentry/node) still call
-  // require() for Node built-ins.  esbuild's ESM shim needs a real require in
-  // scope; the packaged app has no node_modules to externalize them instead.
-  banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
+  // The packaged app has no node_modules, so these dependencies stay bundled.
+  banner: nodeRequireBanner,
   outbase: server,
   outdir: join(root, "dist-server"),
   // Written after tsc, replacing its output for these entry points.
@@ -91,6 +95,7 @@ await build({
   target: "node20",
   format: "esm",
   outfile: join(root, "dist-server", "mcp-server.js"),
+  banner: nodeRequireBanner,
   allowOverwrite: true,
   logLevel: "info",
 });
