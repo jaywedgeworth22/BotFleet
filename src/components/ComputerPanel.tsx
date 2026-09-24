@@ -409,10 +409,13 @@ export function ComputerPanel({
   // idle bot — a drawer left open overnight must not keep shooting.
   const pageVisible = usePageVisible();
   const live = state.screens[bot.id];
-  const sseFlowing = Boolean(bot.busy && live);
+  const [screenStreamState, setScreenStreamState] = useState<"connecting" | "connected" | "failed">("connecting");
   useEffect(() => {
     if (phase !== "ready" || viewerOpen || !pageVisible) return;
+    setScreenStreamState("connecting");
     const stream = new EventSource(`/api/events?screens=on&botId=${encodeURIComponent(bot.id)}`);
+    stream.onopen = () => setScreenStreamState("connected");
+    stream.onerror = () => setScreenStreamState("failed");
     stream.onmessage = (event) => {
       try {
         const parsed = liveScreenFrame.safeParse(JSON.parse(event.data));
@@ -428,7 +431,7 @@ export function ComputerPanel({
   }, [phase, viewerOpen, pageVisible, bot.id, dispatch]);
   const inFlight = useRef(false);
   useEffect(() => {
-    if (phase !== "ready" || bot.busy || sseFlowing || viewerOpen || !pageVisible) return;
+    if (phase !== "ready" || (bot.busy && screenStreamState !== "failed") || viewerOpen || !pageVisible) return;
     let alive = true;
     const shoot = async () => {
       if (inFlight.current) return;
@@ -448,7 +451,7 @@ export function ComputerPanel({
       alive = false;
       clearInterval(timer);
     };
-  }, [phase, sseFlowing, bot.id, viewerOpen, pageVisible, bot.busy]);
+  }, [phase, screenStreamState, bot.id, viewerOpen, pageVisible, bot.busy]);
 
   // Local VM preview comes directly from Cua Driver through the harness. It
   // does not use the password-protected noVNC viewer or cloud endpoints.
