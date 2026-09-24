@@ -391,18 +391,16 @@ export function isSentryWebhookPayload(payload: JsonValue): boolean {
   const event = asRecord(data.event);
   if (
     issue &&
-    (pickStr(issue, "shortId") ||
-      (issue.project !== undefined && typeof issue.project === "object") ||
+    (pickStr(issue, "shortId") !== undefined ||
       pickStr(issue, "culprit") !== undefined ||
-      pickStr(issue, "platform") !== undefined ||
-      (pickStr(issue, "id") !== undefined && (issue.level !== undefined || issue.metadata !== undefined)))
+      (typeof issue.permalink === "string" && issue.permalink.includes("sentry.io")))
   ) {
     return true;
   }
   if (
     event &&
-    (pickStr(event, "event_id") ||
-      (pickStr(event, "id") && event.project !== undefined && typeof event.project === "object"))
+    (pickStr(event, "event_id") !== undefined ||
+      (typeof event.url === "string" && event.url.includes("sentry.io")))
   ) {
     return true;
   }
@@ -564,6 +562,8 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
   if (event) {
     assignDefined(out, "event_type", pickStr(event, "event_type"));
     assignDefined(out, "occurred_at", pickStr(event, "occurred_at"));
+    const agent = slimPagerDutyUser(event.agent);
+    if (agent) out.agent = agent;
     const data = asRecord(event.data);
     const incident = slimPagerDutyIncident(data ?? event);
     if (incident) out.incident = incident;
@@ -576,6 +576,8 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
       const sMsg: Record<string, JsonValue> = {};
       assignDefined(sMsg, "event", pickStr(msgRec, "event") ?? pickStr(msgRec, "type"));
       assignDefined(sMsg, "id", pickStr(msgRec, "id"));
+      const agent = slimPagerDutyUser(msgRec.agent);
+      if (agent) sMsg.agent = agent;
       const inc = slimPagerDutyIncident(msgRec.incident);
       if (inc) sMsg.incident = inc;
       if (Object.keys(sMsg).length) slimmedMessages.push(sMsg);
@@ -584,6 +586,7 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
       out.messages = slimmedMessages;
       const first = slimmedMessages[0];
       assignDefined(out, "event_type", pickStr(first, "event"));
+      if (first.agent) out.agent = first.agent;
     }
   }
 

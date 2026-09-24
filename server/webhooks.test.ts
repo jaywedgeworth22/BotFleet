@@ -498,6 +498,15 @@ describe("WebhookManager", () => {
     });
     const pluralResult = h.manager.receive(pluralHook.endpointId, pluralSecret, clauseWarning);
     expect(pluralResult).toMatchObject({ ignored: true });
+
+    // 14. "Warning events are out of scope; act on errors" (target-first declarative form) should ignore warning events
+    const { webhook: targetFirstHook, secret: targetFirstSecret } = h.manager.create({
+      name: "Target First Warning Ignorer",
+      prompt: "Warning events are out of scope; act on errors.",
+      botId: "maus-1",
+    });
+    const targetFirstResult = h.manager.receive(targetFirstHook.endpointId, targetFirstSecret, clauseWarning);
+    expect(targetFirstResult).toMatchObject({ ignored: true });
     expect(dropNounResult.runId).toBeDefined();
   });
 });

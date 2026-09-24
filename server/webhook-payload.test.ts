@@ -185,11 +185,20 @@ describe("slimWebhookPayload", () => {
   it("does not treat a Sentry issue payload as GitHub", () => {
     const payload = {
       action: "unresolved",
-      data: { issue: { title: "Cron failure", project: { slug: "fleet-infra" } } },
+      data: { issue: { title: "Cron failure", shortId: "FLEET-1", project: { slug: "fleet-infra" } } },
     };
     expect(isGithubWebhookPayload(payload)).toBe(false);
     expect(isSentryWebhookPayload(payload)).toBe(true);
     expect(serializeWebhookPayload(payload)).toContain("fleet-infra");
+  });
+
+  it("does not classify generic issue payloads as Sentry without provider-exclusive markers", () => {
+    const generic = {
+      data: { issue: { project: { id: "p" }, title: "Alert", details: { foo: "bar" } } },
+    };
+    expect(isSentryWebhookPayload(generic)).toBe(false);
+    expect(slimWebhookPayload(generic)).toEqual(generic);
+    expect(serializeWebhookPayload(generic)).toContain("foo");
   });
 
   it("slims a fat Sentry issue webhook and drops breadcrumbs and raw headers", () => {
@@ -383,6 +392,12 @@ describe("slimWebhookPayload", () => {
     const reassignedPd = {
       event: {
         event_type: "incident.reassigned",
+        agent: {
+          id: "PUSER_AG",
+          summary: "Auto Escalator",
+          type: "user_reference",
+          extra: "agent_bloat".repeat(20),
+        },
         data: {
           id: "INC-REASSIGN",
           title: "Database failover required",
@@ -403,6 +418,12 @@ describe("slimWebhookPayload", () => {
     };
     expect(isPagerDutyWebhookPayload(reassignedPd)).toBe(true);
     const slim = slimWebhookPayload(reassignedPd) as Record<string, JsonValue>;
+    expect(slim.agent).toEqual({
+      id: "PUSER_AG",
+      summary: "Auto Escalator",
+      name: "Auto Escalator",
+      type: "user_reference",
+    });
     const inc = slim.incident as Record<string, JsonValue>;
     expect(inc.title).toBe("Database failover required");
     const assignments = inc.assignments as Record<string, JsonValue>[];
@@ -415,6 +436,7 @@ describe("slimWebhookPayload", () => {
       type: "user_reference",
     });
     expect(JSON.stringify(slim)).not.toContain("extra_bloat");
+    expect(JSON.stringify(slim)).not.toContain("agent_bloat");
   });
 
   it("does not classify unrelated payloads with an incident property as PagerDuty without an event marker", () => {

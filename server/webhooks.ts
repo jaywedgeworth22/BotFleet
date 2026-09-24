@@ -343,11 +343,15 @@ export function shouldIgnoreWebhookEvent(
       // warnings.  Commas are not boundaries, so stop the scan at the
       // exception word itself.
       const exceptionBoundary = String.raw`(?:except|but|other\s+than|apart\s+from|aside\s+from)`;
-      const clausePattern = new RegExp(
+      const verbFirstPattern = new RegExp(
         `${exclusionVerb}(?:(?!\\b${exceptionBoundary}\\b)[^.;\\n])*?\\b${lvl}s?\\b`,
         "i",
       );
-      if (!clausePattern.test(prompt)) return false;
+      const targetFirstPattern = new RegExp(
+        `\\b${lvl}s?\\b(?:(?!\\b${exceptionBoundary}\\b)[^.;\\n])*?${exclusionVerb}`,
+        "i",
+      );
+      if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
 
       // Positive investigation verbs override exclusion only when they specifically target this level
       const contrastingVerb = `\\b(?:investigate|act|handle|fix|resolve|watch|monitor|track)\\b`;
@@ -364,7 +368,7 @@ export function shouldIgnoreWebhookEvent(
       if (interveningPattern.test(prompt)) return false;
 
       const negationPattern = new RegExp(
-        `(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b`,
+        `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b|\\b${lvl}s?\\b[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb})`,
         "i",
       );
       if (negationPattern.test(prompt)) return false;
@@ -384,11 +388,15 @@ export function shouldIgnoreWebhookEvent(
       const isAssignmentExcluded = (): boolean => {
         const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden)\\s+)drop(?!\\s+in\\b))`;
         const assignmentTarget = `\\b(?:assign(?:ed|ment|ee)?s?|ownership)\\b`;
-        const clausePattern = new RegExp(
+        const verbFirstPattern = new RegExp(
           `${exclusionVerb}[^.;\\n]*?${assignmentTarget}`,
           "i",
         );
-        if (!clausePattern.test(prompt)) return false;
+        const targetFirstPattern = new RegExp(
+          `${assignmentTarget}[^.;\\n]*?${exclusionVerb}`,
+          "i",
+        );
+        if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
 
         const contrastingVerb = `\\b(?:investigate|act|handle|fix|resolve|watch|monitor|track)\\b`;
         const positiveTargetsAssignment = new RegExp(
@@ -404,7 +412,7 @@ export function shouldIgnoreWebhookEvent(
         if (interveningPattern.test(prompt)) return false;
 
         const negationPattern = new RegExp(
-          `(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}`,
+          `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}|${assignmentTarget}[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb})`,
           "i",
         );
         return !negationPattern.test(prompt);
