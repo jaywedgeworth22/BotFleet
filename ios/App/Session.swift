@@ -155,21 +155,22 @@ final class Session: ObservableObject {
     /// for the same attachment path.
     private var avatarFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
     private var avatarCacheGeneration = 0
-    /// One-in-flight feature PATCH chain with latest-wins coalesce.  Rapid
-    /// toggle flips share pending field values so the server sees user order;
-    /// a generation guard alone only picked which response updated the UI.
-    /// Queued work is pairing-bound and cleared on sign-out / re-pair.
-    private var featuresUpdateTail: Task<ConfigStatus?, Never>?
-    private var featuresUpdateGeneration = 0
+    /// One-in-flight settings PATCH chain shared by features, profile, and
+    /// roomTurnTimeout.  Concurrent cross-type saves each return a full
+    /// ConfigStatus; a shared tail keeps those assignments ordered so an older
+    /// snapshot cannot finish last and regress session.config.  Field-level
+    /// coalesce remains per endpoint; queued work is pairing-bound and cleared
+    /// on sign-out / re-pair.
+    private var settingsUpdateTail: Task<ConfigStatus?, Never>?
+    private var settingsUpdateGeneration = 0
     private var pendingFeaturesShowToolCalls: Bool?
     private var pendingFeaturesSummarizeToolCalls: Bool?
-    /// Same serialize + coalesce pattern for profile name/email autosaves.
-    private var profileUpdateTail: Task<ConfigStatus?, Never>?
-    private var profileUpdateGeneration = 0
     private var pendingProfileName: String?
     private var pendingProfileEmail: String?
     private var pendingProfileHasName = false
     private var pendingProfileHasEmail = false
+    private var pendingRoomTurnTimeoutMinutes: Int?
+    private var pendingRoomTurnTimeout = false
     /// A saved connection exists, but its token could not be read yet. Keeps
     /// "the keychain is locked" from being mistaken for "not paired".
     private var restorePending = false
@@ -216,8 +217,8 @@ final class Session: ObservableObject {
         Task { await refreshNotificationAuthorization() }
     }
 
-    /// Drop coalesced feature/profile PATCHes when the paired computer changes
-    /// so a queued name, email, or toggle cannot land on the next pairing.
+    /// Drop coalesced settings PATCHes when the paired computer changes so a
+    /// queued name, email, toggle, or timeout cannot land on the next pairing.
     private func cancelPendingSettingsMutations() {
         pendingFeaturesShowToolCalls = nil
         pendingFeaturesSummarizeToolCalls = nil
@@ -225,8 +226,9 @@ final class Session: ObservableObject {
         pendingProfileEmail = nil
         pendingProfileHasName = false
         pendingProfileHasEmail = false
-        featuresUpdateGeneration += 1
-        profileUpdateGeneration += 1
+        pendingRoomTurnTimeoutMinutes = nil
+        pendingRoomTurnTimeout = false
+        settingsUpdateGeneration += 1
     }
 
     /// Rebuild the last connection at launch.
@@ -1629,62 +1631,17 @@ final class Session: ObservableObject {
         if let summarizeToolCalls {
             pendingFeaturesSummarizeToolCalls = summarizeToolCalls
         }
-        featuresUpdateGeneration += 1
-        let generation = featuresUpdateGeneration
-        let enqueuePairing = pairingGeneration
-        let previous = featuresUpdateTail
-        let task = Task<ConfigStatus?, Never> { @MainActor in
-            _ = await previous?.value
-            // Latest-wins: a newer call already coalesced our fields into pending*.
-            guard self.featuresUpdateGeneration == generation else { return nil }
-            guard self.pairingGeneration == enqueuePairing else { return nil }
-            let show = self.pendingFeaturesShowToolCalls
-            let summarize = self.pendingFeaturesSummarizeToolCalls
-            self.pendingFeaturesShowToolCalls = nil
-            self.pendingFeaturesSummarizeToolCalls = nil
-            guard show != nil || summarize != nil else { return self.config }
-            guard let client = self.client else { return nil }
-            do {
-                let updated = try await client.updateFeatures(
-                    showToolCalls: show,
-                    summarizeToolCalls: summarize
-                )
-                // Keep a confirmed server apply for this pairing even when a
-                // newer queued mutation superseded us; otherwise a later failure
-                // would leave switches at pre-update values after an earlier
-                // PATCH already persisted.
-                guard self.pairingGeneration == enqueuePairing else { return updated }
-                self.config = updated
-                return updated
-            } catch {
-                guard self.featuresUpdateGeneration == generation else { return nil }
-                guard self.pairingGeneration == enqueuePairing else { return nil }
-                self.recordActionError(error)
-                // Earlier coalesced work may have landed; refresh so UI matches.
-                if let status = try? await client.config(),
-                   self.pairingGeneration == enqueuePairing,
-                   self.featuresUpdateGeneration == generation {
-                    self.config = status
-                    return status
-                }
-                return nil
-            }
+        guard pendingFeaturesShowToolCalls != nil || pendingFeaturesSummarizeToolCalls != nil else {
+            return config
         }
-        featuresUpdateTail = task
-        return await task.value
+        return await enqueueSettingsUpdate()
     }
 
     @MainActor
     func updateRoomTurnTimeout(minutes: Int) async -> ConfigStatus? {
-        guard let client else { return nil }
-        do {
-            let updated = try await client.updateRoomTurnTimeout(minutes: minutes)
-            self.config = updated
-            return updated
-        } catch {
-            recordActionError(error)
-            return nil
-        }
+        pendingRoomTurnTimeoutMinutes = minutes
+        pendingRoomTurnTimeout = true
+        return await enqueueSettingsUpdate()
     }
 
     @MainActor
@@ -1699,44 +1656,221 @@ final class Session: ObservableObject {
             pendingProfileHasEmail = true
         }
         guard pendingProfileHasName || pendingProfileHasEmail else { return config }
-        profileUpdateGeneration += 1
-        let generation = profileUpdateGeneration
+        return await enqueueSettingsUpdate()
+    }
+
+    /// Chain one settings flush behind any in-flight features/profile/timeout
+    /// work.  The latest generation drains every pending field group so a
+    /// superseded task cannot leave another endpoint's coalesce stranded.
+    @MainActor
+    private func enqueueSettingsUpdate() async -> ConfigStatus? {
+        settingsUpdateGeneration += 1
+        let generation = settingsUpdateGeneration
         let enqueuePairing = pairingGeneration
-        let previous = profileUpdateTail
+        let previous = settingsUpdateTail
         let task = Task<ConfigStatus?, Never> { @MainActor in
             _ = await previous?.value
-            guard self.profileUpdateGeneration == generation else { return nil }
+            // Latest-wins: a newer enqueue already holds our coalesced fields.
+            guard self.settingsUpdateGeneration == generation else { return nil }
             guard self.pairingGeneration == enqueuePairing else { return nil }
-            let sendName = self.pendingProfileHasName ? self.pendingProfileName : nil
-            let sendEmail = self.pendingProfileHasEmail ? self.pendingProfileEmail : nil
-            self.pendingProfileHasName = false
-            self.pendingProfileHasEmail = false
-            self.pendingProfileName = nil
-            self.pendingProfileEmail = nil
-            guard sendName != nil || sendEmail != nil else { return self.config }
-            guard let client = self.client else { return nil }
+            return await self.flushPendingSettingsMutations(
+                enqueuePairing: enqueuePairing,
+                generation: generation
+            )
+        }
+        settingsUpdateTail = task
+        return await task.value
+    }
+
+
+    /// After a mid-flush supersede, restore profile fields that were snapshotted
+    /// but never PATCHed, skipping any field a newer call already coalesced.
+    @MainActor
+    private func requeueUnsentProfileAfterSupersede(
+        sendName: String?,
+        sendEmail: String?,
+        hadProfile: Bool
+    ) {
+        guard hadProfile else { return }
+        if let sendName, !pendingProfileHasName {
+            pendingProfileName = sendName
+            pendingProfileHasName = true
+        }
+        if let sendEmail, !pendingProfileHasEmail {
+            pendingProfileEmail = sendEmail
+            pendingProfileHasEmail = true
+        }
+    }
+
+    @MainActor
+    private func requeueUnsentTimeoutAfterSupersede(
+        timeoutMinutes: Int?,
+        hadTimeout: Bool
+    ) {
+        guard hadTimeout, let timeoutMinutes, !pendingRoomTurnTimeout else { return }
+        pendingRoomTurnTimeoutMinutes = timeoutMinutes
+        pendingRoomTurnTimeout = true
+    }
+
+    /// Snapshot and send whatever settings fields are pending, in a fixed order.
+    /// Confirmed applies still update `config` for this pairing; a mid-flush
+    /// generation bump stops further PATCHes so the newer tail can drain what
+    /// remains (including requeued profile fields after a superseded failure).
+    @MainActor
+    private func flushPendingSettingsMutations(
+        enqueuePairing: Int,
+        generation: Int
+    ) async -> ConfigStatus? {
+        let show = pendingFeaturesShowToolCalls
+        let summarize = pendingFeaturesSummarizeToolCalls
+        pendingFeaturesShowToolCalls = nil
+        pendingFeaturesSummarizeToolCalls = nil
+
+        let sendName = pendingProfileHasName ? pendingProfileName : nil
+        let sendEmail = pendingProfileHasEmail ? pendingProfileEmail : nil
+        let hadProfile = pendingProfileHasName || pendingProfileHasEmail
+        pendingProfileHasName = false
+        pendingProfileHasEmail = false
+        pendingProfileName = nil
+        pendingProfileEmail = nil
+
+        let timeoutMinutes = pendingRoomTurnTimeout ? pendingRoomTurnTimeoutMinutes : nil
+        let hadTimeout = pendingRoomTurnTimeout
+        pendingRoomTurnTimeout = false
+        pendingRoomTurnTimeoutMinutes = nil
+
+        guard show != nil || summarize != nil || hadProfile || hadTimeout else {
+            return config
+        }
+        guard let client else { return nil }
+
+        var latest = config
+
+        if show != nil || summarize != nil {
             do {
-                let updated = try await client.updateProfile(name: sendName, email: sendEmail)
-                // Same pairing-bound apply as features: a confirmed PATCH must
-                // not be dropped solely because a later queued edit superseded us.
-                guard self.pairingGeneration == enqueuePairing else { return updated }
-                self.config = updated
-                return updated
+                let updated = try await client.updateFeatures(
+                    showToolCalls: show,
+                    summarizeToolCalls: summarize
+                )
+                guard pairingGeneration == enqueuePairing else { return updated }
+                config = updated
+                latest = updated
             } catch {
-                guard self.profileUpdateGeneration == generation else { return nil }
-                guard self.pairingGeneration == enqueuePairing else { return nil }
-                self.recordActionError(error)
-                if let status = try? await client.config(),
-                   self.pairingGeneration == enqueuePairing,
-                   self.profileUpdateGeneration == generation {
-                    self.config = status
-                    return status
+                guard pairingGeneration == enqueuePairing else { return latest }
+                if settingsUpdateGeneration != generation {
+                    // Newer enqueue owns the queue; put failed toggles back only
+                    // when a later call has not already coalesced that field.
+                    if show != nil, pendingFeaturesShowToolCalls == nil {
+                        pendingFeaturesShowToolCalls = show
+                    }
+                    if summarize != nil, pendingFeaturesSummarizeToolCalls == nil {
+                        pendingFeaturesSummarizeToolCalls = summarize
+                    }
+                    requeueUnsentProfileAfterSupersede(
+                        sendName: sendName,
+                        sendEmail: sendEmail,
+                        hadProfile: hadProfile
+                    )
+                    requeueUnsentTimeoutAfterSupersede(
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: hadTimeout
+                    )
+                    return latest
                 }
-                return nil
+                recordActionError(error)
+                // Keep going so a feature failure does not drop a pending
+                // profile or timeout that shared this flush snapshot.
+                if let status = try? await client.config(),
+                   pairingGeneration == enqueuePairing,
+                   settingsUpdateGeneration == generation {
+                    config = status
+                    latest = status
+                }
+            }
+            if settingsUpdateGeneration != generation || pairingGeneration != enqueuePairing {
+                // Stop mid-flush; put unsent profile/timeout snapshots back
+                // unless a newer enqueue already coalesced those fields.
+                requeueUnsentProfileAfterSupersede(
+                    sendName: sendName,
+                    sendEmail: sendEmail,
+                    hadProfile: hadProfile
+                )
+                requeueUnsentTimeoutAfterSupersede(
+                    timeoutMinutes: timeoutMinutes,
+                    hadTimeout: hadTimeout
+                )
+                return latest
             }
         }
-        profileUpdateTail = task
-        return await task.value
+
+        if hadProfile, sendName != nil || sendEmail != nil {
+            do {
+                let updated = try await client.updateProfile(name: sendName, email: sendEmail)
+                guard pairingGeneration == enqueuePairing else { return updated }
+                config = updated
+                latest = updated
+            } catch {
+                guard pairingGeneration == enqueuePairing else { return latest }
+                if settingsUpdateGeneration != generation {
+                    // Superseded failure: restore in-flight fields the newer
+                    // coalesce did not already replace so the queued tail sends
+                    // them instead of silently dropping a dirty name/email.
+                    requeueUnsentProfileAfterSupersede(
+                        sendName: sendName,
+                        sendEmail: sendEmail,
+                        hadProfile: true
+                    )
+                    requeueUnsentTimeoutAfterSupersede(
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: hadTimeout
+                    )
+                    return latest
+                }
+                recordActionError(error)
+                // Continue so a pending timeout in this snapshot still sends.
+                if let status = try? await client.config(),
+                   pairingGeneration == enqueuePairing,
+                   settingsUpdateGeneration == generation {
+                    config = status
+                    latest = status
+                }
+            }
+            if settingsUpdateGeneration != generation || pairingGeneration != enqueuePairing {
+                requeueUnsentTimeoutAfterSupersede(
+                    timeoutMinutes: timeoutMinutes,
+                    hadTimeout: hadTimeout
+                )
+                return latest
+            }
+        }
+
+        if hadTimeout, let timeoutMinutes {
+            do {
+                let updated = try await client.updateRoomTurnTimeout(minutes: timeoutMinutes)
+                guard pairingGeneration == enqueuePairing else { return updated }
+                config = updated
+                latest = updated
+            } catch {
+                guard pairingGeneration == enqueuePairing else { return latest }
+                if settingsUpdateGeneration != generation {
+                    requeueUnsentTimeoutAfterSupersede(
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: true
+                    )
+                    return latest
+                }
+                recordActionError(error)
+                if let status = try? await client.config(),
+                   pairingGeneration == enqueuePairing,
+                   settingsUpdateGeneration == generation {
+                    config = status
+                    return status
+                }
+                return latest
+            }
+        }
+
+        return latest
     }
 
     func instances() async -> [Instance] {
