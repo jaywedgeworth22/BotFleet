@@ -10377,6 +10377,75 @@ const server = createServer(async (req, res) => {
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
     }
+    // Feature toggles are not credentials, so the phone gets a narrow route
+    // rather than write access to /api/config (which carries API keys).
+    if (method === "PATCH" && path === "/api/features") {
+      const body = await readBody(req);
+      const featurePatch = {
+        ...(typeof body.showToolCalls === "boolean" ? { showToolCalls: body.showToolCalls } : {}),
+        ...(typeof body.summarizeToolCalls === "boolean" ? { summarizeToolCalls: body.summarizeToolCalls } : {}),
+      };
+      if (Object.keys(featurePatch).length === 0) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      const patch = parseConfigPatch({ features: featurePatch });
+      if (patch.features === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.features = { ...cfg.features, ...patch.features };
+      saveConfig({ features: cfg.features });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
+    // Channel turn length is a display preference, not a credential.
+    if (method === "PATCH" && path === "/api/room-turn-timeout") {
+      const body = await readBody(req);
+      if (
+        typeof body.turnTimeoutMinutes !== "number" ||
+        !Number.isInteger(body.turnTimeoutMinutes)
+      ) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      let patch;
+      try {
+        patch = parseConfigPatch({
+          rooms: { turnTimeoutMinutes: body.turnTimeoutMinutes },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid configuration";
+        return json(res, 400, { error: message });
+      }
+      if (patch.rooms?.turnTimeoutMinutes === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.rooms = { ...cfg.rooms, turnTimeoutMinutes: patch.rooms.turnTimeoutMinutes };
+      saveConfig({ rooms: cfg.rooms });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
+    // Profile name + email only. Skins stay on the Mac.
+    if (method === "PATCH" && path === "/api/profile") {
+      const body = await readBody(req);
+      const patch = parseConfigPatch({
+        profile: {
+          name: typeof body.name === "string" ? body.name : undefined,
+          email: typeof body.email === "string" ? body.email : undefined,
+        },
+      });
+      if (patch.profile === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.profile = {
+        name: patch.profile.name ?? cfg.profile?.name ?? "",
+        email: patch.profile.email ?? cfg.profile?.email ?? "",
+      };
+      saveConfig({ profile: cfg.profile });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
     // ── apply workspace defaults to every bot ──────────────────────────
     // The "Set all bots to default" buttons on the Computers and Models
     // settings pages.  Both endpoints validate the workspace defaults first

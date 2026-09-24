@@ -1590,6 +1590,48 @@ final class Session: ObservableObject {
         }
     }
 
+    @MainActor
+    func updateFeatures(showToolCalls: Bool? = nil, summarizeToolCalls: Bool? = nil) async -> ConfigStatus? {
+        guard let client else { return nil }
+        do {
+            let updated = try await client.updateFeatures(
+                showToolCalls: showToolCalls,
+                summarizeToolCalls: summarizeToolCalls
+            )
+            self.config = updated
+            return updated
+        } catch {
+            recordActionError(error)
+            return nil
+        }
+    }
+
+    @MainActor
+    func updateRoomTurnTimeout(minutes: Int) async -> ConfigStatus? {
+        guard let client else { return nil }
+        do {
+            let updated = try await client.updateRoomTurnTimeout(minutes: minutes)
+            self.config = updated
+            return updated
+        } catch {
+            recordActionError(error)
+            return nil
+        }
+    }
+
+    @MainActor
+    func updateProfile(name: String, email: String) async -> ConfigStatus? {
+        guard let client else { return nil }
+        do {
+            let updated = try await client.updateProfile(name: name, email: email)
+            self.config = updated
+            return updated
+        } catch {
+            recordActionError(error)
+            return nil
+        }
+    }
+
     func instances() async -> [Instance] {
         guard let client else { return [] }
         let generation = pairingGeneration

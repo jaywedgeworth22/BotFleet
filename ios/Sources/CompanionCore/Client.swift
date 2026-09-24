@@ -748,6 +748,73 @@ public struct CompanionClient: Sendable {
         )
     }
 
+    /// Show Tool Calls / Summarize Bot Tasks.  Phone-safe narrow route — the
+    /// companion refuses writes to `/api/config` because that path also
+    /// carries API keys.
+    public func updateFeatures(
+        showToolCalls: Bool? = nil,
+        summarizeToolCalls: Bool? = nil
+    ) async throws -> ConfigStatus {
+        struct FeaturesBody: Encodable {
+            let showToolCalls: Bool?
+            let summarizeToolCalls: Bool?
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                if let showToolCalls { try container.encode(showToolCalls, forKey: .showToolCalls) }
+                if let summarizeToolCalls { try container.encode(summarizeToolCalls, forKey: .summarizeToolCalls) }
+            }
+
+            enum CodingKeys: String, CodingKey {
+                case showToolCalls
+                case summarizeToolCalls
+            }
+        }
+        return try await send(
+            try makeRequest(
+                "PATCH",
+                "/api/features",
+                encodedBody: FeaturesBody(
+                    showToolCalls: showToolCalls,
+                    summarizeToolCalls: summarizeToolCalls
+                )
+            ),
+            as: ConfigStatus.self
+        )
+    }
+
+    /// Room Turn Timeout, in whole minutes.  Same phone-safe pattern as
+    /// terminology — never opens `/api/config` to a paired device.
+    public func updateRoomTurnTimeout(minutes: Int) async throws -> ConfigStatus {
+        struct Body: Encodable {
+            let turnTimeoutMinutes: Int
+        }
+        return try await send(
+            try makeRequest(
+                "PATCH",
+                "/api/room-turn-timeout",
+                encodedBody: Body(turnTimeoutMinutes: minutes)
+            ),
+            as: ConfigStatus.self
+        )
+    }
+
+    /// Profile name + email only.  Skins and avatars stay on the Mac.
+    public func updateProfile(name: String, email: String) async throws -> ConfigStatus {
+        struct Body: Encodable {
+            let name: String
+            let email: String
+        }
+        return try await send(
+            try makeRequest(
+                "PATCH",
+                "/api/profile",
+                encodedBody: Body(name: name, email: email)
+            ),
+            as: ConfigStatus.self
+        )
+    }
+
     public func connectorCatalog() async throws -> ConnectorCatalog {
         try await send(try makeRequest("GET", "/api/connectors/catalog"), as: ConnectorCatalog.self)
     }

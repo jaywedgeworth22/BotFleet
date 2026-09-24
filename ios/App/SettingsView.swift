@@ -9,6 +9,14 @@ struct SettingsView: View {
     @State private var enablingNotifications = false
     @State private var confirmSimpleMerge = false
     @State private var refreshingPushHealth = false
+    @State private var engines: [Instance] = []
+    @State private var loadingEngines = false
+    @State private var engineSheet: Instance?
+    @State private var profileName = ""
+    @State private var profileEmail = ""
+    @State private var roomTimeoutText = "5"
+    @State private var roomTimeoutError = ""
+    @State private var savingRoomTimeout = false
     private let onConnect: (() -> Void)?
 
     init(onConnect: (() -> Void)? = nil) {
@@ -153,10 +161,107 @@ struct SettingsView: View {
                     if session.config?.terminology == "custom" {
                         CustomRoomTermFields(session: session)
                     }
+
+                    Toggle(isOn: showToolCallsBinding) {
+                        Label {
+                            Text("Show Tool Calls")
+                        } icon: {
+                            SettingsIcon(symbol: "wrench.and.screwdriver", color: .purple)
+                        }
+                    }
+
+                    Toggle(isOn: summarizeToolCallsBinding) {
+                        Label {
+                            Text("Summarize Bot Tasks")
+                        } icon: {
+                            SettingsIcon(symbol: "rectangle.stack", color: .mint)
+                        }
+                    }
                 } header: {
                     Text("Workspace")
                 } footer: {
                     Text(workspaceFooter)
+                }
+
+                Section {
+                    HStack {
+                        Label {
+                            Text("Channel Turn Timeout")
+                        } icon: {
+                            SettingsIcon(symbol: "timer", color: .orange)
+                        }
+                        Spacer()
+                        TextField("5", text: $roomTimeoutText)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 72)
+                            .disabled(savingRoomTimeout)
+                            .onSubmit { Task { await saveRoomTimeout() } }
+                        Text("min")
+                            .foregroundStyle(.secondary)
+                        Button("Save") {
+                            Task { await saveRoomTimeout() }
+                        }
+                        .disabled(savingRoomTimeout)
+                    }
+                    if !roomTimeoutError.isEmpty {
+                        Text(roomTimeoutError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Channels")
+                } footer: {
+                    Text("How long a channel turn can run before it stops.")
+                }
+
+                Section {
+                    TextField("Name", text: $profileName)
+                        .textContentType(.name)
+                        .autocorrectionDisabled()
+                        .onSubmit { Task { await saveProfile() } }
+                    TextField("Email", text: $profileEmail)
+                        .textContentType(.emailAddress)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit { Task { await saveProfile() } }
+                } header: {
+                    Text("You")
+                } footer: {
+                    Text("Shown in the sidebar.  Saved when you leave a field.")
+                }
+
+                Section {
+                    if loadingEngines && engines.isEmpty {
+                        HStack {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Loading engines…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if engines.isEmpty {
+                        Text("No engines yet.  Finish setup in the Mac app.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                ForEach(engines) { engine in
+                                    Button {
+                                        engineSheet = engine
+                                    } label: {
+                                        EngineChip(instance: engine)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                } header: {
+                    Text("Engines")
+                } footer: {
+                    Text("Tap an engine to see how to finish setup.  Keys and CLI paths stay on the Mac.")
                 }
             }
         }
@@ -171,6 +276,30 @@ struct SettingsView: View {
             // an actual send anyway).
             if session.connection != nil {
                 await session.refreshPushSenderHealth()
+                await loadSettingsExtras()
+            }
+        }
+        .onChange(of: session.connection?.id) { _, _ in
+            Task { await loadSettingsExtras() }
+        }
+        .onChange(of: session.config?.profile?.name) { _, name in
+            if profileName != (name ?? "") { profileName = name ?? "" }
+        }
+        .onChange(of: session.config?.profile?.email) { _, email in
+            if profileEmail != (email ?? "") { profileEmail = email ?? "" }
+        }
+        .onChange(of: session.config?.rooms?.turnTimeoutMinutes) { _, minutes in
+            if !savingRoomTimeout, let minutes {
+                roomTimeoutText = String(minutes)
+            }
+        }
+        .sheet(item: $engineSheet) { engine in
+            EngineSetupSheet(instance: engine)
+        }
+        .onDisappear {
+            Task {
+                await saveProfile()
+                await saveRoomTimeout()
             }
         }
         .refreshable {
@@ -194,6 +323,65 @@ struct SettingsView: View {
         } message: {
             Text("Simple is one conversation per bot.\u{00A0} Merge extra threads into that conversation, or keep them saved but hidden.")
         }
+    }
+
+    private var showToolCallsBinding: Binding<Bool> {
+        Binding(
+            get: { session.config?.features?.showsToolCalls ?? true },
+            set: { next in
+                Task { _ = await session.updateFeatures(showToolCalls: next) }
+            }
+        )
+    }
+
+    private var summarizeToolCallsBinding: Binding<Bool> {
+        Binding(
+            get: { session.config?.features?.summarizesToolCalls ?? true },
+            set: { next in
+                Task { _ = await session.updateFeatures(summarizeToolCalls: next) }
+            }
+        )
+    }
+
+    private func loadSettingsExtras() async {
+        guard session.connection != nil else {
+            engines = []
+            profileName = ""
+            profileEmail = ""
+            roomTimeoutText = "5"
+            return
+        }
+        if let status = await session.configStatus() {
+            profileName = status.profile?.name ?? ""
+            profileEmail = status.profile?.email ?? ""
+            roomTimeoutText = String(status.rooms?.turnTimeoutMinutes ?? 5)
+        }
+        loadingEngines = true
+        let fetched = await session.instances()
+        engines = fetched.filter(\.isEnabled)
+        loadingEngines = false
+    }
+
+    private func saveProfile() async {
+        let name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let email = profileEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        _ = await session.updateProfile(name: name, email: email)
+    }
+
+    private func saveRoomTimeout() async {
+        let trimmed = roomTimeoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let minutes = Int(trimmed), minutes >= 1, minutes <= 1_440 else {
+            roomTimeoutError = "Enter a whole number from 1 to 1,440."
+            return
+        }
+        roomTimeoutError = ""
+        savingRoomTimeout = true
+        if await session.updateRoomTurnTimeout(minutes: minutes) == nil {
+            roomTimeoutError = "Could not save the channel turn limit."
+        } else {
+            roomTimeoutText = String(minutes)
+        }
+        savingRoomTimeout = false
     }
 
     private var workspaceFooter: String {
@@ -577,5 +765,71 @@ struct CustomRoomTermFields: View {
         if lower.hasSuffix("fe") { return word.dropLast(2) + suffix("ves") }
         if lower.hasSuffix("f"), !lower.hasSuffix("ff") { return word.dropLast() + suffix("ves") }
         return word + suffix("s")
+    }
+}
+
+private struct EngineChip: View {
+    let instance: Instance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(instance.displayName ?? instance.instanceId)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Text(instance.snapshot.engineStatusLabel)
+                .font(.caption)
+                .foregroundStyle(statusColor)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private var statusColor: Color {
+        switch instance.snapshot.engineStatusLabel {
+        case "Ready": return .green
+        case "Sign in": return .orange
+        default: return .secondary
+        }
+    }
+}
+
+private struct EngineSetupSheet: View {
+    let instance: Instance
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(instance.displayName ?? instance.instanceId)
+                    .font(.title2.weight(.semibold))
+                Text(instance.snapshot.engineStatusLabel)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text("Finish setup in the Mac app.")
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(24)
+            .navigationTitle("Engine")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
