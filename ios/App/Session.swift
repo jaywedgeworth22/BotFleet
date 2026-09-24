@@ -155,6 +155,9 @@ final class Session: ObservableObject {
     /// for the same attachment path.
     private var avatarFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
     private var avatarCacheGeneration = 0
+    /// Bumped on each feature PATCH so an older ConfigStatus response cannot
+    /// overwrite a newer toggle when URLSession completes out of order.
+    private var featuresUpdateGeneration = 0
     /// A saved connection exists, but its token could not be read yet. Keeps
     /// "the keychain is locked" from being mistaken for "not paired".
     private var restorePending = false
@@ -1593,14 +1596,19 @@ final class Session: ObservableObject {
     @MainActor
     func updateFeatures(showToolCalls: Bool? = nil, summarizeToolCalls: Bool? = nil) async -> ConfigStatus? {
         guard let client else { return nil }
+        featuresUpdateGeneration += 1
+        let generation = featuresUpdateGeneration
         do {
             let updated = try await client.updateFeatures(
                 showToolCalls: showToolCalls,
                 summarizeToolCalls: summarizeToolCalls
             )
+            // Drop a stale response so rapid toggle flips cannot regress switches.
+            guard featuresUpdateGeneration == generation else { return updated }
             self.config = updated
             return updated
         } catch {
+            guard featuresUpdateGeneration == generation else { return nil }
             recordActionError(error)
             return nil
         }
