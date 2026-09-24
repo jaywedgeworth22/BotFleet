@@ -436,6 +436,7 @@ describe("slimWebhookPayload", () => {
     const reassignedPd = {
       event: {
         event_type: "incident.reassigned",
+        resource_type: "incident",
         agent: {
           id: "PUSER_AG",
           summary: "Auto Escalator",
@@ -557,6 +558,7 @@ describe("slimWebhookPayload", () => {
     const pdPriority = {
       event: {
         event_type: "incident.trigger",
+        resource_type: "incident",
         data: {
           id: "INC-PRIORITY",
           title: "Major outage",
@@ -578,6 +580,18 @@ describe("slimWebhookPayload", () => {
       summary: "P1 - Critical Outage",
     });
     expect(JSON.stringify(incident)).not.toContain("Highest level incident");
+  });
+
+  it("does not classify custom incident payloads without PagerDuty markers as PagerDuty", () => {
+    const customIncident = {
+      event: {
+        event_type: "incident.created",
+        data: { id: "1", title: "Alert", details: { foo: "bar", reason: "custom webhook" } },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(customIncident)).toBe(false);
+    expect(slimWebhookPayload(customIncident)).toEqual(customIncident);
+    expect(serializeWebhookPayload(customIncident)).toContain("custom webhook");
   });
 });
 

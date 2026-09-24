@@ -556,11 +556,32 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
   if (!root) return false;
   const event = asRecord(root.event);
   if (event) {
-    const eventType = pickStr(event, "event_type");
-    if (eventType?.startsWith("incident.")) return true;
     const data = asRecord(event.data);
-    const htmlUrl = pickStr(data, "html_url") ?? pickStr(event, "html_url");
+    const htmlUrl = pickStr(data, "html_url") ?? pickStr(event, "html_url") ?? pickStr(data, "self") ?? pickStr(event, "self");
     if (isPagerDutyUrl(htmlUrl)) return true;
+    const eventType = pickStr(event, "event_type");
+    if (eventType?.startsWith("incident.")) {
+      const resourceType = pickStr(event, "resource_type");
+      const dataType = pickStr(data, "type");
+      const hasResourceType =
+        resourceType === "incident" ||
+        dataType === "incident" ||
+        dataType === "incident_reference";
+      const hasExpectedEnvelope = Boolean(
+        event.agent !== undefined ||
+        event.client !== undefined ||
+        (data && (
+          data.urgency !== undefined ||
+          data.status !== undefined ||
+          data.service !== undefined ||
+          data.assignments !== undefined ||
+          data.assignees !== undefined ||
+          data.priority !== undefined
+        ))
+      );
+      if (hasResourceType && hasExpectedEnvelope) return true;
+      if (data && (isPagerDutyUrl(data.self) || isPagerDutyUrl(pickStr(asRecord(data.service), "html_url")))) return true;
+    }
   }
   if (Array.isArray(root.messages) && root.messages.length > 0) {
     return root.messages.some((msg) => {
