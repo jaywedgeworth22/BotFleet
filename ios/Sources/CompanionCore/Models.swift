@@ -543,18 +543,17 @@ public struct ProviderSnapshot: Codable, Hashable, Sendable {
     /// into key entry or a CLI path — they only say what is true right now.
     public var engineStatusLabel: String {
         if isAvailable, authenticated == false { return "Sign in" }
-        if !isAvailable { return isMissingBinary ? "Not installed" : "Unavailable" }
+        if !isAvailable { return "Unavailable" }
         return "Ready"
     }
 
-    /// The server reports every non-ready engine as `unavailable` — missing
-    /// or rejected credentials, an outdated CLI, a failed probe, bad config,
-    /// or "Disabled in settings".  Only the drivers' missing-binary probe
-    /// ("`<cli>` CLI not found") means the engine is actually not installed.
-    var isMissingBinary: Bool {
-        guard let reason else { return false }
-        return reason.range(of: "CLI not found", options: .caseInsensitive) != nil
-    }
+    /// Reserved for a structured missing-binary signal on `ProviderSnapshot`.
+    /// Claude/Codex currently map every `execCli` `--version` failure (timeout,
+    /// nonzero exit, ENOENT) to the same "`<cli>` CLI not found" reason, so
+    /// matching that text would mislabel installed-but-unresponsive CLIs as
+    /// "Not installed".  Until the wire format carries an unambiguous signal,
+    /// keep the general "Unavailable" label.
+    var isMissingBinary: Bool { false }
 }
 
 public struct ModelOption: Codable, Hashable, Identifiable, Sendable {
