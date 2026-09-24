@@ -1216,6 +1216,50 @@ describe("WebhookManager", () => {
     const crashTriageAssignResult = h.manager.receive(crashTriageHook.endpointId, crashTriageSecret, warningAssignEvent);
     expect(crashTriageAssignResult).toMatchObject({ ignored: true });
 
+    // 54. Routes event-only fleet-infra Sentry events (data.event.project) to Plumber
+    const fleetInfraEventOnly = {
+      payload: {
+        action: "created",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          event: {
+            id: "ev-999",
+            title: "Fleet disk warning",
+            level: "warning",
+            project: { slug: "fleet-infra" },
+            web_url: "https://sentry.io/organizations/jay/issues/events/ev-999",
+          },
+        },
+      },
+    };
+    const fleetInfraEventResult = h.manager.receive(plumberRerouteHook.endpointId, plumberRerouteSecret, fleetInfraEventOnly);
+    expect(fleetInfraEventResult).toMatchObject({ duplicate: false });
+    expect(fleetInfraEventResult.runId).toBeDefined();
+    const queuedEventPlumber = h.queued.at(-1);
+    expect(queuedEventPlumber).toMatchObject({ botId: "maus-plumber", webhookId: plumberRerouteHook.id });
+
+    // 55. "without" as a negation boundary ("Handle errors without ignoring warnings")
+    const { webhook: withoutHook, secret: withoutSecret } = h.manager.create({
+      name: "Errors Without Ignoring Warnings",
+      prompt: "Handle errors without ignoring warnings.",
+      botId: "maus-1",
+    });
+    const withoutWarningResult = h.manager.receive(withoutHook.endpointId, withoutSecret, clauseWarning);
+    expect(withoutWarningResult).toMatchObject({ duplicate: false });
+    expect(withoutWarningResult.runId).toBeDefined();
+    expect(withoutWarningResult.ignored).toBeUndefined();
+
+    // 56. Trigger named "Not Only Errors" does not ignore warning deliveries
+    const { webhook: notOnlyHook, secret: notOnlySecret } = h.manager.create({
+      name: "Not Only Errors",
+      prompt: "",
+      botId: "maus-1",
+    });
+    const notOnlyWarningResult = h.manager.receive(notOnlyHook.endpointId, notOnlySecret, clauseWarning);
+    expect(notOnlyWarningResult).toMatchObject({ duplicate: false });
+    expect(notOnlyWarningResult.runId).toBeDefined();
+    expect(notOnlyWarningResult.ignored).toBeUndefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
