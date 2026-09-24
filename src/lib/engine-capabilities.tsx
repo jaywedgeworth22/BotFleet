@@ -613,3 +613,24 @@ export function EngineCalloutBody(props: {
     </div>
   );
 }
+
+/** Model id -> engine id for ids listed under exactly ONE engine's
+ *  defaultModels list.  A model id shared across engines (for example
+ *  claude-sonnet-4.5, listed under Cursor AND Claude) is left unmapped:
+ *  first-wins would credit the wrong engine with a legacy task's usage,
+ *  so ambiguous ids fall through to the unattributed total instead. */
+export function uniqueModelToEngineId(): Map<string, string> {
+  const seen = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const [engineId, entry] of Object.entries(ENGINE_CAPABILITIES)) {
+    for (const m of entry.defaultModels ?? []) {
+      if (seen.has(m.id)) {
+        if (seen.get(m.id) !== engineId) ambiguous.add(m.id);
+      } else {
+        seen.set(m.id, engineId);
+      }
+    }
+  }
+  for (const id of ambiguous) seen.delete(id);
+  return seen;
+}
