@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { impactedBotsForProvider, revalidateImpact, type CloudAutomationSource } from "./computer-impact";
+import { impactedBotsForProvider, mergeServerImpact, revalidateImpact, type CloudAutomationSource } from "./computer-impact";
 import { ComputerImpactConfirmModal } from "../components/ComputerImpactConfirmModal";
 import { COMPUTER_PROVIDER_DISABLE_IMPACT } from "../../shared/local-auto-consent";
 import type { Bot } from "../state/store";
@@ -216,7 +216,7 @@ describe("revalidateImpact (disable confirm)", () => {
     const confirm = source.slice(source.lastIndexOf("<ComputerImpactConfirmModal"), source.lastIndexOf("<LocalComputerAutoWarning"));
     const check = confirm.indexOf("revalidateImpact(impact.impacted, botsUsingProvider(impact.provider))");
     expect(check).toBeGreaterThan(0);
-    expect(confirm.indexOf("persist(nextProviders")).toBeGreaterThan(check);
+    expect(confirm.indexOf("persist(\n            nextProviders,")).toBeGreaterThan(check);
   });
 });
 
@@ -287,5 +287,38 @@ describe("Auto host fallback follows the server's platform", () => {
     expect(configStatusFromFrame({ host: { platform: "darwin" } } as any).host).toEqual({ platform: "darwin" });
     const section = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
     expect(section).toContain("autoHostPlatform(state.config, capabilities.host.platform)");
+  });
+});
+
+describe("server-checked disable impact", () => {
+  it("sends the confirmed bots with every provider save", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    expect(source).toContain("acknowledgedImpact: [...acknowledgedImpact],");
+    expect(source).toContain("impact.impacted.map((bot) => bot.id),");
+  });
+
+  it("reads the server's bots off an impact refusal only", async () => {
+    const { impactChangedRefusal } = await import("./workspace-providers");
+    const config = { botDefaults: {} };
+    expect(impactChangedRefusal({ body: { code: "computer_impact_changed", impacted: [{ id: "b1", name: "Scout" }, { id: "b2" }, 7], config } }))
+      .toEqual({ impacted: [{ id: "b1", name: "Scout" }, { id: "b2", name: "b2" }], config });
+    expect(impactChangedRefusal({ body: { code: "computer_providers_stale", config } })).toBeNull();
+    expect(impactChangedRefusal(new Error("boom"))).toBeNull();
+  });
+
+  it("adds a bot only the server knew about, and then confirms", () => {
+    const local = [{
+      id: "b1",
+      name: "Scout",
+      usage: "ASCII.dev Box",
+      providers: { asciiBox: true, selfHostedVps: false, localVm: false, localMac: false },
+    }];
+    const merged = mergeServerImpact(local, [{ id: "b1", name: "Scout" }, { id: "b2", name: "Nightly" }], "asciiBox");
+    expect(merged.map((bot) => bot.id)).toEqual(["b1", "b2"]);
+    expect(merged[1].providers.asciiBox).toBe(true);
+    // The window's own list is still covered by what was shown, so the next
+    // confirm goes through and acknowledges both.
+    expect(revalidateImpact(merged, local)).toEqual({ kind: "confirmed" });
   });
 });
