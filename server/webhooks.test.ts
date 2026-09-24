@@ -680,7 +680,28 @@ describe("WebhookManager", () => {
     expect(prMergedClosedResult).toMatchObject({ duplicate: false });
     expect(prMergedClosedResult.runId).toBeDefined();
 
+    // 26. Modal contractions ("can't", "won't") and smart apostrophes ("don’t")
+    // should prevent dropping events.
+    const { webhook: cantHook, secret: cantSecret } = h.manager.create({
+      name: "Modal Contraction Handler",
+      prompt: "We can't ignore warning events. Act immediately.",
+      botId: "maus-1",
+    });
+    const cantResult = h.manager.receive(cantHook.endpointId, cantSecret, clauseWarning);
+    expect(cantResult).toMatchObject({ duplicate: false });
+    expect(cantResult.runId).toBeDefined();
+
+    const { webhook: smartAposHook, secret: smartAposSecret } = h.manager.create({
+      name: "Smart Apostrophe Handler",
+      prompt: "We don’t ignore warning events. Fix them.",
+      botId: "maus-1",
+    });
+    const smartAposResult = h.manager.receive(smartAposHook.endpointId, smartAposSecret, clauseWarning);
+    expect(smartAposResult).toMatchObject({ duplicate: false });
+    expect(smartAposResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
+
 

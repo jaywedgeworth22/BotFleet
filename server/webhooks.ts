@@ -322,8 +322,10 @@ export function shouldIgnoreWebhookEvent(
   event: WebhookEvent,
 ): IngressIgnoreDecision {
   const payload = event.payload;
-  const prompt = trigger.prompt ?? "";
-  const name = trigger.name ?? "";
+  const rawPrompt = trigger.prompt ?? "";
+  const prompt = rawPrompt.replace(/[\u2018\u2019\u201B\u2032`]/g, "'");
+  const rawName = trigger.name ?? "";
+  const name = rawName.replace(/[\u2018\u2019\u201B\u2032`]/g, "'");
 
   // 1. Sentry Ingress Pre-Filter (only applies to verified Sentry payloads)
   if (isSentryWebhookPayload(payload)) {
@@ -365,10 +367,11 @@ export function shouldIgnoreWebhookEvent(
       );
       if (interveningPattern.test(prompt)) return false;
 
+      const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither)`;
       const negationPattern = new RegExp(
-        `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
-          `|\\b${lvl}s?\\b[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb}` +
-          `|\\b(?:no|neither)\\s+[^.;\\n]*?\\b${lvl}s?\\b[^.;\\n]*?${exclusionVerb})`,
+        `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
+          `|\\b${lvl}s?\\b[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
+          `|${negativeWord}\\s+[^.;\\n]*?\\b${lvl}s?\\b[^.;\\n]*?${exclusionVerb})`,
         "i",
       );
       if (negationPattern.test(prompt)) return false;
@@ -429,10 +432,11 @@ export function shouldIgnoreWebhookEvent(
         );
         if (interveningPattern.test(prompt)) return false;
 
+        const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither)`;
         const negationPattern = new RegExp(
-          `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
-            `|${assignmentTarget}[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb}` +
-            `|\\b(?:no|neither)\\s+[^.;\\n]*?${assignmentTarget}[^.;\\n]*?${exclusionVerb})`,
+          `(?:${negativeWord}\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
+            `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
+            `|${negativeWord}\\s+[^.;\\n]*?${assignmentTarget}[^.;\\n]*?${exclusionVerb})`,
           "i",
         );
         if (negationPattern.test(prompt)) return false;
