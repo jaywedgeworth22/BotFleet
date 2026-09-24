@@ -166,4 +166,23 @@ describe("foldPrompts", () => {
     expect(folded).toContain("--- Delivery 2 ---");
     expect(folded).toContain("failure 2");
   });
+
+  it("keeps the untrusted-data closing tag when the newest delivery alone is truncated", () => {
+    const instructions = "[USER-CONFIGURED WEBHOOK INSTRUCTIONS]\nMonitor errors\n[/USER-CONFIGURED WEBHOOK INSTRUCTIONS]";
+    const hugeData = (n: number) =>
+      `${instructions}\n\n[UNTRUSTED WEBHOOK EVENT DATA]\npayload-${n} ${"x".repeat(70_000)}\n[/UNTRUSTED WEBHOOK EVENT DATA]`;
+    const shared = foldPrompts({ run: entry("a", hugeData(1)), folded: [entry("b", hugeData(2))] });
+    expect(shared.length).toBeLessThanOrEqual(64_000);
+    expect(shared).toContain("payload-2");
+    expect(shared).toContain("[Event data truncated for length]");
+    expect(shared.endsWith("[/UNTRUSTED WEBHOOK EVENT DATA]")).toBe(true);
+
+    // Distinct headers take the other fold path; same guarantee.
+    const other = (n: number) =>
+      `[DEFAULT WEBHOOK INSTRUCTIONS]\nReview ${n}\n[/DEFAULT WEBHOOK INSTRUCTIONS]\n\n[UNTRUSTED WEBHOOK EVENT DATA]\npayload-${n} ${"y".repeat(70_000)}\n[/UNTRUSTED WEBHOOK EVENT DATA]`;
+    const mixed = foldPrompts({ run: entry("a", hugeData(1)), folded: [entry("b", other(2))] });
+    expect(mixed.length).toBeLessThanOrEqual(64_000);
+    expect(mixed).toContain("payload-2");
+    expect(mixed.endsWith("[/UNTRUSTED WEBHOOK EVENT DATA]")).toBe(true);
+  });
 });
