@@ -300,6 +300,14 @@ describe("wire shape", () => {
     expect(first?.metadata.success).toBe(false);
   });
 
+  it("omits unavailable or invalid latency instead of reporting a fabricated zero", () => {
+    for (const latencyMs of [undefined, NaN, -1, Infinity]) {
+      const [event] = build({ latencyMs });
+      expect(event?.metadata).not.toHaveProperty("latencyMs");
+    }
+    expect(build({ latencyMs: 0 })[0]?.metadata.latencyMs).toBe(0);
+  });
+
   it("fills the fixed fields every event needs", () => {
     for (const event of build({ inputTokens: 10, outputTokens: 5 })) {
       expect(event.metricType).toBe("usage");
