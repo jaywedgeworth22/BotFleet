@@ -302,7 +302,7 @@ function applyCost(span: SpanLike, cost: number | null | undefined, billingMode?
   span.setAttribute("gen_ai.usage.cost", cost);
 }
 
-const EXPECTED_TURN_STOPS = new Set(["auth_required", "cancelled", "interrupted"]);
+const EXPECTED_TURN_STOPS = new Set(["auth_required", "cancelled", "interrupted", "request_timeout"]);
 
 function endTurn(
   key: string,
@@ -537,6 +537,10 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // OpenAI-compatible, Grok, BoxAgent, and chat-completions drivers
         // report a user-initiated stop as "interrupted" rather than
         // "cancelled" — both are the expected, benign shape of a stop.
+        // "request_timeout" is the driver's own model-request timeout:  the
+        // matching runtime.error was already breadcrumbed as an expected
+        // operational condition, so the completion must not page an Issue.
+        // Covered via EXPECTED_TURN_STOPS (includes request_timeout).
         if (expectedStop) {
           sink.addBreadcrumb?.({
             category: "botfleet.turn",
