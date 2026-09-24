@@ -739,7 +739,7 @@ export interface AppState {
   } | null;
   /** 1:1 queue-fallback lines waiting for drain; keyed by threadId.
    * Each entry is identified by the server queueId, not by text. */
-  pendingQueued: Record<string, Array<{ queueId: string; text: string }>>;
+  pendingQueued: Record<string, Array<{ queueId: string; text: string; at: number }>>;
   /** queueIds whose drain frame beat the POST continuation. One-shot and
    * bounded to a short event window so other clients cannot grow it forever. */
   consumedQueueIds: Record<string, true>;
@@ -853,7 +853,7 @@ export type Action =
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
   | { type: "send"; botId: string; text: string; replyToId?: string }
-  | { type: "pendingQueued"; threadId: string; queueId: string; text: string }
+  | { type: "pendingQueued"; threadId: string; queueId: string; text: string; at?: number }
   | { type: "consumePendingQueued"; threadId: string; queueId: string }
   | { type: "cancelQueued"; botId: string; queueId: string }
   | { type: "editMessage"; botId: string; messageId: string; text: string }
@@ -1585,7 +1585,15 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         pendingQueued: {
           ...state.pendingQueued,
-          [action.threadId]: [...prev, { queueId: action.queueId, text: action.text }],
+          [action.threadId]: [
+            ...prev,
+            {
+              queueId: action.queueId,
+              text: action.text,
+              // Stamp once at remember-time; ChatView must not remint Date.now().
+              at: action.at ?? Date.now(),
+            },
+          ],
         },
       };
     }
@@ -2144,6 +2152,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // persist through the existing card route so an older server that
           // does not auto-dismiss still hides the quiz on this client
           if (quizBeforeSend) persistCard(action.botId, quizBeforeSend.id, { dismissed: true });
+          // Stamp before the POST so a slow 202 still shows send-time, not
+          // response-receipt time (Codex P2 on #587).
+          const sentAt = Date.now();
           void api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
             body: JSON.stringify({ text: action.text, replyToId: action.replyToId }),
@@ -2159,6 +2170,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                   threadId: body.threadId,
                   queueId: body.queueId,
                   text: action.text,
+                  at: sentAt,
                 });
               }
             })

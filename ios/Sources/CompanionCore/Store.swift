@@ -96,9 +96,8 @@ public struct CompanionState: Sendable {
         }
         let pending = pendingQueued[threadId] ?? []
         guard !pending.isEmpty else { return branch }
-        let now = Date().timeIntervalSince1970 * 1000
         let queued = pending.map { entry -> Message in
-            var message = Message(id: entry.queueId, role: .user, kind: .text, at: now)
+            var message = Message(id: entry.queueId, role: .user, kind: .text, at: entry.at)
             message.text = entry.text
             message.queueId = entry.queueId
             message.queued = entry.queued ? true : nil
@@ -141,6 +140,9 @@ public struct CompanionState: Sendable {
 
     public mutating func consumePendingMatchingText(threadId: String, text: String) {
         let prev = pendingQueued[threadId] ?? []
+        // Idle optimistic sends only.  Busy (202) chips must wait for their
+        // queueId-tagged drain — same-text matching would steal an older
+        // queued line when another client steers an identical prompt.
         guard let index = prev.firstIndex(where: { $0.text == text && !$0.queued }) else { return }
         var rest = prev
         rest.remove(at: index)
@@ -214,12 +216,14 @@ public struct CompanionState: Sendable {
             hasMore[room.threadId] = room.hasMore ?? false
         }
         // Drain or an idle send may have landed while we were disconnected.
-        // Retire chips whose queueId or text is now a real transcript row.
+        // Retire chips whose queueId is now a real transcript row; only idle
+        // (non-202) chips may also retire by text, as in
+        // `consumePendingMatchingText` — a busy line waits for its queueId.
         for (threadId, entries) in pendingQueued {
             let thread = messages[threadId] ?? []
             let landedIds = Set(thread.compactMap(\.queueId))
             let landedTexts = Set(thread.filter { $0.role == .user }.compactMap(\.text))
-            for entry in entries where landedIds.contains(entry.queueId) || landedTexts.contains(entry.text) {
+            for entry in entries where landedIds.contains(entry.queueId) || (!entry.queued && landedTexts.contains(entry.text)) {
                 consumePendingQueued(threadId: threadId, queueId: entry.queueId)
             }
         }

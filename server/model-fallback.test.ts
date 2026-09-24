@@ -21,6 +21,8 @@ import {
   turnHitQuotaOrCap,
   turnQuotaOrCapEvidence,
   turnProducedAssistantOutput,
+  unattendedModelDowngrade,
+  inheritedUnattended,
   type FallbackScanMessage,
 } from "./model-fallback.ts";
 import { eligibleAutoFallbackChain, type AutoFallbackCandidate } from "./turn-safety.ts";
@@ -880,5 +882,262 @@ describe("QuotaCooldownRegistry", () => {
     expect(cd).toBeDefined();
     expect(cd?.resetsAt).toBe(now + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
     expect(registry.get("bot1", "antigravity", "gemini-3.8-flash-high", now + DEFAULT_QUOTA_COOLDOWN_TTL_MS + 1)).toBeUndefined();
+  });
+});
+
+describe("inheritedUnattended", () => {
+  const marked = () => true;
+  it("does not let a leftover mark downgrade a scheduled, manual, or typed turn", () => {
+    expect(inheritedUnattended({}, marked)).toBe(false);
+    expect(inheritedUnattended(undefined, marked)).toBe(false);
+    expect(inheritedUnattended({ commsDepth: 0 }, marked)).toBe(false);
+  });
+  it("inherits the mark for card continuations and delegated work", () => {
+    expect(inheritedUnattended({ cardContinuation: true }, marked)).toBe(true);
+    expect(inheritedUnattended({ commsDepth: 1 }, marked)).toBe(true);
+    expect(inheritedUnattended({ cardContinuation: true }, () => false)).toBe(false);
+  });
+  it("honors an explicit caller flag", () => {
+    expect(inheritedUnattended({ unattended: true }, () => false)).toBe(true);
+    expect(inheritedUnattended({ unattended: false, cardContinuation: true }, marked)).toBe(false);
+  });
+});
+
+describe("unattendedModelDowngrade", () => {
+  const gemini: ModelSelection = { instanceId: "gemini", model: "gemini-3.1-pro-preview" };
+  const claude: ModelSelection = { instanceId: "claude", model: "claude-sonnet-5" };
+
+  it("leaves attended turns untouched", () => {
+    expect(unattendedModelDowngrade(gemini, { effortLevels: ["low"] })).toEqual(gemini);
+    expect(
+      unattendedModelDowngrade(gemini, {
+        unattended: false,
+        automationSource: undefined,
+        effortLevels: ["low"],
+      }),
+    ).toEqual(gemini);
+  });
+
+  it("downgrades model and effort on unattended turns when the engine offers effort", () => {
+    expect(
+      unattendedModelDowngrade(gemini, { unattended: true, effortLevels: ["low"] }),
+    ).toEqual({ ...gemini, model: "gemini-3.1-flash-preview", effort: "low" });
+  });
+
+  it("downgrades the model but omits effort when the engine has no effortLevels", () => {
+    // Antigravity / some API drivers reject effort at the turn-start capability
+    // check; stamping "low" would 409 the whole unattended turn.
+    const antigravity: ModelSelection = { instanceId: "antigravity", model: "claude-opus-4-1" };
+    const out = unattendedModelDowngrade(antigravity, { unattended: true, effortLevels: undefined });
+    expect(out).toEqual({ ...antigravity, model: "claude-opus-4-1".replace("-pro", "-flash") });
+    expect(out).not.toHaveProperty("effort");
+  });
+
+  it("downgrades fresh webhook and resource deliveries, which carry automationSource not unattended", () => {
+    for (const automationSource of ["webhook", "resource"]) {
+      expect(
+        unattendedModelDowngrade(gemini, { automationSource, effortLevels: ["low"] }),
+      ).toEqual({ ...gemini, model: "gemini-3.1-flash-preview", effort: "low" });
+    }
+  });
+
+  it("leaves schedule/manual automation and plain turns on the selected model", () => {
+    for (const automationSource of ["schedule", "manual", undefined]) {
+      expect(
+        unattendedModelDowngrade(gemini, { automationSource, effortLevels: ["low"] }),
+      ).toEqual(gemini);
+    }
+  });
+
+  it("never overrides an explicit caller modelSelection", () => {
+    expect(
+      unattendedModelDowngrade(gemini, {
+        unattended: true,
+        automationSource: "webhook",
+        hasExplicitSelection: true,
+        effortLevels: ["low"],
+      }),
+    ).toEqual(gemini);
+  });
+
+  it("never downgrades onto a model that is itself in quota cooldown", () => {
+    const pro: ModelSelection = { instanceId: "antigravity", model: "gemini-3.1-pro-high" };
+    // Flash is cooling: keep the resolver-vetted Pro selection untouched.
+    expect(
+      unattendedModelDowngrade(pro, {
+        unattended: true,
+        isCooling: (_instanceId, model) => model === "gemini-3.8-flash-high",
+      }),
+    ).toEqual(pro);
+    // Flash is free: downgrade as usual.
+    expect(
+      unattendedModelDowngrade(pro, {
+        unattended: true,
+        isCooling: () => false,
+      }),
+    ).toEqual({ ...pro, model: "gemini-3.8-flash-high" });
+  });
+
+  it("resolves downgrade families from the driver kind for custom instances", () => {
+    // An operator-added second Claude under an arbitrary id shares the
+    // claude family downgrade; a second Antigravity shares antigravity's.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude2", model: "claude-sonnet-4-5" },
+        { unattended: true, driverKind: "claudeAgent" },
+      ).model,
+    ).toBe("claude-haiku-4-5");
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "gravity", model: "gemini-3.1-pro-high" },
+        { unattended: true, driverKind: "antigravityAgent" },
+      ).model,
+    ).toBe("gemini-3.8-flash-high");
+    // An unknown driver kind downgrades nothing — even when the instance id
+    // looks like a reserved family (openai-compat mounted as "claude").
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "mystery", model: "mystery-large" },
+        { unattended: true, driverKind: "mysteryDriver" },
+      ).model,
+    ).toBe("mystery-large");
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        { unattended: true, driverKind: "openai-compat" },
+      ).model,
+    ).toBe("claude-sonnet-5");
+    // Missing driverKind still falls back to the instance id (tests / callers
+    // that never resolve a kind).
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        { unattended: true },
+      ).model,
+    ).toBe("claude-haiku-4-5");
+  });
+
+  it("gates effort:low on the model-specific allowed efforts, not engine-wide", () => {
+    // Engine advertises low, but this model's catalog omits it — stamping
+    // low would 409 at startTurn's modelEffortLevels check.
+    const selection: ModelSelection = { instanceId: "codex", model: "gpt-special" };
+    const engineWide = ["low", "medium", "high"] as const;
+    const modelOnly = ["medium", "high"] as const;
+    expect(
+      unattendedModelDowngrade(selection, {
+        unattended: true,
+        effortLevels: modelOnly,
+      }),
+    ).toEqual(selection);
+    expect(
+      unattendedModelDowngrade(selection, {
+        unattended: true,
+        effortLevels: engineWide,
+      }),
+    ).toEqual({ ...selection, effort: "low" });
+    // Resolver is evaluated on the post-rewrite model id.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        {
+          unattended: true,
+          driverKind: "claudeAgent",
+          effortLevels: (model) => (model === "claude-haiku-4-5" ? ["medium", "high"] : engineWide),
+        },
+      ),
+    ).toEqual({ instanceId: "claude", model: "claude-haiku-4-5" });
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-sonnet-5" },
+        {
+          unattended: true,
+          driverKind: "claudeAgent",
+          effortLevels: (model) => (model === "claude-haiku-4-5" ? ["low", "medium"] : []),
+        },
+      ),
+    ).toEqual({ instanceId: "claude", model: "claude-haiku-4-5", effort: "low" });
+  });
+
+  it("maps Antigravity Pro ids to Flash ids the catalog actually offers", () => {
+    // gemini-3.1-flash-high/low do not exist on Antigravity — the rewrite
+    // must land on an offered id or the unattended turn fails at turn start.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "gemini-3.1-pro-high" },
+        { unattended: true },
+      ).model,
+    ).toBe("gemini-3.8-flash-high");
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "gemini-3.1-pro-low" },
+        { unattended: true },
+      ).model,
+    ).toBe("gemini-3.8-flash-low");
+    // Same-family Flash exists for 2.5, so keep it.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "gemini-2.5-pro" },
+        { unattended: true },
+      ).model,
+    ).toBe("gemini-2.5-flash");
+    // Custom / local-inject routes outside the static catalog keep the
+    // configured model, even with "-pro" in the id.
+    for (const model of ["my-proxy-gemini-pro-high", "gemini-3.9-pro-high", "local-qwen-pro"]) {
+      expect(
+        unattendedModelDowngrade(
+          { instanceId: "antigravity", model },
+          { unattended: true, driverKind: "antigravityAgent" },
+        ).model,
+      ).toBe(model);
+    }
+    // Non-Pro Antigravity models are left alone.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "claude-sonnet-4-6" },
+        { unattended: true },
+      ).model,
+    ).toBe("claude-sonnet-4-6");
+  });
+
+  it("keeps custom and local-inject Claude routes as configured", () => {
+    for (const model of ["ollama::my-sonnet-model", "lmstudio::qwen-opus-distill", "my-opus-proxy"]) {
+      expect(
+        unattendedModelDowngrade(
+          { instanceId: "claude", model },
+          { unattended: true, driverKind: "claudeAgent" },
+        ).model,
+      ).toBe(model);
+    }
+    // Built-in Claude routes still downgrade.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-opus-5" },
+        { unattended: true, driverKind: "claudeAgent" },
+      ).model,
+    ).toBe("claude-haiku-4-5");
+  });
+
+  it("rewrites only built-in Claude Sonnet/Opus ids, not custom look-alikes", () => {
+    const down = (model: string) =>
+      unattendedModelDowngrade({ instanceId: "claude", model }, { unattended: true, driverKind: "claudeAgent" }).model;
+    for (const model of ["claude-sonnet-5-custom", "claude-opus-5-local", "claude-sonnet-latest-proxy"]) {
+      expect(down(model)).toBe(model);
+    }
+    // Catalog ids and older official version ids still downgrade.
+    for (const model of ["claude-sonnet-5", "claude-opus-5", "claude-sonnet-4-5", "claude-opus-4-1-20250805"]) {
+      expect(down(model)).toBe("claude-haiku-4-5");
+    }
+  });
+
+  it("pins Claude downgrades to the driver's current Haiku", () => {
+    expect(
+      unattendedModelDowngrade(claude, { unattended: true, effortLevels: ["low"] }),
+    ).toEqual({ ...claude, model: "claude-haiku-4-5", effort: "low" });
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-opus-4-1" },
+        { unattended: true, effortLevels: ["low"] },
+      ),
+    ).toEqual({ instanceId: "claude", model: "claude-haiku-4-5", effort: "low" });
   });
 });

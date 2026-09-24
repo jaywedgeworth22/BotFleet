@@ -169,6 +169,8 @@ export function vpsSshTunnelArgs(alias: string, localPort: number, privateIp: st
     "ServerAliveInterval=30",
     "-o",
     "ServerAliveCountMax=3",
+    "-o",
+    "ControlMaster=no",
     "-L",
     `127.0.0.1:${localPort}:${privateIp}:${INTERNAL_VIEWER_PORT}`,
     alias,

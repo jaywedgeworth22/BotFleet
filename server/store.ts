@@ -1640,10 +1640,15 @@ export class Store {
     if (!bot) return;
     // the cursor belongs to the task that produced it, not to the bot
     const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
-    if (task) task.resumeCursors[instanceId] = cursor;
-    // The legacy mirror follows the task visible in chat, never a detached
-    // routine task working in the background.
-    if (!threadId || bot.threadId === threadId) bot.resumeCursors[instanceId] = cursor;
+    if (cursor === undefined || cursor === null) {
+      if (task) delete task.resumeCursors[instanceId];
+      if (!threadId || bot.threadId === threadId) delete bot.resumeCursors[instanceId];
+    } else {
+      if (task) task.resumeCursors[instanceId] = cursor;
+      // The legacy mirror follows the task visible in chat, never a detached
+      // routine task working in the background.
+      if (!threadId || bot.threadId === threadId) bot.resumeCursors[instanceId] = cursor;
+    }
     this.saveBots();
     this.emit({ type: "bot", botId });
   }
