@@ -221,11 +221,14 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     if (r.routine) {
       return { text: JSON.stringify({ now, timeZone, routine: r.routine }) };
     }
-    if (!routines.length) {
+    // A budget-trimmed list must say so: pass the omitted count through, and
+    // never report "no routines" when rows were only cut for size.
+    const routinesOmitted = typeof r.routinesOmitted === "number" && r.routinesOmitted > 0 ? r.routinesOmitted : 0;
+    if (!routines.length && !routinesOmitted) {
       return { text: `This bot has no routines. Current time: ${now}. Timezone: ${timeZone}.` };
     }
     return {
-      text: JSON.stringify({ now, timeZone, routines }),
+      text: JSON.stringify({ now, timeZone, routines, ...(routinesOmitted ? { routinesOmitted } : {}) }),
     };
   }
   if (name === "propose_routine") {
