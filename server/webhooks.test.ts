@@ -1394,9 +1394,28 @@ describe("WebhookManager", () => {
     });
     expect(coordInfoResult).toMatchObject({ ignored: true });
 
-    const coordErrorResult = h.manager.receive(coordNegHook.endpointId, coordNegSecret, clauseError);
-    expect(coordErrorResult).toMatchObject({ duplicate: false });
-    expect(coordErrorResult.runId).toBeDefined();
+    // 67. All-events exclusions with error exception ("Ignore all events except errors") treat non-errors as error-only scope
+    const { webhook: allExceptHook, secret: allExceptSecret } = h.manager.create({
+      name: "All Except Errors Ignorer",
+      prompt: "Ignore all events except errors. Fix critical issues.",
+      botId: "maus-1",
+    });
+    const allExceptWarningResult = h.manager.receive(allExceptHook.endpointId, allExceptSecret, clauseWarning);
+    expect(allExceptWarningResult).toMatchObject({ ignored: true });
+
+    const allExceptErrorResult = h.manager.receive(allExceptHook.endpointId, allExceptSecret, clauseError);
+    expect(allExceptErrorResult).toMatchObject({ duplicate: false });
+    expect(allExceptErrorResult.runId).toBeDefined();
+
+    // Negated all-events exclusion ("Do not ignore all events except errors") does not ignore warnings
+    const { webhook: negAllExceptHook, secret: negAllExceptSecret } = h.manager.create({
+      name: "Do Not Ignore All Except Errors",
+      prompt: "Do not ignore all events except errors.",
+      botId: "maus-1",
+    });
+    const negAllExceptWarningResult = h.manager.receive(negAllExceptHook.endpointId, negAllExceptSecret, clauseWarning);
+    expect(negAllExceptWarningResult).toMatchObject({ duplicate: false });
+    expect(negAllExceptWarningResult.runId).toBeDefined();
 
     expect(dropNounResult.runId).toBeDefined();
   });

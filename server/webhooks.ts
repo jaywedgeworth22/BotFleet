@@ -418,12 +418,34 @@ export function shouldIgnoreWebhookEvent(
             "i",
           );
 
+          const allExceptErrorsPattern = new RegExp(
+            `(?:` +
+              `${exclusionVerb}\\s+(?:all(?:\\s+(?:events?|deliveries|payloads|alerts?|issues?|notifications?|messages?))?|everything|anything)\\s+(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\s+errors?(?:\\s+events?)?\\b` +
+              `|\\b(?:all(?:\\s+(?:events?|deliveries|payloads|alerts?|issues?|notifications?|messages?))?|everything|anything)\\s+(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\s+errors?(?:\\s+events?)?(?:[^.;\\n]*?\\b(?:are|is|should(?:\\s+be)?|were|was|must(?:\\s+be)?)\\s+)?${exclusionVerb}` +
+              `|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\s+errors?(?:\\s+events?)?\\s*[,;]?\\s*(?:(?:are|is|should(?:\\s+be)?|were|was|must(?:\\s+be)?)\\s+)?${exclusionVerb}\\s+(?:all(?:\\s+(?:events?|deliveries|payloads|alerts?|issues?|notifications?|messages?))?|everything|anything)` +
+              `|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\s+errors?(?:\\s+events?)?\\s*[,;]?\\s*(?:all(?:\\s+(?:events?|deliveries|payloads|alerts?|issues?|notifications?|messages?))?|everything|anything)[^.;\\n]*?${exclusionVerb}` +
+            `)`,
+            "i",
+          );
+          const negationAllExceptErrors = new RegExp(
+            `(?:` +
+              `${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?(?:all|everything|anything)[^.;\\n]*?errors?` +
+              `|${negativeWord}\\s+[^.;\\n]*?(?:all|everything|anything)\\s+(?:except|aside|other|excluding|without)[^.;\\n]*?errors?[^.;\\n]*?${exclusionVerb}` +
+            `)`,
+            "i",
+          );
+
+          const isPromptAllExceptErrors = allExceptErrorsPattern.test(prompt) && !negationAllExceptErrors.test(prompt);
+          const isNameAllExceptErrors = allExceptErrorsPattern.test(name) && !negationAllExceptErrors.test(name);
+
           const isPromptErrorOnly =
             (nonErrorExclusionPattern.test(prompt) && !nonErrorNegationPattern.test(prompt)) ||
-            (errorOnlyPattern.test(prompt) && !negationErrorOnly.test(prompt));
+            (errorOnlyPattern.test(prompt) && !negationErrorOnly.test(prompt)) ||
+            isPromptAllExceptErrors;
           const isNameErrorOnly =
             (nonErrorExclusionPattern.test(name) && !nonErrorNegationPattern.test(name)) ||
-            (errorOnlyPattern.test(name) && !negationErrorOnly.test(name));
+            (errorOnlyPattern.test(name) && !negationErrorOnly.test(name)) ||
+            isNameAllExceptErrors;
 
           const isErrorOnlyScope = prompt.trim() ? isPromptErrorOnly : isNameErrorOnly;
           if (isErrorOnlyScope) {
