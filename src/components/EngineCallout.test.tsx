@@ -46,6 +46,8 @@ describe("EngineCallout", () => {
       expect(html).not.toMatch(/<p[\s>]/);
       expect(html).not.toContain("Pricing:");
       expect(html).toContain('aria-expanded="false"');
+      // No dangling reference: the detail region is not rendered collapsed.
+      expect(html).not.toContain("aria-controls");
     }
   });
 
@@ -79,7 +81,8 @@ describe("EngineCallout", () => {
         defaultOpen: true,
       }),
     );
-    expect(a).toContain("engine-callout-detail-mm-a");
+    expect(a).toContain('aria-controls="engine-callout-detail-mm-a"');
+    expect(a).toContain('id="engine-callout-detail-mm-a"');
     expect(b).toContain("engine-callout-detail-mm-b");
     expect(a).not.toContain("engine-callout-detail-mm-b");
   });
