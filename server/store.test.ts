@@ -69,6 +69,25 @@ describe("Store", () => {
     expect(store.messagesFor(bot.threadId)).toHaveLength(0);
   });
 
+  it("addTaskUsage banks the engine kind and model that actually ran, and keeps them across later turns", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    // A turn that fell over to another engine banks under the instance
+    // that ran, with the registry engine + model remembered — a deleted
+    // custom connection must not drop the usage out of attribution.
+    store.addTaskUsage(bot.id, bot.threadId, { input: 100, output: 20, costUsd: 0.01 }, "custom-work-mm", { engineId: "minimax", model: "minimax-m3" });
+    store.addTaskUsage(bot.id, bot.threadId, { input: 50, output: 10, costUsd: 0.005 }, "custom-work-mm", { model: "minimax-m3" });
+    const bucket = store.taskByThread(bot.id, bot.threadId)?.usageByInstance?.["custom-work-mm"];
+    expect(bucket?.engineId).toBe("minimax");
+    expect(bucket?.byModel?.["minimax-m3"]).toMatchObject({ input: 150, output: 30, turns: 2 });
+
+    store.addRoomUsage(bot.id, "custom-work-mm", { input: 7, output: 3, costUsd: null }, { engineId: "minimax", model: "minimax-m3" });
+    const roomBucket = store.bot(bot.id)?.roomUsageByInstance?.["custom-work-mm"];
+    expect(roomBucket?.engineId).toBe("minimax");
+    expect(roomBucket?.byModel?.["minimax-m3"]).toMatchObject({ input: 7, output: 3, turns: 1 });
+    expect(typeof roomBucket?.lastAt).toBe("number");
+  });
+
   it("addTaskUsage accumulates settled-turn totals per task and survives a restart", () => {
     const store = new Store(selection);
     const bot = store.createBot();
