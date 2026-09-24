@@ -43,8 +43,11 @@ export class ActiveTurnOwners {
   private readonly byThread = new Map<string, Map<string, ActiveTurnOwner>>();
   private readonly latestDispatchByThread = new Map<string, number>();
   private nextDispatchId = 1;
+  private readonly now: () => number;
 
-  constructor(private readonly now: () => number = () => performance.now()) {}
+  constructor(now: () => number = () => performance.now()) {
+    this.now = now;
+  }
 
   claim(threadId: string, owner: Omit<ActiveTurnOwner, "dispatchId" | "startedAtMs" | "latencyMs">): ActiveTurnOwner {
     let owners = this.byThread.get(threadId);
