@@ -138,10 +138,23 @@ export function LinqSettings({ bots, config, onPatch }: LinqSettingsProps) {
               Linq token missing — set <code>LINQ_API_TOKEN</code> on the host or via Infisical, then restart the harness.
             </p>
           ) : (
-            <p className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-emerald">
-              <Check className="h-3.5 w-3.5" />
-              Linq token detected.  Outbound and webhook surface are live.
-            </p>
+            <>
+              <p className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-emerald">
+                <Check className="h-3.5 w-3.5" />
+                Linq token detected.  Outbound is live.
+              </p>
+              {config?.imessageLinq?.webhookReady ? (
+                <p className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-emerald">
+                  <Check className="h-3.5 w-3.5" />
+                  Webhook signing is ready.  Inbound delivery is live.
+                </p>
+              ) : (
+                <p className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-amber">
+                  <TriangleAlert className="h-3.5 w-3.5" />
+                  Webhook signing secret missing — inbound webhooks are refused (503) until <code>LINQ_WEBHOOK_SECRET</code> is set via env or Infisical.
+                </p>
+              )}
+            </>
           )}
         </div>
       </header>

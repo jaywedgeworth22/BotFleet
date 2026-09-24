@@ -5865,6 +5865,13 @@ function configStatus() {
           process.env.LINQ_API_TOKEN?.trim() ||
           cfg.imessageLinq?.apiToken?.trim(),
       ),
+      // Outbound token status says nothing about inbound: without the
+      // signing secret the webhook receiver 503s every delivery.
+      webhookReady: Boolean(
+        process.env.LINQ_WEBHOOK_SECRET?.trim() ||
+          cfg.imessageLinq?.webhookSecret?.trim() ||
+          process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK?.trim() === "1",
+      ),
       botNumber: cfg.imessageLinq?.botNumber ?? "",
       perBot: cfg.botDefaults?.imessagePerBot ?? {},
       ignoredSenders: cfg.imessageLinq?.ignoredSenders ?? [],

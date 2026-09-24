@@ -532,6 +532,7 @@ export interface ConfigStatus {
     ignoredSenders: string[];
     allowedSenders: string[];
     allowVoiceByDefault: boolean;
+    webhookReady: boolean;
   };
 }
 

@@ -286,6 +286,7 @@ describe("config status frames", () => {
       ignoredSenders: ["+15555550101"],
       allowedSenders: [],
       allowVoiceByDefault: true,
+      webhookReady: true,
     };
     const frame = {
       xai: { configured: true },

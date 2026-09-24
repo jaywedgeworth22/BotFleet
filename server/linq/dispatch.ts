@@ -17,7 +17,7 @@ import {
   linqStartTyping,
   linqStopTyping,
 } from "./client.ts";
-import { rememberLinqChat } from "./outbound.ts";
+import { releaseLinqChat, rememberLinqChat } from "./outbound.ts";
 
 export interface ResolvedLinqBinding {
   botNumber: string;
@@ -208,6 +208,10 @@ export async function handleLinqInbound(
   });
   if (!result.dispatched) {
     void linqStopTyping(msg.chatId).catch(() => undefined);
+    // No turn started, so the turn.completed cleanup cannot run here: drop
+    // the binding so a later tagged reply or voice call on this thread
+    // cannot reach this failed inbound's caller.
+    releaseLinqChat(bot.bot.threadId);
   }
   return result;
 }
