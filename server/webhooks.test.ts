@@ -507,6 +507,18 @@ describe("WebhookManager", () => {
     });
     const targetFirstResult = h.manager.receive(targetFirstHook.endpointId, targetFirstSecret, clauseWarning);
     expect(targetFirstResult).toMatchObject({ ignored: true });
+
+    // 15. "Ignore debug events and process warning events" should process warnings and ignore debug
+    const { webhook: processHook, secret: processSecret } = h.manager.create({
+      name: "Process Warning Handler",
+      prompt: "Ignore debug events and process warning events.",
+      botId: "maus-1",
+    });
+    const processWarningResult = h.manager.receive(processHook.endpointId, processSecret, clauseWarning);
+    expect(processWarningResult).toMatchObject({ duplicate: false });
+    expect(processWarningResult.runId).toBeDefined();
+    const processDebugResult = h.manager.receive(processHook.endpointId, processSecret, clauseDebug);
+    expect(processDebugResult).toMatchObject({ ignored: true });
     expect(dropNounResult.runId).toBeDefined();
   });
 });
