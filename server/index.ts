@@ -122,6 +122,7 @@ import {
   computerProviderBlocked,
   computerProvidersStale,
   heldComputerProviders,
+  unacknowledgedImpact,
   providerReloadKeys,
   revokedTurnProviders,
 } from "./config-reload-keys.ts";
@@ -171,6 +172,7 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
+  type CloudBackend,
   type InstanceConfigMap,
   type ModelSelection,
   type ProviderInstance,
@@ -201,6 +203,7 @@ import {
   TurnOwnerClaims,
   type InterruptOutcome,
   type StalledReleaseDecision,
+  type TurnComputerInputs,
 } from "./turn-safety.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -778,6 +781,14 @@ function computerProviderOff(config: typeof cfg, id: ComputerProviderId): boolea
 
 function localVmProviderOff(config: typeof cfg): boolean {
   return computerProviderOff(config, "localVm");
+}
+
+/** Snapshot a bot's computer settings at dispatch, the inputs turn mounting
+ * reads, so a provider disable can tell what the running turn holds even
+ * after the bot is edited mid-turn.  Copied, never aliased. */
+function turnComputerInputs(bot: ComputerGrantSubject & { cloudBackend?: CloudBackend }): TurnComputerInputs {
+  const computers = storedComputerGrants(bot);
+  return { computers: computers ? [...computers] : undefined, cloudBackend: bot.cloudBackend };
 }
 
 function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
@@ -1393,6 +1404,8 @@ type InterruptedTurn = {
   threadId: string;
   instanceId?: string;
   dispatchId?: number;
+  /** What the turn mounted from; see `TurnComputerInputs`. */
+  computerInputs?: TurnComputerInputs;
 };
 /** Room waiters receive the terminal event synchronously.  Automatic fallback
  * may need an async health probe, so they await this fold before deciding
@@ -3098,6 +3111,7 @@ async function startTurn(
     botId: bot.id,
     selection: { instanceId, model, effort },
     fallbackPolicy,
+    computerInputs: turnComputerInputs(bot),
   });
   turnUsage.delete(threadId);
 
@@ -4628,6 +4642,7 @@ async function runGroupMemberTurn(
     botId: bot.id,
     selection,
     fallbackPolicy: bot.modelSelection,
+    computerInputs: turnComputerInputs(bot),
   });
   /** Hand the room back when no turn.completed will do it.  Only use it while
    * this invocation still owns the room; otherwise it would emit a duplicate
@@ -5806,6 +5821,7 @@ function activeInterruptedTurns(instanceId?: string): InterruptedTurn[] {
         threadId,
         instanceId: owner?.selection.instanceId ?? completing?.instanceId,
         dispatchId: owner?.dispatchId ?? completing?.dispatchId,
+        computerInputs: owner?.computerInputs,
       };
     })
     .filter((turn) => !instanceId || turn.instanceId === instanceId);
@@ -5886,6 +5902,59 @@ function settleInterruptedBots(
  * to `PUT /api/config` and its revocation gates. */
 const APPLY_DEFAULTS_POLICY_KEYS = ["computerProviders", "vpsMode", "allowedComputers"] as const;
 
+/** The providers a turn with these computer inputs can hold under one set of
+ * settings: `resolveGrants`, the cloud backend, then the per-provider filter,
+ * the same steps turn mounting takes. */
+function heldProvidersFor(
+  settings: typeof cfg,
+  inputs: TurnComputerInputs,
+  runOn: RoutineRunOn | undefined,
+  options: { autoHost?: boolean } = {},
+): ComputerProviderId[] {
+  const allowed = allowedBotComputers(settings);
+  const { granted, auto } = resolveGrants(
+    inputs.computers ? [...inputs.computers] : undefined,
+    runOn,
+    settings.botDefaults?.computers,
+    allowed,
+  );
+  const autoAllows = autoDestinations(allowed).filter((d) => d !== "local" || options.autoHost !== false);
+  return heldComputerProviders(
+    {
+      granted,
+      auto,
+      autoAllows,
+      cloudBackend: resolveCloudBackend(inputs.cloudBackend, settings.botDefaults?.cloudBackend),
+    },
+    settings.botDefaults?.computerProviders,
+  );
+}
+
+/** The bots a provider-settings save takes a provider away from, judged on
+ * the server's own bots and automations at save time rather than on what the
+ * saving window last saw.  Mirrors the window's impact list
+ * (`impactedBotsForProvider`): a bot's own grant or Auto, plus the cloud
+ * destination an enabled cloud routine, webhook or resource trigger gives it
+ * whatever its computers say.  The Auto host fallback counts only on macOS,
+ * the one platform it mounts on. */
+function botsLosingProviders(before: typeof cfg, after: typeof cfg): Array<{ id: string; name: string }> {
+  const autoHost = process.platform === "darwin";
+  const cloudAutomationBots = new Set<string>();
+  for (const list of [routines?.listRoutines() ?? [], webhooks.list(), resourceTriggers.list()]) {
+    for (const item of list) if (item.enabled && item.runOn === "cloud") cloudAutomationBots.add(item.botId);
+  }
+  return store.bots
+    .filter((bot) => {
+      const inputs = turnComputerInputs(bot);
+      const runOns: Array<RoutineRunOn | undefined> = cloudAutomationBots.has(bot.id) ? [undefined, "cloud"] : [undefined];
+      return runOns.some((runOn) => revokedTurnProviders(
+        heldProvidersFor(before, inputs, runOn, { autoHost }),
+        heldProvidersFor(after, inputs, runOn, { autoHost }),
+      ).length > 0);
+    })
+    .map((bot) => ({ id: bot.id, name: bot.name }));
+}
+
 /** A `botDefaults` save does not rebuild the fleet (see
  * CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD), but it can still take a mount away
  * from a turn that is running: a provider toggled off, a destination dropped
@@ -5900,25 +5969,17 @@ async function interruptTurnsUsingDisabledProviders(
   after: typeof cfg,
 ): Promise<void> {
   if (JSON.stringify(before.botDefaults ?? null) === JSON.stringify(after.botDefaults ?? null)) return;
-  const held = (settings: typeof cfg, bot: NonNullable<ReturnType<typeof store.bot>>, runOn: RoutineRunOn | undefined) => {
-    const allowed = allowedBotComputers(settings);
-    const { granted, auto } = resolveGrants(storedComputerGrants(bot), runOn, settings.botDefaults?.computers, allowed);
-    return heldComputerProviders(
-      {
-        granted,
-        auto,
-        autoAllows: autoDestinations(allowed),
-        cloudBackend: resolveCloudBackend(bot.cloudBackend, settings.botDefaults?.cloudBackend),
-      },
-      settings.botDefaults?.computerProviders,
-    );
-  };
   await Promise.allSettled(activeInterruptedTurns().map(async (turn) => {
     const bot = store.bot(turn.botId);
     if (!bot) return;
     const run = routines?.activeRunForBot(bot.id);
     const runOn = run?.threadId === turn.threadId ? run.runOn : undefined;
-    if (revokedTurnProviders(held(before, bot, runOn), held(after, bot, runOn)).length === 0) return;
+    // Judge the turn by what it mounted, not by the bot's grants now: a turn
+    // that started on Cloud keeps its Box mount after the bot is switched to
+    // Local VM, and disabling Box must still reach it.  A turn with no
+    // snapshot (mid completion fold) falls back to the stored grants.
+    const inputs = turn.computerInputs ?? turnComputerInputs(bot);
+    if (revokedTurnProviders(heldProvidersFor(before, inputs, runOn), heldProvidersFor(after, inputs, runOn)).length === 0) return;
     // Latch the stop before anything is awaited, same as the full reload and
     // the Stop button.  The driver may settle the turn the instant it is
     // killed; without the latch an exit_before_result cancellation reads as
@@ -10467,6 +10528,23 @@ const server = createServer(async (req, res) => {
           return json(res, 409, {
             error: "Provider settings changed in another window.\u00a0 Review them and try again.",
             code: "computer_providers_stale",
+            config: configStatus(),
+          });
+        }
+        // The window confirmed a disable against its own copy of the bots
+        // and automations.  Another client can add a grant or a cloud
+        // automation between that check and this save, so recompute the
+        // impact here, on the server's state, in the same synchronous step
+        // as the write, and refuse when it names a bot the confirm did not.
+        const unseen = unacknowledgedImpact(
+          body.acknowledgedImpact,
+          botsLosingProviders(cfg, { ...cfg, botDefaults: { ...cfg.botDefaults, ...patch.botDefaults } }),
+        );
+        if (unseen.length > 0) {
+          return json(res, 409, {
+            error: "More bots use this provider than the list you confirmed.\u00a0 Review the new list and try again.",
+            code: "computer_impact_changed",
+            impacted: unseen,
             config: configStatus(),
           });
         }
