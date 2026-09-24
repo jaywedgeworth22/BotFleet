@@ -1046,6 +1046,10 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   // ride into an unrelated engine through `...process.env`.
   "MINIMAX_API_KEY",
   "MINIMAX_BASE_URL",
+  // Linq partner-API token (and its Infisical alias).  The harness holds it
+  // for webhook outbound / voice upload; no spawned engine CLI should inherit it.
+  "BOTFLEET_LINQAPP_API_KEY",
+  "LINQ_API_TOKEN",
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
