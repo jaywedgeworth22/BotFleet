@@ -469,6 +469,26 @@ describe("failed turns become Issues", () => {
     expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
   });
 
+  it("does not Issue an rpc_error completion after an ACP init-timeout breadcrumb", () => {
+    // An ACP "initialize timed out" is breadcrumbed as expected, then the
+    // turn completes as a generic rpc_error — that completion must not page
+    // a second report for the same condition.
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "initialize timed out" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "rpc_error" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
+  });
+
+  it("still Issues an rpc_error completion with no preceding init timeout", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "rpc_error" }), sink);
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("bot turn failed: rpc_error");
+  });
+
   it("still Issues a genuinely failed completion after an expected timeout breadcrumb", () => {
     // Marking nothing as reported: a later real failure on the same turn
     // must still page.
