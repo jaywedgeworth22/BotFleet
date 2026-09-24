@@ -49,6 +49,10 @@ export interface UsageWhatIfProjectionProps {
   /** Optional override for the period length in days; used to prorate the
    *  monthly subscription fee when the period is shorter.  Defaults to 30. */
   periodDays?: number;
+  /** Tokens that ran on connections deleted before per-engine attribution
+   *  existed.  Shown as a footnote instead of being guessed onto an
+   *  engine row. */
+  unattributedTokens?: number;
 }
 
 /** Compute the API-equivalent cost for a single engine's usage, given the
@@ -111,7 +115,7 @@ export function projectionRows(entries: EngineUsageAggregate[]): Array<{
 }
 
 export function UsageWhatIfProjection(props: UsageWhatIfProjectionProps): React.ReactElement {
-  const { byEngine, periodLabel, periodDays = 30 } = props;
+  const { byEngine, periodLabel, periodDays = 30, unattributedTokens = 0 } = props;
   const rows = projectionRows(byEngine);
   // Aggregate savings for the headline pill — what the user's subscriptions
   // saved in total over this period vs API-equivalent.  Compute totals
@@ -225,6 +229,13 @@ export function UsageWhatIfProjection(props: UsageWhatIfProjectionProps): React.
             </span>
             <span className="text-right tabular-nums text-ink-secondary">{totalApi > 0 ? `${((totalSaved / totalApi) * 100).toFixed(1)}%` : "—"}</span>
           </div>
+        </div>
+      )}
+      {unattributedTokens > 0 && (
+        <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
+          {unattributedTokens.toLocaleString()} tokens ran on connections deleted before
+          per-engine attribution existed and are excluded from the rows above rather than
+          guessed onto an engine.
         </div>
       )}
       <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
