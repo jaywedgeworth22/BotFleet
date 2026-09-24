@@ -70,3 +70,19 @@ export function resolveWorkspaceProviders(config: ConfigStatus | null | undefine
     resolvedFromLegacy: true,
   };
 }
+
+/** The body "Apply new default to all" sends: the workspace computer
+ * defaults and nothing else.  Provider policy (toggles, VPS mode, legacy
+ * allowlist) goes through `PUT /api/config` only, where the consent and
+ * revocation gates run; the apply route refuses it.  Sending this window's
+ * copy of the toggles could also write back a stale state over a newer one.
+ * With no stored default the body is empty and the server applies what it
+ * has. */
+export function applyDefaultsBody(
+  botDefaults: { computers?: Array<"cloud" | "vm" | "local">; cloudBackend?: "box" | "vps" } | null | undefined,
+): { botDefaults?: { computers?: Array<"cloud" | "vm" | "local">; cloudBackend?: "box" | "vps" } } {
+  const next: { computers?: Array<"cloud" | "vm" | "local">; cloudBackend?: "box" | "vps" } = {};
+  if (botDefaults?.computers !== undefined) next.computers = [...botDefaults.computers];
+  if (botDefaults?.cloudBackend !== undefined) next.cloudBackend = botDefaults.cloudBackend;
+  return Object.keys(next).length > 0 ? { botDefaults: next } : {};
+}
