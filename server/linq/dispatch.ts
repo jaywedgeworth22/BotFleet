@@ -31,7 +31,8 @@ export interface ResolvedLinqBinding {
  *  2. absent — the bot stays "off" (no surprise Linq activation).
  *
  *  We surface "linq" only when the workspace has a bot number AND the
- *  `LINQ_API_TOKEN` env var is set; either missing means the dispatcher
+ *  `BOTFLEET_LINQAPP_API_KEY` (or legacy `LINQ_API_TOKEN`) env var is set;
+ *  either missing means the dispatcher
  *  logs and ignores.  Tokens are not stored on disk. */
 export function resolveLinqBinding(
   cfg: ReturnType<typeof loadConfig>,
@@ -41,7 +42,12 @@ export function resolveLinqBinding(
   if (choice !== "linq") return null;
   const linqSection = cfg.imessageLinq;
   if (!linqSection?.botNumber) return null;
-  if (!process.env.LINQ_API_TOKEN?.trim()) return null;
+  if (
+    !process.env.BOTFLEET_LINQAPP_API_KEY?.trim() &&
+    !process.env.LINQ_API_TOKEN?.trim()
+  ) {
+    return null;
+  }
   return {
     botNumber: linqSection.botNumber,
     allowedSenders: linqSection.allowedSenders ?? [],

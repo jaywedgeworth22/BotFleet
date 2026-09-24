@@ -5632,12 +5632,16 @@ function configStatus() {
     // same configured-or-not way as every other credential
     tts: tts.describeVoice(cfg),
     imageGen: { configured: Boolean(cfg.imageGen?.key) },
-    // Linq binding credentials live in env (LINQ_API_TOKEN), so we never
-    // carry a token across this frame — only the operator-curated phone
-    // number, the per-bot transport map, and the voice-tool consent.  Same
-    // rule as tts above: configured-or-not is the whole answer.
+    // Linq binding credentials live in env (BOTFLEET_LINQAPP_API_KEY or
+    // legacy LINQ_API_TOKEN), so we never carry a token across this frame —
+    // only the operator-curated phone number, the per-bot transport map,
+    // and the voice-tool consent.  Same rule as tts above: configured-or-not
+    // is the whole answer.
     imessageLinq: {
-      configured: Boolean(process.env.LINQ_API_TOKEN?.trim()),
+      configured: Boolean(
+        process.env.BOTFLEET_LINQAPP_API_KEY?.trim() ||
+          process.env.LINQ_API_TOKEN?.trim(),
+      ),
       botNumber: cfg.imessageLinq?.botNumber ?? "",
       perBot: cfg.botDefaults?.imessagePerBot ?? {},
       ignoredSenders: cfg.imessageLinq?.ignoredSenders ?? [],
@@ -6908,7 +6912,10 @@ const server = createServer(async (req, res) => {
       if (!workspace?.botNumber) {
         return json(res, 400, { ok: false, reason: "no_bot_number" });
       }
-      if (!process.env.LINQ_API_TOKEN?.trim()) {
+      if (
+        !process.env.BOTFLEET_LINQAPP_API_KEY?.trim() &&
+        !process.env.LINQ_API_TOKEN?.trim()
+      ) {
         return json(res, 400, { ok: false, reason: "missing_token" });
       }
       const body = await readBody(req);

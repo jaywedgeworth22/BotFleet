@@ -20,13 +20,26 @@ import type {
 const DEFAULT_BASE_URL = "https://api.linqapp.com/api/partner/v3";
 
 /** Pulled from env once at module init.  The auth token is re-read on
- *  every call so a test that sets `process.env.LINQ_API_TOKEN` after
- *  import still lights up the client — set-once-and-forget would lock
- *  tests out of the partner API surface. */
+ *  every call so a test that sets `process.env.BOTFLEET_LINQAPP_API_KEY`
+ *  (or the legacy `LINQ_API_TOKEN`) after import still lights up the
+ *  client — set-once-and-forget would lock tests out of the partner
+ *  API surface. */
 function readConfig() {
-  const token = process.env.LINQ_API_TOKEN?.trim() || "";
+  // Prefer the global-API-key name `BOTFLEET_LINQAPP_API_KEY`; fall back
+  // to the lane-local `LINQ_API_TOKEN` so older deployments keep working.
+  const token =
+    process.env.BOTFLEET_LINQAPP_API_KEY?.trim() ||
+    process.env.LINQ_API_TOKEN?.trim() ||
+    "";
   const baseUrl = process.env.LINQ_API_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  const botNumbers = (process.env.LINQ_AGENT_BOT_NUMBERS ?? "")
+  // `BOTFLEET_LINQAPP_PHONE_NUMBER` is the workspace's primary bot phone
+  // number on Linq; comma-separated `LINQ_AGENT_BOT_NUMBERS` continues to
+  // work for installs that bind more than one number to the same token.
+  const phoneEnv =
+    process.env.BOTFLEET_LINQAPP_PHONE_NUMBER?.trim() ||
+    process.env.LINQ_AGENT_BOT_NUMBERS?.trim() ||
+    "";
+  const botNumbers = phoneEnv
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -53,7 +66,11 @@ function readConfig() {
 export const LINQ_CONFIG = readConfig();
 
 function currentToken(): string {
-  return process.env.LINQ_API_TOKEN?.trim() || "";
+  return (
+    process.env.BOTFLEET_LINQAPP_API_KEY?.trim() ||
+    process.env.LINQ_API_TOKEN?.trim() ||
+    ""
+  );
 }
 
 export function isLinqConfigured(): boolean {
@@ -99,7 +116,7 @@ async function call(
     throw new LinqApiErrorImpl({
       status: 0,
       code: "missing_token",
-      message: "LINQ_API_TOKEN is not set; cannot call Linq API",
+      message: "BOTFLEET_LINQAPP_API_KEY (or legacy LINQ_API_TOKEN) is not set; cannot call Linq API",
     });
   }
   // Re-read the base URL every call so a desktop credential reload can

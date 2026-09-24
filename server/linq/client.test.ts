@@ -2,7 +2,7 @@
 // because the tests pin one endpoint per case and the mock is a single
 // `mockFetch` swap on the global.  Reset in `afterEach`.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   LINQ_CONFIG,
@@ -37,6 +37,7 @@ function queueResponse(builder: (init: RequestInit | undefined) => Response): vo
 
 beforeEach(() => {
   process.env.LINQ_API_TOKEN = "test-token";
+  delete process.env.BOTFLEET_LINQAPP_API_KEY;
   calls = [];
   responses = [];
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -53,12 +54,37 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = realFetch;
   delete process.env.LINQ_API_TOKEN;
+  delete process.env.BOTFLEET_LINQAPP_API_KEY;
 });
 
 describe("linq/client", () => {
   it("exposes a populated config from env at module init", () => {
     expect(LINQ_CONFIG.baseUrl).toMatch(/^https:\/\/api\.linqapp\.com\/api\/partner\/v3/);
     expect(isLinqConfigured()).toBe(true);
+  });
+
+  it("reads BOTFLEET_LINQAPP_API_KEY when set, falling back to LINQ_API_TOKEN", async () => {
+    const beforeGlobal = process.env.BOTFLEET_LINQAPP_API_KEY;
+    const beforeLegacy = process.env.LINQ_API_TOKEN;
+    try {
+      // Reset module cache so each env swap reads fresh module-init state.
+      vi.resetModules();
+      delete process.env.LINQ_API_TOKEN;
+      process.env.BOTFLEET_LINQAPP_API_KEY = "global-token";
+      const { LINQ_CONFIG: cfgGlobal } = await import("./client.ts");
+      expect(cfgGlobal.token).toBe("global-token");
+
+      vi.resetModules();
+      delete process.env.BOTFLEET_LINQAPP_API_KEY;
+      process.env.LINQ_API_TOKEN = "legacy-token";
+      const { LINQ_CONFIG: cfgLegacy } = await import("./client.ts");
+      expect(cfgLegacy.token).toBe("legacy-token");
+    } finally {
+      if (beforeGlobal === undefined) delete process.env.BOTFLEET_LINQAPP_API_KEY;
+      else process.env.BOTFLEET_LINQAPP_API_KEY = beforeGlobal;
+      if (beforeLegacy === undefined) delete process.env.LINQ_API_TOKEN;
+      else process.env.LINQ_API_TOKEN = beforeLegacy;
+    }
   });
 
   it("sends a text message with the canonical envelope shape", async () => {
