@@ -1,10 +1,19 @@
-import type { ModelSelection } from "./contracts.ts";
+import type { CloudBackend, ModelSelection } from "./contracts.ts";
+
+/** The bot's computer settings as they were when a turn was dispatched, which
+ * is what that turn mounted.  A later bot edit changes the stored grants but
+ * not the live mounts, so a provider disable must be judged against these. */
+export interface TurnComputerInputs {
+  computers: readonly ("cloud" | "vm" | "local")[] | undefined;
+  cloudBackend: CloudBackend | undefined;
+}
 
 export interface ActiveTurnOwner {
   dispatchId: number;
   botId: string;
   selection: ModelSelection;
   fallbackPolicy: ModelSelection;
+  computerInputs?: TurnComputerInputs;
 }
 
 /** The engine/model that owns each live dispatch.  A fallback is a per-turn
