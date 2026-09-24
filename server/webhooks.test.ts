@@ -519,6 +519,17 @@ describe("WebhookManager", () => {
     expect(processWarningResult.runId).toBeDefined();
     const processDebugResult = h.manager.receive(processHook.endpointId, processSecret, clauseDebug);
     expect(processDebugResult).toMatchObject({ ignored: true });
+
+    // 16. "Ignore warning events unless they occur in production" is a
+    // conditional exclusion the payload cannot evaluate — keep warnings.
+    const { webhook: condHook, secret: condSecret } = h.manager.create({
+      name: "Conditional Warning Handler",
+      prompt: "Ignore warning events unless they occur in production.",
+      botId: "maus-1",
+    });
+    const condWarningResult = h.manager.receive(condHook.endpointId, condSecret, clauseWarning);
+    expect(condWarningResult).toMatchObject({ duplicate: false });
+    expect(condWarningResult.runId).toBeDefined();
     expect(dropNounResult.runId).toBeDefined();
   });
 });
