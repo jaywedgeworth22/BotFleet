@@ -86,10 +86,10 @@ interface ExtractedInstruction {
 function extractInstruction(prompt: string): ExtractedInstruction {
   const trimmed = prompt.trim();
   const match = trimmed.match(
-    /^(\[(?:USER-CONFIGURED WEBHOOK INSTRUCTIONS|DEFAULT WEBHOOK INSTRUCTIONS|AUTHENTICATED WEBHOOK TASK)\][\s\S]*?\[\/(?:USER-CONFIGURED WEBHOOK INSTRUCTIONS|DEFAULT WEBHOOK INSTRUCTIONS|AUTHENTICATED WEBHOOK TASK)\])\s*([\s\S]*)$/,
+    /^(\[(USER-CONFIGURED WEBHOOK INSTRUCTIONS|DEFAULT WEBHOOK INSTRUCTIONS|AUTHENTICATED WEBHOOK TASK)\][\s\S]*?\[\/\2\])\s*([\s\S]*)$/,
   );
   if (!match) return { body: trimmed };
-  return { header: match[1]!.trim(), body: match[2]!.trim() };
+  return { header: match[1]!.trim(), body: match[3]!.trim() };
 }
 
 /** The one prompt a folded batch runs.

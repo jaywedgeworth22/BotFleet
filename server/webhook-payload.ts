@@ -376,10 +376,25 @@ export function isSentryWebhookPayload(payload: JsonValue): boolean {
   const data = asRecord(root.data) ?? root;
   const issue = asRecord(data.issue);
   const event = asRecord(data.event);
-  if (issue && (pickStr(issue, "shortId") || pickStr(issue, "id") || issue.project !== undefined || (pickStr(issue, "title") !== undefined && issue.level !== undefined))) {
+  if (
+    issue &&
+    (pickStr(issue, "shortId") ||
+      issue.project !== undefined ||
+      pickStr(issue, "culprit") !== undefined ||
+      pickStr(issue, "platform") !== undefined ||
+      (pickStr(issue, "title") !== undefined && issue.level !== undefined) ||
+      (pickStr(issue, "id") !== undefined && (issue.level !== undefined || issue.metadata !== undefined)))
+  ) {
     return true;
   }
-  if (event && (pickStr(event, "event_id") || (pickStr(event, "id") && event.project !== undefined) || pickStr(event, "culprit") !== undefined || event.tags !== undefined || event.breadcrumbs !== undefined)) {
+  if (
+    event &&
+    (pickStr(event, "event_id") ||
+      (pickStr(event, "id") && event.project !== undefined) ||
+      pickStr(event, "culprit") !== undefined ||
+      event.tags !== undefined ||
+      event.breadcrumbs !== undefined)
+  ) {
     return true;
   }
   return false;

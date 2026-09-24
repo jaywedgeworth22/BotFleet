@@ -9,6 +9,7 @@ import type { RoutineRunOn } from "./routines.ts";
 import { parseJson, schemaIssue, type JsonValue } from "./schema.ts";
 import {
   asRecord,
+  isGithubWebhookPayload,
   isSentryWebhookPayload,
   pickStr,
   serializeWebhookPayload,
@@ -324,8 +325,8 @@ export function shouldIgnoreWebhookEvent(
   const prompt = trigger.prompt ?? "";
   const name = trigger.name ?? "";
 
-  // 1. Sentry Ingress Pre-Filter
-  if (isSentryWebhookPayload(payload) || /\bsentry\b/i.test(name)) {
+  // 1. Sentry Ingress Pre-Filter (only applies to verified Sentry payloads)
+  if (isSentryWebhookPayload(payload)) {
     const root = asRecord(payload);
     const data = asRecord(root?.data) ?? root;
     const issue = asRecord(data?.issue);
@@ -333,7 +334,12 @@ export function shouldIgnoreWebhookEvent(
     const level = pickStr(issue, "level") ?? pickStr(ev, "level") ?? pickStr(root, "level");
     const action = pickStr(root, "action");
 
-    if (/\b(out of scope|stay silent|ignore).*?\b(warning|info|debug)\b/i.test(prompt)) {
+    const outOfScopeWarnings =
+      /\b(?:out of scope|stay silent)\b[^.]*?\b(?:warning|info|debug)\b/i.test(prompt) ||
+      (/\bignore\b[^.]*?\b(?:warning|info|debug)\b/i.test(prompt) &&
+        !/\b(?:do\s+not|don't|never)\s+ignore\b[^.]*?\bwarning\b/i.test(prompt));
+
+    if (outOfScopeWarnings) {
       if (level === "warning" || level === "info" || level === "debug") {
         return {
           ignore: true,
@@ -344,8 +350,8 @@ export function shouldIgnoreWebhookEvent(
 
     if (action === "assigned" || action === "unassigned") {
       if (
-        /\b(incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
-        /\b(incident|fatal|broken|crash)\b/i.test(prompt)
+        /\b(?:incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
+        /\b(?:incident|fatal|broken|crash)\b/i.test(prompt)
       ) {
         return {
           ignore: true,
@@ -355,8 +361,10 @@ export function shouldIgnoreWebhookEvent(
     }
   }
 
-  // 2. GitHub Compile Gates Pre-Filter
-  if (/\bcompile[\s-]*gates?\b/i.test(name) || /\b(own compile gates|bf-compiler)\b/i.test(prompt)) {
+  // 2. GitHub Compile Gates Pre-Filter (only applies to verified GitHub payloads)
+  const isCompileGatesTrigger =
+    /\bcompile[\s-]*gates?\b/i.test(name) || /\b(?:own compile gates|bf-compiler)\b/i.test(prompt);
+  if (isCompileGatesTrigger && isGithubWebhookPayload(payload)) {
     const eventName = event.eventName;
     const root = asRecord(payload);
     const action = pickStr(root, "action");
