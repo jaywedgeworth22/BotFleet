@@ -1572,6 +1572,15 @@ export class Store {
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
+    if (patch.modelSelection !== undefined && JSON.stringify(patch.modelSelection) !== JSON.stringify(bot.modelSelection)) {
+      if (bot.tasks) {
+        for (const task of bot.tasks) {
+          if (!task.modelSelection) {
+            delete task.activeModelSelection;
+          }
+        }
+      }
+    }
     Object.assign(bot, patch);
     this.saveBots();
     this.emit({ type: "bot", botId: id });

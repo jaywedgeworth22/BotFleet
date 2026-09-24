@@ -1982,6 +1982,28 @@ describe("harness HTTP API", () => {
     expect(patched.body.error).toContain("not recognized");
   });
 
+  it("clears legacy unsupported effort from task selection without clobbering primary bot effort", async () => {
+    const created = await api("POST", "/api/bots", {
+      name: "EffortBot",
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5", effort: "high" },
+    });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    try {
+      const taskPatch = await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, {
+        modelSelection: { instanceId: "ghost", model: "ghost-1", effort: "high" },
+      });
+      expect(taskPatch.status).toBe(200);
+
+      const bots = (await api("GET", "/api/bots?messages=0")).body.bots;
+      const found = bots.find((b: { id: string }) => b.id === bot.id);
+      expect(found.modelSelection.effort).toBe("high");
+      expect(found.tasks[0].modelSelection.effort).toBe("high");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("creates a fully configured bot in one request and greets with its final name", async () => {
     const created = await api("POST", "/api/bots", {
       name: "  Pathfinder  ",

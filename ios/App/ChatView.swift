@@ -80,9 +80,10 @@ struct ChatView: View {
     private var currentModelSelection: ModelSelection? {
         guard case let .bot(bot) = current else { return nil }
         let currentTask = bot.tasks?.first(where: { $0.threadId == bot.threadId })
-        return currentTask?.activeModelSelection
-            ?? currentTask?.modelSelection
-            ?? bot.modelSelection
+        if let taskSelection = currentTask?.modelSelection {
+            return currentTask?.activeModelSelection ?? taskSelection
+        }
+        return bot.activeModelSelection ?? bot.modelSelection
     }
 
     private var currentDriverKind: String? {

@@ -660,7 +660,7 @@ async function defaultSelection(excludeInstanceId?: string) {
   // A bot being created can ride a probe taken moments ago; the engine rail
   // still refreshes on demand.
   const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
-  const available = described.filter(
+  const candidates = described.filter(
     (d) => d.snapshot.state === "available" && d.instanceId !== excludeInstanceId,
   );
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
@@ -668,8 +668,28 @@ async function defaultSelection(excludeInstanceId?: string) {
   // spawn ENOENT — the single worst first-run experience, and the one every
   // user with no CLIs used to get. An empty selection is honest: the UI shows
   // the setup path instead of a bot that cannot answer.
-  const pick = available.find((d) => d.driverKind === "antigravityAgent") ?? available.find((d) => d.driverKind === "grokAgent") ?? available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
-  return { instanceId: pick?.instanceId ?? "", model: pick?.models.default ?? "" };
+  const ordered = [
+    ...candidates.filter((d) => d.driverKind === "antigravityAgent"),
+    ...candidates.filter((d) => d.driverKind === "grokAgent"),
+    ...candidates.filter((d) => d.driverKind === "claudeAgent"),
+    ...candidates.filter(
+      (d) => d.driverKind !== "antigravityAgent" && d.driverKind !== "grokAgent" && d.driverKind !== "claudeAgent",
+    ),
+  ];
+
+  for (const pick of ordered) {
+    const liveInstance = registry.get(pick.instanceId);
+    if (!liveInstance || liveInstance.enabled === false) continue;
+    try {
+      const snap = await liveInstance.snapshot();
+      if (snap.state === "available") {
+        return { instanceId: pick.instanceId, model: pick.models.default };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return { instanceId: "", model: "" };
 }
 
 function checkedModelSelection(
@@ -3098,8 +3118,23 @@ async function startTurn(
   if (effort && !allowedEfforts.includes(effort)) {
     if (!allowedEfforts.length) {
       // The model does not support effort at all (legacy stored configuration).
-      // Drop it and clear it from the bot so the turn can proceed without bricking.
-      store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, effort: undefined } });
+      // Drop it and clear it from the owning selection (task, fallback, or bot)
+      // so the turn can proceed without bricking or clobbering an unrelated primary effort.
+      if (task.modelSelection && task.modelSelection.instanceId === selection.instanceId && task.modelSelection.model === selection.model) {
+        store.patchTask(bot.id, threadId, { modelSelection: { ...task.modelSelection, effort: undefined } });
+      } else if (task.modelSelection?.fallbacks?.some((f) => f.instanceId === selection.instanceId && f.model === selection.model)) {
+        const nextFallbacks = task.modelSelection.fallbacks.map((f) =>
+          f.instanceId === selection.instanceId && f.model === selection.model ? { ...f, effort: undefined } : f,
+        );
+        store.patchTask(bot.id, threadId, { modelSelection: { ...task.modelSelection, fallbacks: nextFallbacks } });
+      } else if (bot.modelSelection.instanceId === selection.instanceId && bot.modelSelection.model === selection.model) {
+        store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, effort: undefined } });
+      } else if (bot.modelSelection.fallbacks?.some((f) => f.instanceId === selection.instanceId && f.model === selection.model)) {
+        const nextFallbacks = bot.modelSelection.fallbacks.map((f) =>
+          f.instanceId === selection.instanceId && f.model === selection.model ? { ...f, effort: undefined } : f,
+        );
+        store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, fallbacks: nextFallbacks } });
+      }
       effort = undefined;
     } else {
       throw Object.assign(

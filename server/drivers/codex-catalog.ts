@@ -7,7 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
-import type { EffortLevel, ModelCatalog } from "../contracts.ts";
+import { isEffortLevel, type EffortLevel, type ModelCatalog } from "../contracts.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
 import { mergeLocalInject } from "./local-inject.ts";
 
@@ -165,7 +165,7 @@ export function readCodexAppServerModelCatalog(
                     ? ((e as { reasoningEffort?: unknown }).reasoningEffort as string)
                     : null,
               )
-              .filter((e): e is EffortLevel => typeof e === "string" && e.length > 0);
+              .filter(isEffortLevel);
             effortLevels = rawEfforts;
             supportsEffort = rawEfforts.length > 0;
           }
