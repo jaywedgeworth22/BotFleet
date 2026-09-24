@@ -324,6 +324,22 @@ function mergeTaskUsage(
   };
 }
 
+/** A custom connection can be deleted and recreated under the same slug
+ *  with a DIFFERENT driver.  Banking the new turns into the same bucket
+ *  would re-attribute the old usage to the new engine, so an engine change
+ *  on an already-banked instance forks the bucket onto a suffixed key. */
+function forkKey(
+  byInstance: Record<string, InstanceUsage>,
+  instanceId: string,
+  meta?: { engineId?: string; model?: string },
+): string {
+  const prev = byInstance[instanceId];
+  if (meta?.engineId && prev?.engineId && prev.engineId !== meta.engineId) {
+    return `${instanceId}~${meta.engineId}`;
+  }
+  return instanceId;
+}
+
 /** Merge one settled turn into a per-instance bucket, preserving any
  *  engineId/byModel the bucket already carries. */
 function mergeInstanceUsage(
@@ -1631,7 +1647,8 @@ export class Store {
     task.usage = mergeTaskUsage(task.usage, turn);
     if (instanceId) {
       const byInstance = (task.usageByInstance ??= {});
-      byInstance[instanceId] = mergeInstanceUsage(byInstance[instanceId], turn, meta);
+      const key = forkKey(byInstance, instanceId, meta);
+      byInstance[key] = mergeInstanceUsage(byInstance[key], turn, meta);
     }
     this.saveBots();
     this.emit({ type: "bot", botId });
@@ -1652,7 +1669,8 @@ export class Store {
     const bot = this.bot(botId);
     if (!bot) return;
     const byInstance = (bot.roomUsageByInstance ??= {});
-    byInstance[instanceId] = { ...mergeInstanceUsage(byInstance[instanceId], turn, meta), lastAt: Date.now() };
+    const key = forkKey(byInstance, instanceId, meta);
+    byInstance[key] = { ...mergeInstanceUsage(byInstance[key], turn, meta), lastAt: Date.now() };
     this.saveBots();
     this.emit({ type: "bot", botId });
   }
