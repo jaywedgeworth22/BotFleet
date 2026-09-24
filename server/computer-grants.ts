@@ -660,11 +660,12 @@ async function resolveMounts<Lease>(
   // A VPS is a local-agent computer mount, never a remote agent runner.
   // Explicit Cloud may prepare/start it.  Auto remains read-only unless the
   // person explicitly opted this bot into remote lifecycle actions.
-  // A turn requested with `runOn: "cloud"`, or an attended turn whose ONLY
-  // granted computer is cloud, fails hard if cloud is unreachable.  A bot
-  // that also holds the host computer, or an unattended routine/webhook,
-  // degrades gracefully so a desktop or network blip never kills the turn.
-  const shouldThrowOnCloudFailure = wantsCloudFiltered && (runOn === "cloud" || (!wantsLocal && !input.unattended));
+  // A turn requested with `runOn: "cloud"`, or one whose ONLY granted
+  // computer is cloud, fails hard if cloud is unreachable — attended or not:
+  // an unattended cloud-only turn must not quietly carry on with the local
+  // shell instead.  A bot that also holds the host computer degrades
+  // gracefully so a network blip never kills the turn.
+  const shouldThrowOnCloudFailure = wantsCloudFiltered && (runOn === "cloud" || !wantsLocal);
 
   if ((wantsCloudFiltered || autoCloud) && cloudBackend === "vps") {
     const unsupported = deps.vps.vpsDriverError(engine.driverKind, reach);
@@ -734,7 +735,11 @@ async function resolveMounts<Lease>(
     // use.  Auto remains non-surprising and only reuses an existing box.
     if (!b && mountsCloudComputer && (wantsCloudFiltered || engine.driverKind === "boxAgent")) {
       deps.broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
-      await deps.box.provisionBox(cfg, bot.id, bot.name);
+      try {
+        await deps.box.provisionBox(cfg, bot.id, bot.name);
+      } catch (err) {
+        if (shouldThrowOnCloudFailure) throw err;
+      }
       if (!(await deps.checkpoint())) return stopped();
       b = await deps.box.findBox(cfg, bot.id).catch(() => null);
       if (!(await deps.checkpoint())) return stopped();
@@ -770,7 +775,10 @@ async function resolveMounts<Lease>(
     throw new Error("Cloud box is not configured — add a Box API key or choose Local VM");
   }
   if (wantsCloudFiltered && cloudBackend === "box" && !mounts.some((m) => m.kind === "box")) {
-    throw new Error("the cloud computer could not be created or reached");
+    // With the host computer also granted, fall back to it instead of
+    // killing the turn; the notice says why the cloud tools are missing.
+    if (shouldThrowOnCloudFailure) throw new Error("the cloud computer could not be created or reached");
+    if (mountsCloudComputer) deps.notice("cloud computer not mounted: the cloud computer could not be created or reached", false);
   }
 
   // Auto-only host fallback.  Electron owns cua-driver/TCC attribution; the
