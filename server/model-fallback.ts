@@ -46,6 +46,9 @@ export function unattendedModelDowngrade(
     automationSource?: string;
     hasExplicitSelection?: boolean;
     effortLevels?: readonly string[];
+    /** Quota cooldowns vetted the pre-downgrade model; the rewrite must not
+     *  route onto a cheaper model that is itself cooling down. */
+    isCooling?: (instanceId: string, model: string) => boolean;
   },
 ): ModelSelection {
   if (opts.hasExplicitSelection) return selection;
@@ -65,6 +68,9 @@ export function unattendedModelDowngrade(
       // stale alias pinned before Haiku 4.5 shipped.
       model = "claude-haiku-4-5";
     }
+  }
+  if (model !== selection.model && opts.isCooling?.(selection.instanceId, model)) {
+    return selection;
   }
   return opts.effortLevels?.includes("low")
     ? { ...selection, model, effort: "low" }
