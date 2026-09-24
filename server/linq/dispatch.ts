@@ -126,7 +126,9 @@ export async function ingestInbound({
   media?: string[];
   idempotencyKey?: string;
   signal?: AbortSignal;
-}): Promise<{ dispatched: boolean; reason?: string }> {
+  /** True when the messages endpoint answered an idempotent replay: the
+   *  delivery was accepted before, no new turn starts. */
+}): Promise<{ dispatched: boolean; reason?: string; replayed?: boolean }> {
   if (!text && (!media || media.length === 0)) {
     return { dispatched: false, reason: "empty" };
   }
@@ -158,7 +160,10 @@ export async function ingestInbound({
     if (!res.ok) {
       return { dispatched: false, reason: `http_${res.status}` };
     }
-    return { dispatched: true };
+    // An idempotent replay answers 202 with `replayed: true` but starts no
+    // new turn — the caller must not treat it like a fresh dispatch.
+    const payload = (await res.json().catch(() => ({}))) as { replayed?: unknown };
+    return { dispatched: true, replayed: payload?.replayed === true };
   } catch (err) {
     return {
       dispatched: false,
@@ -211,6 +216,12 @@ export async function handleLinqInbound(
     // No turn started, so the turn.completed cleanup cannot run here: drop
     // the binding so a later tagged reply or voice call on this thread
     // cannot reach this failed inbound's caller.
+    releaseLinqChat(bot.bot.threadId);
+  } else if (result.replayed) {
+    // Idempotent replay of an already-completed turn: no new turn starts,
+    // so turn.completed never fires.  Typing was just (re)started above for
+    // a turn that will never run — stop it and drop the restored binding.
+    void linqStopTyping(msg.chatId).catch(() => undefined);
     releaseLinqChat(bot.bot.threadId);
   }
   return result;

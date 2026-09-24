@@ -32,6 +32,9 @@ const linqReceivedSchema = z.object({
       z.object({
         type: z.enum(["text", "image", "video", "audio", "file"]),
         url: z.string().optional(),
+        // Text parts carry their content in `value` rather than a URL;
+        // without this the schema strips it and the message reads as empty.
+        value: z.string().optional(),
         mime_type: z.string().optional(),
         filename: z.string().optional(),
       }),
@@ -193,11 +196,16 @@ async function readLinqWebhookAuthed(
     return;
   }
   if (parsed.data.type === "message.received") {
+    // Text may arrive as `body` or as text parts without a separate body;
+    // fold the part values in so the message is not classified as empty.
+    const textParts = (parsed.data.parts ?? [])
+      .filter((p) => p.type === "text" && typeof p.value === "string" && p.value.trim())
+      .map((p) => (p.value as string).trim());
     const inbound = {
       chatId: parsed.data.chat_id,
       fromNumber: parsed.data.from,
       toNumber: parsed.data.to,
-      text: parsed.data.body,
+      text: parsed.data.body ?? (textParts.length ? textParts.join("\n") : undefined),
       media: parsed.data.parts
         ?.filter((p) => Boolean(p.url))
         .map((p) => ({ url: p.url as string, mimeType: p.mime_type, filename: p.filename })),

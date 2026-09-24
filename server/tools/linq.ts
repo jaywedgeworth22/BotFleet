@@ -69,8 +69,12 @@ export function createLinqTools(
         ? call.arguments.voice.trim()
         : undefined;
       // MiniMax-specific default must not leak to ElevenLabs / system TTS.
+      // An empty saved voice ("") means unselected — normalize before the
+      // fallback chain so it does not shadow the provider default and fail
+      // every call with NoVoiceConfigured.
+      const configuredVoice = ttsCfg?.voice?.trim() || undefined;
       const voice = explicitVoice
-        ?? ttsCfg?.voice
+        ?? configuredVoice
         ?? ((ttsCfg?.provider === "minimax" || ttsCfg?.provider === undefined) ? DEFAULT_VOICE : undefined);
       if (!chatId || !text) {
         return failed(
