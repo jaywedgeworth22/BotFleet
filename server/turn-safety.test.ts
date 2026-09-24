@@ -27,6 +27,21 @@ const candidate = (
 });
 
 describe("active turn ownership", () => {
+  it("keeps the computer settings a turn was dispatched with, whatever the bot says later", () => {
+    const owners = new ActiveTurnOwners();
+    const selection = { instanceId: "primary", model: "m" };
+    const computers: ("cloud" | "vm" | "local")[] = ["cloud"];
+    owners.claim("thread-1", {
+      botId: "bot-1",
+      selection,
+      fallbackPolicy: selection,
+      computerInputs: { computers: [...computers], cloudBackend: "box" },
+    });
+    // The bot is switched to Local VM mid-turn; the live Box mount is not.
+    computers.splice(0, 1, "vm");
+    expect(owners.forBot("bot-1")?.computerInputs).toEqual({ computers: ["cloud"], cloudBackend: "box" });
+  });
+
   it("attributes a fallback completion to the dispatched override and preserves a newer owner", () => {
     const owners = new ActiveTurnOwners();
     const policy = {
