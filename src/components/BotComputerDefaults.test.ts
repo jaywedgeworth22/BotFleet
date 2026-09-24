@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AllowedComputersSummary } from "./BotComputerDefaults";
+import { AllowedComputersSummary, allowedSummaryRows } from "./BotComputerDefaults";
 
 describe("AllowedComputersSummary", () => {
   it("renders the legacy allowlist without any control that could turn a destination off", () => {
@@ -26,6 +26,49 @@ describe("AllowedComputersSummary", () => {
     expect(html).toContain('aria-label="This Computer: not allowed"');
     expect(html).toContain('aria-label="ASCII.dev Box (VM): not allowed"');
     expect(html).toContain("1 of 3 destinations allowed.");
+  });
+
+  it("keeps ASCII.dev Box and the self-hosted VPS apart when the Providers card split them", () => {
+    // Box off, VPS on: the legacy allowlist folds both into "cloud", which
+    // lit the Box row up as allowed while the Box toggle is off.
+    const providers = { asciiBox: false, selfHostedVps: true, localVm: false, localMac: true };
+    const html = renderToStaticMarkup(createElement(AllowedComputersSummary, { allowed: ["cloud", "local"], providers }));
+    expect(html).toContain('aria-label="ASCII.dev Box (VM): not allowed"');
+    expect(html).toContain('aria-label="Self-hosted VPS: allowed"');
+    expect(html).toContain('aria-label="Local VM: not allowed"');
+    expect(html).toContain('aria-label="This Computer: allowed"');
+    expect(html).toContain("2 of 4 destinations allowed.\u00a0 A bot");
+  });
+
+  it("maps every provider to its own summary row", () => {
+    expect(allowedSummaryRows(null, { asciiBox: true, selfHostedVps: false, localVm: true, localMac: true })).toEqual([
+      { key: "box", label: "ASCII.dev Box (VM)", enabled: true },
+      { key: "vps", label: "Self-hosted VPS", enabled: false },
+      { key: "vm", label: "Local VM", enabled: true },
+      { key: "local", label: "This Computer", enabled: true },
+    ]);
+    // Without the per-provider shape the legacy three rows stay.
+    expect(allowedSummaryRows(["cloud"]).map((r) => [r.key, r.enabled])).toEqual([
+      ["cloud", true],
+      ["vm", false],
+      ["local", false],
+    ]);
+    const all = renderToStaticMarkup(
+      createElement(AllowedComputersSummary, {
+        allowed: null,
+        providers: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+      }),
+    );
+    expect(all).toContain("Every destination is allowed");
+  });
+
+  it("keeps the two-space sentence gaps the summary renders", () => {
+    // Subtitles and footers render in plain divs, where two ASCII spaces
+    // collapse; the copy rule's NBSP + space pair survives.
+    const html = renderToStaticMarkup(createElement(AllowedComputersSummary, { allowed: [] }));
+    expect(html).toContain("allowed to use.\u00a0 This mirrors");
+    expect(html).toContain("No destination is allowed.\u00a0 Every bot");
+    expect(html).not.toMatch(/\.  [A-Z]/);
   });
 
   it("never lets a legacy save change the allowlist", () => {
