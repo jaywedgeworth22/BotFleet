@@ -186,6 +186,9 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       { id: "grok-4.7", display: "Grok 4.7", ctxTokens: 500_000 },
       { id: "grok-4.6", display: "Grok 4.6" },
       { id: "grok-3-mini", display: "Grok 3 mini", ctxTokens: 131_072 },
+      // Retired id kept so legacy tasks banked as model "grok-4" (no engine
+      // metadata) still attribute to Grok via uniqueModelToEngineId.
+      { id: "grok-4", display: "Grok 4", ctxTokens: 1_000_000 },
     ],
   },
 
