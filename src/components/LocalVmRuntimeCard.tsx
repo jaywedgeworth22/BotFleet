@@ -184,7 +184,7 @@ export function LocalVmRuntimeCard() {
     if (action === "remove" && !confirmed) {
       setConfirm({
         title: "Delete Local VM?",
-        body: "Delete the Local VM?  Files and browser sign-ins in its durable workspace will remain.",
+        body: "Delete the Local VM?\u00a0 Files and browser sign-ins in its durable workspace will remain.",
         confirmLabel: "Delete VM",
         action,
       });
@@ -193,7 +193,7 @@ export function LocalVmRuntimeCard() {
     if (action === "recreate" && !confirmed) {
       setConfirm({
         title: "Replace Local VM?",
-        body: "Replace the existing Local VM with the pinned image and safety limits?  Files and browser sign-ins in its durable workspace will remain.",
+        body: "Replace the existing Local VM with the pinned image and safety limits?\u00a0 Files and browser sign-ins in its durable workspace will remain.",
         confirmLabel: "Replace VM",
         action,
       });
@@ -253,7 +253,7 @@ export function LocalVmRuntimeCard() {
       <Card
         title="Local VM"
         subtitle={perBot
-          ? `Private Cua Linux desktops on this ${host}, with one container and durable workspace per bot.  Distinct bots can work concurrently and idle desktops stop after 8 hours.`
+          ? `Private Cua Linux desktops on this ${host}, with one container and durable workspace per bot.\u00a0 Distinct bots can work concurrently and idle desktops stop after 8 hours.`
           : `A shared Cua Linux sandbox on this ${host} for bots to browse and work in — isolated, backed by one durable workspace, and automatically recycled after 8 hours without activity.`}
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -304,14 +304,14 @@ export function LocalVmRuntimeCard() {
         title="VM Mode"
         subtitle={
           perBot
-            ? "Each bot gets its own private container, durable workspace, and loopback viewer.  Idle desktops stop on their own after 8 hours."
-            : "One shared container on this machine, used by bots one at a time.  Cookies, sign-ins, files, and installed apps/CLI tools are all shared across bots."
+            ? "Each bot gets its own private container, durable workspace, and loopback viewer.\u00a0 Idle desktops stop on their own after 8 hours."
+            : "One shared container on this machine, used by bots one at a time.\u00a0 Cookies, sign-ins, files, and installed apps/CLI tools are all shared across bots."
         }
       >
         {unavailable ? (
           <div className="flex items-center gap-2 text-[13px] text-ink-secondary">
             <AlertTriangle size={14} className="text-warning" />
-            Status is unavailable, so VM mode is greyed out.  Re-check above.
+            Status is unavailable, so VM mode is greyed out.{"\u00a0 "}Re-check above.
           </div>
         ) : (
           <div className="flex overflow-hidden rounded-lg border border-hairline/40">
@@ -344,7 +344,7 @@ export function LocalVmRuntimeCard() {
         <div className="flex flex-col gap-4">
           <Step n={1} title="Install a Container Runtime" done={Boolean(status?.runtime)}>
             <div className="text-[13px] leading-relaxed text-ink-secondary">
-              Podman and Colima are free.  Docker Desktop may require a paid licence for larger companies and government use.
+              Podman and Colima are free.{"\u00a0 "}Docker Desktop may require a paid licence for larger companies and government use.
             </div>
             {c?.install ? (
               <CommandLine command={c.install} />
@@ -382,9 +382,9 @@ export function LocalVmRuntimeCard() {
             {perBot ? (
               <div className="text-[13px] leading-relaxed text-ink-secondary">
                 {perBotRuntimeUnsupported
-                  ? "Apple container requires an explicit host port, so BotFleet will not guess or expose one.  Install or start Docker or Podman for safe per-bot dynamic loopback ports."
+                  ? "Apple container requires an explicit host port, so BotFleet will not guess or expose one.\u00a0 Install or start Docker or Podman for safe per-bot dynamic loopback ports."
                   : <>
-                      Choose <b className="text-ink">Local VM</b> for a bot, open that bot's Computer panel, then create its desktop there.  BotFleet assigns a private workspace and an available loopback viewer port automatically.
+                      Choose <b className="text-ink">Local VM</b> for a bot, open that bot's Computer panel, then create its desktop there.{"\u00a0 "}BotFleet assigns a private workspace and an available loopback viewer port automatically.
                     </>}
               </div>
             ) : needsRecreate ? (
@@ -409,7 +409,7 @@ export function LocalVmRuntimeCard() {
               <ActionButton action="run" pending={pending} onClick={() => void act("run")} disabled={localVmOff}>Create Local VM</ActionButton>
             ) : null}
             {localVmOff && !perBot && (
-              <div className="text-[13px] text-ink-secondary">Local VM is turned off in Computer settings.  Turn it on above to create or start it.</div>
+              <div className="text-[13px] text-ink-secondary">Local VM is turned off in Computer settings.{"\u00a0 "}Turn it on above to create or start it.</div>
             )}
             {c?.run && <details className="text-[12px] text-ink-secondary"><summary className="cursor-pointer">Show Command</summary><div className="mt-2"><CommandLine command={c.run} /></div></details>}
           </Step>
@@ -420,7 +420,7 @@ export function LocalVmRuntimeCard() {
         <Card>
           <div className="flex gap-2 text-[13px] text-ink-secondary">
             <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
-            <span>BotFleet could not inspect the container runtime.  Re-check, or review the app logs.</span>
+            <span>BotFleet could not inspect the container runtime.{"\u00a0 "}Re-check, or review the app logs.</span>
           </div>
         </Card>
       )}
@@ -428,8 +428,8 @@ export function LocalVmRuntimeCard() {
       <Card
         title="Safety and Storage"
         subtitle={perBot
-          ? `Cua Driver operates only each VM's desktop.  Every bot gets a private host folder mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; its files and browser profile survive VM replacement.  Viewers bind only to loopback, and exact bot-derived targets prevent one bot from attaching to another bot's container.  Each VM keeps the existing 8 GB, 4 CPU, 512-process and dropped-capability limits.  VMs can still reach the internet.`
-          : `Cua Driver operates only the VM's desktop.  Exactly one private host folder is mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and browser sign-ins there survive VM replacement, while everything elsewhere in the VM remains disposable.  The password-protected viewer is available only on this machine.  Docker and Podman runs are limited to 8 GB memory, 4 CPUs and 512 processes; all Linux capabilities are dropped except the two the desktop supervisor needs to switch to its unprivileged user.  The VM can still reach the internet, and bots share it one at a time.`}
+          ? `Cua Driver operates only each VM's desktop.\u00a0 Every bot gets a private host folder mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; its files and browser profile survive VM replacement.\u00a0 Viewers bind only to loopback, and exact bot-derived targets prevent one bot from attaching to another bot's container.\u00a0 Each VM keeps the existing 8 GB, 4 CPU, 512-process and dropped-capability limits.\u00a0 VMs can still reach the internet.`
+          : `Cua Driver operates only the VM's desktop.\u00a0 Exactly one private host folder is mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and browser sign-ins there survive VM replacement, while everything elsewhere in the VM remains disposable.\u00a0 The password-protected viewer is available only on this machine.\u00a0 Docker and Podman runs are limited to 8 GB memory, 4 CPUs and 512 processes; all Linux capabilities are dropped except the two the desktop supervisor needs to switch to its unprivileged user.\u00a0 The VM can still reach the internet, and bots share it one at a time.`}
       >
         {existing && (
           <div className="flex flex-wrap gap-2">
