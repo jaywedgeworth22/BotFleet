@@ -40,7 +40,7 @@ describe("UsageWhatIfProjection — math", () => {
     expect(cost).toBeCloseTo(3.2, 2);
   });
 
-  it("applies Grok's long-context tier once the prompt reaches 200k tokens", () => {
+  it("keeps Grok on base rates because the 200k tier is per request, not per period", () => {
     const pricing = ENGINE_CAPABILITIES.grok.pricing;
     if (pricing.kind !== "subscription+api") throw new Error("expected subscription+api");
     const at = (inputTokens: number, cachedTokens = 0) =>
@@ -48,14 +48,23 @@ describe("UsageWhatIfProjection — math", () => {
         { engineId: "grok", inputTokens, outputTokens: 10_000, totalTokens: inputTokens + 10_000, cachedTokens, actualCostUsd: 0 },
         pricing,
       );
-    // Under 200k: $2 input / $6 output per million.
-    expect(at(199_999)).toBeCloseTo((199_999 * 0.002 + 10_000 * 0.006) / 1000, 6);
-    // At 200k: $4 / $12 on every token of the request.
-    expect(at(200_000)).toBeCloseTo((200_000 * 0.004 + 10_000 * 0.012) / 1000, 6);
-    // Cached input switches to $1 per million in the tier.
-    expect(at(300_000, 100_000)).toBeCloseTo((100_000 * 0.001 + 200_000 * 0.004 + 10_000 * 0.012) / 1000, 6);
-    // Past 512K the tier is not stacked with the generic 2x.
-    expect(at(600_000)).toBeCloseTo((600_000 * 0.004 + 10_000 * 0.012) / 1000, 6);
+    // A period sum of 300k (say three 100k prompts) is not a long-context request.
+    expect(at(300_000)).toBeCloseTo((300_000 * 0.002 + 10_000 * 0.006) / 1000, 6);
+    expect(at(300_000, 100_000)).toBeCloseTo((100_000 * 0.0005 + 200_000 * 0.002 + 10_000 * 0.006) / 1000, 6);
+    // Grok never takes MiniMax's generic 512K 2x either.
+    expect(at(600_000)).toBeCloseTo((600_000 * 0.002 + 10_000 * 0.006) / 1000, 6);
+  });
+
+  it("shows Grok's long-context tier as a note instead", () => {
+    const html = renderToStaticMarkup(
+      createElement(UsageWhatIfProjection, {
+        periodLabel: "Last 30 days",
+        byEngine: [{ engineId: "grok", inputTokens: 300_000, outputTokens: 10_000, totalTokens: 310_000, cachedTokens: 0, actualCostUsd: 0 }],
+      }),
+    );
+    expect(html).toContain("200,000+ tokens");
+    expect(html).toContain("$4 input / $1 cached / $12 output per million");
+    expect(html).toContain("Per-request prompt sizes are not recorded");
   });
 });
 
