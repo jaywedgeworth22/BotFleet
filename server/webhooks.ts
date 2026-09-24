@@ -155,6 +155,8 @@ const MAX_ATTEMPTS = 2_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 10;
 const MAX_PENDING_RUNS = 3;
+const MAX_IGNORED_ATTEMPTS_PER_WINDOW = 3;
+const IGNORED_ATTEMPTS_WINDOW_MS = 10_000;
 
 const runOnSchema = z.enum(["maus", "cloud"]);
 const eventTypesSchema = z.array(z.string()).max(20).optional();
@@ -373,12 +375,21 @@ export function shouldIgnoreWebhookEvent(
             if (positiveTargetsLevel.test(prompt)) return false;
 
             const carveOutPattern = new RegExp(
-              `\\b(?:except|and|also|but|along\\s+with|as\\s+well\\s+as)\\b[^.;\\n]*?\\b${lvl}s?\\b`,
+              `\\b(?:except|and|also|but|along\\s+with|as\\s+well\\s+as|unless)\\b[^.;\\n]*?\\b${lvl}s?\\b`,
               "i",
             );
-            if (!carveOutPattern.test(prompt)) {
-              return true;
-            }
+            if (carveOutPattern.test(prompt)) return false;
+
+            const conditional = `(?:unless|only\\s+(?:if|when|in|from|for|on)|if|when)`;
+            const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
+            const conditionalPattern = new RegExp(
+              `\\b${conditional}\\b${conditionalGap}\\b${lvl}s?\\b` +
+                `|\\b${lvl}s?\\b${conditionalGap}\\b${conditional}\\b`,
+              "i",
+            );
+            if (conditionalPattern.test(prompt)) return false;
+
+            return true;
           }
         }
         return false;
@@ -699,6 +710,7 @@ export class WebhookManager {
   private deliveries: DeliveryReceipt[] = [];
   private attempts: WebhookAttempt[] = [];
   private rate = new Map<string, number[]>();
+  private recentIgnored = new Map<string, number[]>();
 
   constructor(options: WebhookManagerOptions) {
     this.options = options;
@@ -778,6 +790,7 @@ export class WebhookManager {
     this.deliveries = this.deliveries.filter((delivery) => !delivery.key.startsWith(`${trigger.endpointId}:`));
     this.attempts = this.attempts.filter((attempt) => attempt.webhookId !== trigger.id);
     this.rate.delete(trigger.endpointId);
+    this.recentIgnored.delete(trigger.id);
     this.options.cancelQueued?.(trigger.id, "The webhook was deleted before this delivery started");
     this.save();
     this.options.emit?.({ kind: "webhook.deleted", webhookId: id });
@@ -853,26 +866,24 @@ export class WebhookManager {
     const allowed = trigger.eventTypes ?? [];
     if (allowed.length > 0 && (!event.eventName || !allowed.includes(event.eventName))) {
       const deliveryId = String(event.deliveryId ?? "").trim().slice(0, 200) || randomUUID();
-      this.appendAttempt(trigger, event, {
-        outcome: "ignored",
-        statusCode: 202,
+      this.recordIgnoredAttempt(
+        trigger,
+        event,
         deliveryId,
-        reason: event.eventName ? `Event type “${event.eventName}” is not enabled` : "Event type is missing",
-      });
-      this.save();
+        event.eventName ? `Event type “${event.eventName}” is not enabled` : "Event type is missing",
+      );
       return { deliveryId, duplicate: false, ignored: true };
     }
 
     const ignoreDecision = shouldIgnoreWebhookEvent(trigger, event);
     if (ignoreDecision.ignore) {
       const deliveryId = String(event.deliveryId ?? "").trim().slice(0, 200) || randomUUID();
-      this.appendAttempt(trigger, event, {
-        outcome: "ignored",
-        statusCode: 202,
+      this.recordIgnoredAttempt(
+        trigger,
+        event,
         deliveryId,
-        reason: ignoreDecision.reason ?? "Ignored by trigger ingress filter",
-      });
-      this.save();
+        ignoreDecision.reason ?? "Ignored by trigger ingress filter",
+      );
       return { deliveryId, duplicate: false, ignored: true };
     }
 
@@ -976,6 +987,29 @@ export class WebhookManager {
     });
     this.save();
     return attempt;
+  }
+
+  private recordIgnoredAttempt(
+    trigger: StoredWebhookTrigger,
+    event: WebhookEvent,
+    deliveryId: string,
+    reason: string,
+  ): void {
+    const now = this.now();
+    const recent = (this.recentIgnored.get(trigger.id) ?? []).filter(
+      (at) => now - at < IGNORED_ATTEMPTS_WINDOW_MS,
+    );
+    if (recent.length < MAX_IGNORED_ATTEMPTS_PER_WINDOW) {
+      recent.push(now);
+      this.recentIgnored.set(trigger.id, recent);
+      this.appendAttempt(trigger, event, {
+        outcome: "ignored",
+        statusCode: 202,
+        deliveryId,
+        reason,
+      });
+      this.save();
+    }
   }
 
   private appendAttempt(

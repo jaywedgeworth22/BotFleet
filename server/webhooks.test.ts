@@ -850,6 +850,37 @@ describe("WebhookManager", () => {
     expect(unassignedResult).toMatchObject({ duplicate: false });
     expect(unassignedResult.runId).toBeDefined();
 
+    // 33. Preserve conditional exceptions to error-only scope ("unless warnings affect production")
+    const { webhook: conditionalErrorHook, secret: conditionalErrorSecret } = h.manager.create({
+      name: "Errors Only Conditional",
+      prompt: "Errors only, unless warnings affect production.",
+      botId: "maus-1",
+    });
+    const conditionalWarningResult = h.manager.receive(conditionalErrorHook.endpointId, conditionalErrorSecret, clauseWarning);
+    expect(conditionalWarningResult).toMatchObject({ duplicate: false });
+    expect(conditionalWarningResult.runId).toBeDefined();
+
+    // 34. Bound persistence for ignored deliveries (storm protection)
+    const { webhook: stormHook, secret: stormSecret } = h.manager.create({
+      name: "Storm Protected Hook",
+      prompt: "Only process errors.",
+      botId: "maus-1",
+    });
+    for (let i = 0; i < 10; i++) {
+      const res = h.manager.receive(stormHook.endpointId, stormSecret, {
+        payload: {
+          action: "created",
+          actor: { id: "sentry", name: "Sentry" },
+          data: {
+            issue: { id: `warn-${i}`, title: `Warning ${i}`, level: "warning", permalink: `https://sentry.io/issues/${i}` },
+          },
+        },
+      });
+      expect(res).toMatchObject({ ignored: true });
+    }
+    const stormAttempts = h.manager.listAttempts().filter((a) => a.webhookId === stormHook.id);
+    expect(stormAttempts.length).toBeLessThanOrEqual(3);
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
