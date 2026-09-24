@@ -297,6 +297,17 @@ function slimSentryProject(value: JsonValue | undefined): JsonValue | undefined 
   return Object.keys(out).length ? out : undefined;
 }
 
+function slimSentryActor(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "type", pickStr(rec, "type"));
+  assignDefined(out, "id", pickStr(rec, "id") ?? (pickNum(rec, "id") !== undefined ? String(rec.id) : undefined));
+  assignDefined(out, "name", pickStr(rec, "name"));
+  assignDefined(out, "email", pickStr(rec, "email"));
+  return Object.keys(out).length ? out : undefined;
+}
+
 function slimSentryIssue(value: JsonValue | undefined): JsonValue | undefined {
   const rec = asRecord(value);
   if (!rec) return undefined;
@@ -316,6 +327,8 @@ function slimSentryIssue(value: JsonValue | undefined): JsonValue | undefined {
   assignDefined(out, "lastSeen", pickStr(rec, "lastSeen"));
   assignDefined(out, "priority", pickStr(rec, "priority"));
   assignDefined(out, "seerFixabilityScore", pickNum(rec, "seerFixabilityScore"));
+  // Assignment deliveries live or die by the new owner surviving the slim.
+  assignDefined(out, "assignedTo", slimSentryActor(rec.assignedTo));
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -419,16 +432,14 @@ export function slimSentryPayload(payload: JsonValue): JsonValue {
     if (uuid) out.installation = { uuid };
   }
 
-  // Preserve non-issue/non-event Sentry payload data (e.g. metric_alert, comment)
+  // Preserve non-issue/non-event Sentry payload data (e.g. metric_alert,
+  // comment), hoisted to the root like issue/event.  Keep ONE copy:  a
+  // duplicate under out.data doubled large alerts past MAX_EVENT_CHARS and
+  // the serializer sliced them into invalid JSON.
   if (data) {
-    const remainingData: Record<string, JsonValue> = {};
     for (const [key, val] of Object.entries(data)) {
       if (key === "issue" || key === "event") continue;
       out[key] = val;
-      remainingData[key] = val;
-    }
-    if (Object.keys(remainingData).length > 0) {
-      out.data = remainingData;
     }
   }
 
