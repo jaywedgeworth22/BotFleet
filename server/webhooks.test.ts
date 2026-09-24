@@ -459,5 +459,15 @@ describe("WebhookManager", () => {
     };
     const activeCheckResult = h.manager.receive(compileHook.endpointId, compileSecret, activeCheckEvent);
     expect(activeCheckResult).toMatchObject({ ignored: true });
+
+    // 10. Prompt like "Investigate a drop in warning event volume" should NOT ignore warning events
+    const { webhook: dropNounHook, secret: dropNounSecret } = h.manager.create({
+      name: "Warning Volume Investigator",
+      prompt: "Investigate a drop in warning event volume and diagnose telemetry loss.",
+      botId: "maus-1",
+    });
+    const dropNounResult = h.manager.receive(dropNounHook.endpointId, dropNounSecret, clauseWarning);
+    expect(dropNounResult).toMatchObject({ duplicate: false });
+    expect(dropNounResult.runId).toBeDefined();
   });
 });

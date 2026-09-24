@@ -477,8 +477,12 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
   const root = asRecord(payload);
   if (!root) return false;
   const event = asRecord(root.event);
-  if (event && (pickStr(event, "event_type")?.startsWith("incident.") || pickStr(event, "resource_type") === "incident")) {
-    return true;
+  if (event) {
+    const eventType = pickStr(event, "event_type");
+    if (eventType?.startsWith("incident.")) return true;
+    const data = asRecord(event.data);
+    const htmlUrl = pickStr(data, "html_url") ?? pickStr(event, "html_url");
+    if (htmlUrl?.includes("pagerduty.com")) return true;
   }
   if (Array.isArray(root.messages) && root.messages.length > 0) {
     return root.messages.some((msg) => {
@@ -529,6 +533,13 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
       if (first.incident) out.incident = first.incident;
     }
   }
+
+  // Preserve any custom top-level fields
+  for (const [key, val] of Object.entries(root)) {
+    if (key === "event" || key === "messages") continue;
+    if (out[key] === undefined) out[key] = val;
+  }
+
   return Object.keys(out).length ? out : payload;
 }
 

@@ -348,4 +348,14 @@ describe("slimWebhookPayload", () => {
     expect(slimWebhookPayload(generic)).toEqual(generic);
     expect(serializeWebhookPayload(generic)).toContain("important body text");
   });
+
+  it("does not classify generic event objects with resource_type incident as PagerDuty without event_type marker", () => {
+    const generic = {
+      event: { resource_type: "incident", data: { id: "x", title: "Alert", details: { foo: "bar" } } },
+      note: "important provider note",
+    };
+    expect(isPagerDutyWebhookPayload(generic)).toBe(false);
+    expect(slimWebhookPayload(generic)).toEqual(generic);
+    expect(serializeWebhookPayload(generic)).toContain("important provider note");
+  });
 });
