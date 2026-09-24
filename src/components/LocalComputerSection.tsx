@@ -30,10 +30,11 @@ import { BotComputerMatrix } from "./BotComputerMatrix";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { engineReachKnown, instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { ComputerImpactConfirmModal } from "./ComputerImpactConfirmModal";
-import { impactedBotsForProvider, revalidateImpact, type ImpactedBot } from "@/lib/computer-impact";
+import { impactedBotsForProvider, mergeServerImpact, revalidateImpact, type ImpactedBot } from "@/lib/computer-impact";
 import {
   applyDefaultsBody,
   autoHostPlatform,
+  impactChangedRefusal,
   providerControlsLocked,
   resolveWorkspaceProviders,
   staleProviderConfig,
@@ -177,7 +178,7 @@ export function LocalComputerSection() {
   // `<LocalComputerAutoWarning>` dialog is opened so the operator can
   // consent and resubmit; a plain error is not surfaced in that case.
   const persist = useCallback(
-    (nextProviders: ComputerProviders, nextVpsMode: VpsMode) => {
+    (nextProviders: ComputerProviders, nextVpsMode: VpsMode, acknowledgedImpact: readonly string[] = []) => {
       const body = {
         botDefaults: {
           computerProviders: nextProviders,
@@ -188,6 +189,10 @@ export function LocalComputerSection() {
         // stored toggles have moved since, so a stale window cannot turn a
         // provider back on that another window just turned off.
         expectedComputerProviders: providers,
+        // The bots the confirm named (none when no confirm was needed).  The
+        // server recomputes the impact on its own state and refuses the save
+        // when it finds a bot this list did not name.
+        acknowledgedImpact: [...acknowledgedImpact],
       };
       setSaving(true);
       setError(null);
@@ -203,13 +208,25 @@ export function LocalComputerSection() {
             });
             return;
           }
+          const refusal = impactChangedRefusal(e);
+          if (refusal) {
+            if (refusal.config) dispatch({ type: "configStatus", config: refusal.config });
+            const disabled = COMPUTER_PROVIDER_ORDER.find((id) => providers[id] === true && nextProviders[id] !== true);
+            if (disabled) {
+              setImpact({
+                provider: disabled,
+                impacted: mergeServerImpact(botsUsingProvider(disabled), refusal.impacted, disabled),
+              });
+              return;
+            }
+          }
           const stale = staleProviderConfig(e);
           if (stale) dispatch({ type: "configStatus", config: stale });
           setError(e.message);
         })
         .finally(() => setSaving(false));
     },
-    [dispatch, providers],
+    [dispatch, providers, botsUsingProvider],
   );
 
   const handleProviderToggle = (provider: ComputerProviderId, next: boolean) => {
@@ -289,6 +306,22 @@ export function LocalComputerSection() {
           // An acknowledged resubmit carries the same expected toggles, so
           // it can go stale too; show the current state it was refused for.
           setPendingAck(null);
+          const refusal = impactChangedRefusal(e);
+          if (refusal) {
+            if (refusal.config) dispatch({ type: "configStatus", config: refusal.config });
+            const sent = (request.body as { botDefaults?: { computerProviders?: ComputerProviders } } | null)
+              ?.botDefaults?.computerProviders;
+            const disabled = sent
+              ? COMPUTER_PROVIDER_ORDER.find((id) => providers[id] === true && sent[id] !== true)
+              : undefined;
+            if (disabled) {
+              setImpact({
+                provider: disabled,
+                impacted: mergeServerImpact(botsUsingProvider(disabled), refusal.impacted, disabled),
+              });
+              return;
+            }
+          }
           const stale = staleProviderConfig(e);
           if (stale) dispatch({ type: "configStatus", config: stale });
           setError(e.message);
@@ -389,7 +422,11 @@ export function LocalComputerSection() {
           }
           const nextProviders = { ...providers, [impact.provider]: false };
           setImpact(null);
-          persist(nextProviders, impact.provider === "selfHostedVps" ? null : vpsMode);
+          persist(
+            nextProviders,
+            impact.provider === "selfHostedVps" ? null : vpsMode,
+            impact.impacted.map((bot) => bot.id),
+          );
         }}
       />
 
