@@ -373,7 +373,8 @@ function slimSentryEvent(value: JsonValue | undefined): JsonValue | undefined {
   const exc = asRecord(rec.exception) ?? (Array.isArray(rec.entries) ? asRecord(asRecord(rec.entries.find((e) => asRecord(e)?.type === "exception"))?.data) : undefined);
   if (exc) {
     const values = Array.isArray(exc.values) ? exc.values : [exc];
-    const slimExc = values.slice(0, 2).map(slimSentryException).filter((e): e is JsonValue => e !== undefined);
+    // Keep the tail of chained exceptions so the newest failure (which surfaced the event) survives slimming.
+    const slimExc = values.slice(-2).map(slimSentryException).filter((e): e is JsonValue => e !== undefined);
     if (slimExc.length) out.exceptions = slimExc;
   }
   return Object.keys(out).length ? out : undefined;
@@ -603,6 +604,9 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
       const first = slimmedMessages[0];
       assignDefined(out, "event_type", pickStr(first, "event"));
       if (first.agent) out.agent = first.agent;
+    }
+    if (root.messages.length > rawMessages.length) {
+      out.omitted_messages = root.messages.length - rawMessages.length;
     }
   }
 

@@ -412,7 +412,7 @@ export function shouldIgnoreWebhookEvent(
           "i",
         );
         const targetFirstPattern = new RegExp(
-          `${assignmentTarget}[^.;\\n]*?${exclusionVerb}`,
+          `${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
           "i",
         );
         if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
@@ -518,6 +518,16 @@ export function shouldIgnoreWebhookEvent(
         return {
           ignore: true,
           reason: `GitHub check_run ${desc} ignored: compile gates wait for concluded failure or merged PR`,
+        };
+      }
+    } else if (eventName === "pull_request") {
+      const pr = asRecord(root?.pull_request);
+      const isMerged = action === "closed" && (pr?.merged === true || pickStr(pr, "merged_at") !== undefined);
+      if (!isMerged) {
+        const desc = action === "closed" ? "unmerged closed" : `action '${action ?? "unknown"}'`;
+        return {
+          ignore: true,
+          reason: `GitHub pull_request ${desc} ignored: compile gates wait for concluded failure or merged PR`,
         };
       }
     }

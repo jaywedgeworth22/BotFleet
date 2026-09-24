@@ -634,6 +634,53 @@ describe("WebhookManager", () => {
     expect(reassignResult).toMatchObject({ duplicate: false });
     expect(reassignResult.runId).toBeDefined();
 
+    // 24. "Assignments are in scope, but alerts are out of scope"
+    // stops target-first assignment scan at contrast boundary "but".
+    const { webhook: assignContrastHook, secret: assignContrastSecret } = h.manager.create({
+      name: "Assignment Scope Responder",
+      prompt: "Assignments are in scope, but alerts are out of scope.",
+      botId: "maus-1",
+    });
+    const assignContrastResult = h.manager.receive(assignContrastHook.endpointId, assignContrastSecret, assignEvent);
+    expect(assignContrastResult).toMatchObject({ duplicate: false });
+    expect(assignContrastResult.runId).toBeDefined();
+
+    // 25. Compile gates pre-filter drops non-merged pull_request events
+    const prOpenEvent = {
+      eventName: "pull_request",
+      payload: {
+        action: "opened",
+        pull_request: { id: 111, merged: false },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const prOpenResult = h.manager.receive(compileHook.endpointId, compileSecret, prOpenEvent);
+    expect(prOpenResult).toMatchObject({ ignored: true });
+
+    const prUnmergedClosedEvent = {
+      eventName: "pull_request",
+      payload: {
+        action: "closed",
+        pull_request: { id: 112, merged: false },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const prUnmergedClosedResult = h.manager.receive(compileHook.endpointId, compileSecret, prUnmergedClosedEvent);
+    expect(prUnmergedClosedResult).toMatchObject({ ignored: true });
+
+    const prMergedClosedEvent = {
+      eventName: "pull_request",
+      payload: {
+        action: "closed",
+        pull_request: { id: 113, merged: true, merged_at: "2026-09-24T09:00:00Z" },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const prMergedClosedResult = h.manager.receive(compileHook.endpointId, compileSecret, prMergedClosedEvent);
+    expect(prMergedClosedResult).toMatchObject({ duplicate: false });
+    expect(prMergedClosedResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
+

@@ -516,4 +516,41 @@ describe("slimWebhookPayload", () => {
     expect(isPagerDutyWebhookPayload(fakePdDocUrl)).toBe(false);
     expect(slimWebhookPayload(fakePdDocUrl)).toEqual(fakePdDocUrl);
   });
+
+  it("keeps the newest exceptions in chained Sentry events", () => {
+    const chained = {
+      action: "created",
+      actor: { id: "sentry", name: "Sentry" },
+      data: {
+        issue: { id: "1", title: "Chained error", url: "https://sentry.io/issues/1" },
+        event: {
+          exception: {
+            values: [
+              { type: "RootError", value: "initial failure (oldest)" },
+              { type: "MiddleError", value: "intermediate wrap" },
+              { type: "SurfacedError", value: "final failure that triggered sentry (newest)" },
+            ],
+          },
+        },
+      },
+    };
+    const slim = slimWebhookPayload(chained) as Record<string, JsonValue>;
+    const exceptions = (slim.event as Record<string, JsonValue>).exceptions as Record<string, JsonValue>[];
+    expect(exceptions).toHaveLength(2);
+    expect(exceptions[0].type).toBe("MiddleError");
+    expect(exceptions[1].type).toBe("SurfacedError");
+  });
+
+  it("reports omitted_messages count when PagerDuty delivery batches more than ten messages", () => {
+    const messages = Array.from({ length: 15 }, (_, i) => ({
+      id: `msg-${i + 1}`,
+      event: "incident.trigger",
+      incident: { id: `INC-${i + 1}`, title: `Incident ${i + 1}` },
+    }));
+    const payload = { messages };
+    const slim = slimWebhookPayload(payload) as Record<string, JsonValue>;
+    expect(slim.messages).toHaveLength(10);
+    expect(slim.omitted_messages).toBe(5);
+  });
 });
+
