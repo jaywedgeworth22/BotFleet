@@ -453,6 +453,36 @@ describe("failed turns become Issues", () => {
     expect(spans.every((span) => span.ended)).toBe(true);
   });
 
+  it("does not Issue a request_timeout completion after the timeout runtime.error breadcrumb", () => {
+    // The 180s model-request timeout breadcrumbs runtime.error ("the model
+    // did not answer within") as an expected condition, then the turn ends
+    // not-ok with stopReason "request_timeout".  The completion must not
+    // escalate to a Sentry Issue.
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "the model did not answer within 180s" }),
+      sink,
+    );
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "request_timeout" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
+  });
+
+  it("still Issues a genuinely failed completion after an expected timeout breadcrumb", () => {
+    // Marking nothing as reported: a later real failure on the same turn
+    // must still page.
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "the model did not answer within 180s" }),
+      sink,
+    );
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("bot turn failed: exit code 1");
+  });
+
   it("does not Issue an 'interrupted' stop reason (openai-compat/Grok/BoxAgent stop shape)", () => {
     // Those drivers report a user-initiated stop as stopReason "interrupted"
     // rather than "cancelled" — this must be treated as the same expected,
