@@ -1625,9 +1625,16 @@ final class Session: ObservableObject {
 
     @MainActor
     func configStatus() async -> ConfigStatus? {
+        // Departure autosave bumps `settingsUpdateGeneration` when enqueued and
+        // leaves it unchanged when the PATCH ConfigStatus lands.  If Settings
+        // reopens and this GET captures that already-bumped generation, a
+        // response that read the pre-write server state would still pass the
+        // guard and clobber the newer confirmed config.  Await the settings
+        // tail first so we only GET after pending full-config writes settle.
+        _ = await settingsUpdateTail?.value
         guard let client else { return nil }
-        // Capture before the GET so a settings mutation that lands while the
-        // request is in flight cannot be overwritten by this older full status.
+        // Capture after the await so a mutation that starts while the GET is
+        // in flight still invalidates this older full status.
         let generation = settingsUpdateGeneration
         let status = try? await client.config()
         guard let status else { return nil }
