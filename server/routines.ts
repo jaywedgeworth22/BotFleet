@@ -122,6 +122,10 @@ export interface RoutineRun {
   engineId?: string;
   driver?: string;
   model?: string;
+  /** The Sentry Crons check-in this run opened, so its terminal status can
+   *  close the same one.  Only set for a genuine "schedule" trigger on a
+   *  recurring routine — see `checkInStart`/`checkInFinish`. */
+  sentryCheckInId?: string;
 }
 
 export interface RoutineRequestReceipt {
@@ -225,6 +229,13 @@ export interface RoutineManagerOptions {
   ) => Promise<void>;
   interruptTurn?: (botId: string, threadId: string, runOn: RoutineRunOn) => Promise<void>;
   onRunFailed?: (run: RoutineRun) => void;
+  /** Open a Sentry Crons check-in for a run that is genuinely on a
+   *  recurring schedule (triggerSource === "schedule").  Returns an id to
+   *  close later, or undefined when there is nothing to check in (Sentry
+   *  off, or a one-off routine with no recurrence to watch). */
+  checkInStart?: (run: RoutineRun, routine: Routine) => string | undefined;
+  /** Close a check-in `checkInStart` opened. */
+  checkInFinish?: (run: RoutineRun, checkInId: string, ok: boolean) => void;
   /** Is this run's turn still in flight on the harness? Consulted by the
    * periodic sweep for runs stuck in running/waiting: the completion path
    * settles a run on `turn.completed`, but a harness path that settles the
@@ -405,6 +416,13 @@ export class RoutineManager {
     if (recovered.length > 0) {
       this.save();
       for (const run of recovered) if (!run.coalescedInto) this.options.onRunFailed?.(run);
+      // The check-in was opened by the process that died; close it here too,
+      // or Sentry only learns of the failure when the monitor times out.
+      // `this.options` is assigned first thing in the constructor, and the
+      // server applies its Sentry settings before building this manager.
+      for (const run of recovered) {
+        if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, false);
+      }
     }
   }
 
@@ -829,6 +847,9 @@ export class RoutineManager {
     run.finishedAt = this.now();
     this.save();
     this.emitRun(run);
+    // The later turn.completed cannot close the check-in: handleRuntimeEvent
+    // only matches running/waiting runs, and this one is now cancelled.
+    if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, false);
     if (run.threadId) await this.options.interruptTurn?.(run.botId, run.threadId, run.runOn ?? "maus").catch(() => {});
     queueMicrotask(() => void this.tick());
     return { ...run };
@@ -1027,6 +1048,17 @@ export class RoutineManager {
         run.startedAt = this.now();
         run.status = "running";
         this.lastStartedByKey.set(key, run.startedAt);
+        // A genuine recurring firing, not "Run now" or a webhook/resource
+        // trigger riding the same dispatch path — those have no calendar
+        // schedule for Sentry Crons to watch.  The routine lookup can miss
+        // (deleted between scheduling and dispatch); a missing routine
+        // means "The routine was deleted before it could start" fails this
+        // run a few lines below, so there is nothing worth checking in.
+        const scheduledTriggerSource = run.triggerSource ?? (run.manual ? "manual" : "schedule");
+        if (scheduledTriggerSource === "schedule") {
+          const routine = this.routines.find((r) => r.id === run.routineId);
+          if (routine) run.sentryCheckInId = this.options.checkInStart?.(run, routine);
+        }
         // Combined deliveries stay pending until this owning turn settles.
         // A dispatch is not evidence that any delivery completed successfully.
         const waiting = this.runs.filter(
@@ -1064,13 +1096,12 @@ export class RoutineManager {
                 })),
               })
             : own;
-          const triggerSource = run.triggerSource ?? (run.manual ? "manual" : "schedule");
           await this.options.startTurn(
             run.botId,
             threadId,
             prompt,
             run.runOn ?? "maus",
-            triggerSource,
+            scheduledTriggerSource,
             (message) => this.failThread(threadId, message, "dispatch_failed"),
           );
         } catch (error) {
@@ -1112,6 +1143,10 @@ export class RoutineManager {
         run.outcomeCode = "cancelled";
         run.failurePhase = "lifecycle";
         run.finishedAt = this.now();
+        // A cancelled scheduled run did not complete, so Sentry sees it the
+        // same as an error — that is what lets an owner ask "did today's
+        // Housekeeper run actually happen" and get a real answer.
+        if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, false);
       } else if (!event.ok) {
         this.failRun(run, reason ?? "The bot did not complete this run", code);
         queueMicrotask(() => void this.tick());
@@ -1122,6 +1157,7 @@ export class RoutineManager {
         run.failurePhase = undefined;
         run.finishedAt = this.now();
         run.error = undefined;
+        if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, true);
       }
     } else {
       return null;
@@ -1165,6 +1201,12 @@ export class RoutineManager {
     run.outcomeCode = code;
     run.failurePhase = routineFailurePhase(code);
     run.finishedAt = this.now();
+    // Covers every failure path that reaches here: turn.completed !ok, a
+    // stalled/orphaned run the sweep gives up on, and a dispatch failure —
+    // any run that never opened a check-in (nothing was running yet, or it
+    // was not a "schedule" trigger) leaves sentryCheckInId unset and this
+    // is a no-op.
+    if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, false);
     this.save();
     this.emitRun(run);
     this.options.onRunFailed?.({ ...run });

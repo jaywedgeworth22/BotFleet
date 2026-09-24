@@ -35,6 +35,10 @@
 //                        no configOptions, so nothing to confirm against
 //   FAKE_ACP_USAGE_ROOT  put the prompt result's usage at the root instead of
 //                        under _meta (what opencode 1.18.18 actually does)
+//   FAKE_ACP_USAGE_UPDATE  a token count.  Sends a session/update
+//                        sessionUpdate:"usage_update" notification with that
+//                        `used` value before the (usage-free) prompt result —
+//                        what @deepseek-ai/dsh-acp actually does.
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
@@ -448,14 +452,28 @@ function handle(msg: any) {
         return;
       }
       const complete = () => {
+        // FAKE_ACP_USAGE_UPDATE reproduces @deepseek-ai/dsh-acp's shape: no
+        // usage on the session/prompt result at all (handle_prompt only
+        // ever replies { stopReason }) — the only usage signal is this
+        // notification, a combined context-occupancy figure with no
+        // input/output split (see acp/core.ts's usage_update case).
+        if (process.env.FAKE_ACP_USAGE_UPDATE) {
+          out({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: { update: { sessionUpdate: "usage_update", used: Number(process.env.FAKE_ACP_USAGE_UPDATE), size: 128_000 } },
+          });
+        }
         recordMethod("session/prompt.result");
         result(
           msg.id,
           // FAKE_ACP_USAGE_ROOT reproduces opencode 1.18.18's shape: usage at
           // the result root with an empty _meta, instead of usage under _meta.
-          process.env.FAKE_ACP_USAGE_ROOT
-            ? { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 }, _meta: {} }
-            : { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } },
+          process.env.FAKE_ACP_USAGE_UPDATE
+            ? { stopReason: "end_turn" }
+            : process.env.FAKE_ACP_USAGE_ROOT
+              ? { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 }, _meta: {} }
+              : { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } },
         );
       };
       if (mode === "ask-peer" && agentsMcp) {

@@ -120,6 +120,21 @@ describe("Sentry AI observability", () => {
     expect(invalid.spans[0].attributes["gen_ai.usage.cost"]).toBeUndefined();
   });
 
+  it("stamps input tokens without a fabricated output figure when a driver reports only one side (DSH)", () => {
+    // DSH's ACP `usage_update` reports a combined context-occupancy number,
+    // never a real input/output split (see server/drivers/acp/core.ts's
+    // usage_update handling) — output must stay unset, not a fake 0.
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "thread.token-usage.updated", input: 900 }), sink);
+    expect(spans[0].attributes["gen_ai.usage.input_tokens"]).toBe(900);
+    expect(spans[0].attributes).not.toHaveProperty("gen_ai.usage.output_tokens");
+
+    observeRuntimeEvent(base({ type: "turn.completed", ok: true, usage: { input: 950 } }), sink);
+    expect(spans[0].attributes["gen_ai.usage.input_tokens"]).toBe(950);
+    expect(spans[0].attributes).not.toHaveProperty("gen_ai.usage.output_tokens");
+  });
+
   it("keeps the turn alive when conversation tagging throws", () => {
     const { sink, spans } = recordingSink();
     sink.setConversationId = () => {
@@ -150,9 +165,15 @@ describe("Sentry AI observability", () => {
     observeRuntimeEvent(base({ type: "thread.token-usage.updated", input: 11, output: 7 }), sink);
     observeRuntimeEvent(base({ type: "turn.completed", ok: true, usage: { input: 11, output: 7 } }), sink);
 
-    expect(conversations[0]).toBe("thread-1");
+    // The conversation id is the per-task turnId, not the persistent
+    // threadId — see "Sentry Agents conversation identity" below.  The
+    // threadId still rides along as botfleet.room_id so it is never lost.
+    expect(conversations[0]).toBe("turn-1");
     expect(spans.map((s) => s.op)).toEqual(["gen_ai.invoke_agent", "gen_ai.execute_tool"]);
-    expect(spans[0].attributes["gen_ai.conversation.id"]).toBe("thread-1");
+    expect(spans[0].attributes["gen_ai.conversation.id"]).toBe("turn-1");
+    expect(spans[0].attributes["botfleet.room_id"]).toBe("thread-1");
+    expect(spans[1].attributes["gen_ai.conversation.id"]).toBe("turn-1");
+    expect(spans[1].attributes["botfleet.room_id"]).toBe("thread-1");
     expect(spans[0].attributes["gen_ai.request.model"]).toBe("gpt-test");
     expect(spans[0].attributes["gen_ai.usage.input_tokens"]).toBe(11);
     expect(spans[0].attributes["gen_ai.usage.output_tokens"]).toBe(7);
@@ -303,6 +324,29 @@ describe("Sentry AI observability", () => {
     expect(chat?.attributes["gen_ai.usage.input_tokens"]).toBe(3);
     expect(chat?.attributes["gen_ai.conversation.id"]).toBe("thread-9");
     expect(JSON.stringify(spans)).not.toMatch(/prompt|messages|sk-/);
+  });
+
+  it("uses taskId for gen_ai.conversation.id when the caller has a turnId, and keeps conversationId as botfleet.room_id", async () => {
+    const { sink, spans } = recordingSink();
+    await withChatSpan(
+      { model: "MiniMax-M3", conversationId: "thread-9", taskId: "turn-42", provider: "minimax" },
+      async () => ({ text: "ok", usage: undefined }),
+      sink,
+    );
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(chat?.attributes["gen_ai.conversation.id"]).toBe("turn-42");
+    expect(chat?.attributes["botfleet.room_id"]).toBe("thread-9");
+  });
+
+  it("recordExecutedTools takes an optional taskId the same way, defaulting to the thread", () => {
+    const { sink, spans } = recordingSink();
+    recordExecutedTools("thread-9", ["grep"], sink, "turn-42");
+    expect(spans[0].attributes["gen_ai.conversation.id"]).toBe("turn-42");
+    expect(spans[0].attributes["botfleet.room_id"]).toBe("thread-9");
+
+    const untagged = recordingSink();
+    recordExecutedTools("thread-9", ["grep"], untagged.sink);
+    expect(untagged.spans[0].attributes["gen_ai.conversation.id"]).toBe("thread-9");
   });
 
   it("attaches cached input tokens to the chat span when present", async () => {
@@ -797,6 +841,7 @@ describe("bot and room identity", () => {
     const { sink, spans } = recordingSink();
     observeRuntimeEvent(base({ type: "turn.started" }), sink);
     expect(Object.keys(spans[0].attributes).sort()).toEqual([
+      "botfleet.room_id",
       "gen_ai.agent.name",
       "gen_ai.conversation.id",
       "gen_ai.operation.name",
@@ -866,9 +911,35 @@ describe("Sentry Agents conversation identity", () => {
     }));
     const { sink, conversations, users, spans } = recordingSink();
     observeRuntimeEvent(base({ type: "turn.started" }), sink);
-    expect(conversations[0]).toBe("thread-1");
+    expect(conversations[0]).toBe("turn-1");
     expect(users[0]).toEqual({ id: "bot-fixer", username: "Fixer" });
     expect(spans[0].attributes["gen_ai.agent.name"]).toBe("Fixer");
-    expect(spans[0].attributes["gen_ai.conversation.id"]).toBe("thread-1");
+    expect(spans[0].attributes["gen_ai.conversation.id"]).toBe("turn-1");
+    expect(spans[0].attributes["botfleet.room_id"]).toBe("thread-1");
+  });
+
+  it("gives two turns on the same thread two different conversation ids", () => {
+    // This is the whole point of the change: gen_ai.conversation.id used to
+    // be the threadId, so every turn a bot ever ran landed in the same
+    // Sentry Conversation.  It must now change per task (turnId) while
+    // botfleet.room_id keeps the thread constant.
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started", turnId: "turn-a" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: true, turnId: "turn-a" }), sink);
+    observeRuntimeEvent(base({ type: "turn.started", turnId: "turn-b" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: true, turnId: "turn-b" }), sink);
+
+    const turns = spans.filter((s) => s.op === "gen_ai.invoke_agent");
+    expect(turns).toHaveLength(2);
+    expect(turns[0].attributes["gen_ai.conversation.id"]).toBe("turn-a");
+    expect(turns[1].attributes["gen_ai.conversation.id"]).toBe("turn-b");
+    expect(turns[0].attributes["botfleet.room_id"]).toBe("thread-1");
+    expect(turns[1].attributes["botfleet.room_id"]).toBe("thread-1");
+  });
+
+  it("falls back to the thread id when an event carries no turnId", () => {
+    const { sink, conversations } = recordingSink();
+    observeRuntimeEvent(base({ type: "runtime.error", message: "boom", turnId: undefined }), sink);
+    expect(conversations[0]).toBe("thread-1");
   });
 });

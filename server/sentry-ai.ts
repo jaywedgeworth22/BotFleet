@@ -227,9 +227,21 @@ function liveSink(): SentryAiSink | null {
   };
 }
 
-function applyConversation(sink: SentryAiSink, threadId: string, identity?: TurnIdentity | null): void {
+/** `conversationId` is the per-TASK id (one invocation chain — see
+ *  `taskConversationId`); `threadId` is the persistent room/thread the task
+ *  ran on, used only to resolve identity for the Conversations User column.
+ *  Kept as two separate arguments so a caller can never accidentally feed
+ *  the thread id into `setConversationId`, which is the exact bug this
+ *  split fixes: gen_ai.conversation.id must change every task, threadId
+ *  never does. */
+function applyConversation(
+  sink: SentryAiSink,
+  conversationId: string,
+  threadId: string,
+  identity?: TurnIdentity | null,
+): void {
   try {
-    sink.setConversationId?.(threadId);
+    sink.setConversationId?.(conversationId);
     if (!sink.setUser) return;
     const resolved = identity === undefined ? identityFor(threadId) : identity;
     const id = clean(resolved?.botId) ?? clean(resolved?.roomId) ?? threadId;
@@ -241,6 +253,18 @@ function applyConversation(sink: SentryAiSink, threadId: string, identity?: Turn
   } catch {
     /* conversation tagging must never take down a turn */
   }
+}
+
+/** The per-task conversation id: one value per agent invocation chain (one
+ *  driver-generated turnId), never per persistent room/thread.  Sentry's
+ *  Conversations view groups by `gen_ai.conversation.id`, and a threadId
+ *  that lives for the bot's whole lifetime made every turn look like the
+ *  same conversation — see the 2026-09-24 telemetry evaluation, "How it's
+ *  working now" → "Data-quality gaps".  Falls back to the thread id only
+ *  for the handful of infra events with no turn in flight (e.g. a
+ *  synthetic runtime.error from the event-log writer). */
+function taskConversationId(event: RuntimeEvent): string {
+  return event.turnId ?? event.threadId;
 }
 
 /** The still-open `gen_ai.invoke_agent` span for a thread, so a span opened
@@ -353,7 +377,8 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
   const provider = genAiProvider(event.provider);
   // Resolve once per event so setUser and span attributes share the same snapshot.
   const eventIdentity = identityFor(event.threadId);
-  applyConversation(sink, event.threadId, eventIdentity);
+  const conversationId = taskConversationId(event);
+  applyConversation(sink, conversationId, event.threadId, eventIdentity);
 
   switch (event.type) {
     case "turn.started": {
@@ -367,7 +392,8 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
           "gen_ai.operation.name": "invoke_agent",
           "gen_ai.agent.name": named,
           "gen_ai.provider.name": provider,
-          "gen_ai.conversation.id": event.threadId,
+          "gen_ai.conversation.id": conversationId,
+          "botfleet.room_id": event.threadId,
           "gen_ai.system": provider,
           ...identityAttributes(identity),
         },
@@ -406,7 +432,8 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         attributes: {
           "gen_ai.operation.name": "execute_tool",
           "gen_ai.tool.name": toolName,
-          "gen_ai.conversation.id": event.threadId,
+          "gen_ai.conversation.id": conversationId,
+          "botfleet.room_id": event.threadId,
           "gen_ai.agent.name": agentName(turn.identity, event.provider),
           ...identityAttributes(turn.identity),
         },
@@ -452,7 +479,8 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         attributes: {
           "gen_ai.operation.name": "execute_tool",
           "gen_ai.tool.name": toolName,
-          "gen_ai.conversation.id": event.threadId,
+          "gen_ai.conversation.id": conversationId,
+          "botfleet.room_id": event.threadId,
           "gen_ai.agent.name": agentName(turn.identity, event.provider),
           ...identityAttributes(turn.identity),
         },
@@ -489,7 +517,10 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       const turn = turns.get(key);
       if (!turn) break;
       turn.span.setAttribute("gen_ai.usage.input_tokens", event.input);
-      turn.span.setAttribute("gen_ai.usage.output_tokens", event.output);
+      // Optional: a driver that reports only a combined context-occupancy
+      // figure (DSH's ACP `usage_update`) has no real output split to give —
+      // see the `output?:` comment on RuntimeEvent's thread.token-usage.updated.
+      if (event.output != null) turn.span.setAttribute("gen_ai.usage.output_tokens", event.output);
       if (event.cachedInput != null) {
         turn.span.setAttribute("gen_ai.usage.input_tokens.cached", event.cachedInput);
       }
@@ -597,9 +628,13 @@ export function recordExecutedTools(
   conversationId: string,
   toolNames: string[],
   sink: SentryAiSink | null = liveSink(),
+  /** The per-task id, when the caller has one (a turnId).  Defaults to
+   *  `conversationId` — the thread — for a caller that does not, so this
+   *  stays per-room rather than reporting nothing. */
+  taskId: string = conversationId,
 ): void {
   if (!sink || toolNames.length === 0) return;
-  applyConversation(sink, conversationId);
+  applyConversation(sink, taskId, conversationId);
   const identityAttrs = identityWithAgentName(identityFor(conversationId));
   for (const raw of toolNames) {
     const toolName = raw.trim() || "tool";
@@ -609,7 +644,8 @@ export function recordExecutedTools(
       attributes: {
         "gen_ai.operation.name": "execute_tool",
         "gen_ai.tool.name": toolName,
-        "gen_ai.conversation.id": conversationId,
+        "gen_ai.conversation.id": taskId,
+        "botfleet.room_id": conversationId,
         ...identityAttrs,
       },
     });
@@ -628,9 +664,17 @@ export interface ChatSpanContext {
   span: SpanLike;
 }
 
-/** Wrap one OpenAI-compatible chat completion.  Never attach messages. */
+/** Wrap one OpenAI-compatible chat completion.  Never attach messages.
+ *
+ *  `conversationId` stays the THREAD id — `openTurnSpan` and `identityFor`
+ *  both key off it, since that is what the harness's identity resolver and
+ *  the `turns` map (keyed `threadId:turnId`) actually know about.  `taskId`
+ *  is the per-task id (the driver's own turnId, when it has one in scope)
+ *  and is what actually becomes `gen_ai.conversation.id`; a caller that
+ *  omits it falls back to `conversationId`, so this stays per-room instead
+ *  of reporting nothing. */
 export async function withChatSpan<T extends { usage?: ChatSpanUsage | null }>(
-  opts: { model: string; conversationId: string; provider?: string },
+  opts: { model: string; conversationId: string; taskId?: string; provider?: string },
   fn: (context: ChatSpanContext) => Promise<T>,
   sink: SentryAiSink | null = liveSink(),
 ): Promise<T> {
@@ -650,6 +694,7 @@ export async function withChatSpan<T extends { usage?: ChatSpanUsage | null }>(
     return fn({ recordUsage: () => {}, span: dummySpan });
   }
   const provider = opts.provider ?? "openai";
+  const taskId = opts.taskId ?? opts.conversationId;
   const identityAttrs = identityWithAgentName(identityFor(opts.conversationId));
   const span = sink.startInactiveSpan({
     op: "gen_ai.chat",
@@ -670,7 +715,8 @@ export async function withChatSpan<T extends { usage?: ChatSpanUsage | null }>(
       "gen_ai.request.model": opts.model,
       "gen_ai.provider.name": provider,
       "gen_ai.system": provider,
-      "gen_ai.conversation.id": opts.conversationId,
+      "gen_ai.conversation.id": taskId,
+      "botfleet.room_id": opts.conversationId,
       ...identityAttrs,
     },
   });
