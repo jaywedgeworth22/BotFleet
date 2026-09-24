@@ -546,7 +546,7 @@ describe("slimWebhookPayload", () => {
     const messages = Array.from({ length: 15 }, (_, i) => ({
       id: `msg-${i + 1}`,
       event: "incident.trigger",
-      incident: { id: `INC-${i + 1}`, title: `Incident ${i + 1}` },
+      incident: { id: `INC-${i + 1}`, title: `Incident ${i + 1}`, status: "triggered" },
     }));
     const payload = { messages };
     const slim = slimWebhookPayload(payload) as Record<string, JsonValue>;
@@ -592,6 +592,20 @@ describe("slimWebhookPayload", () => {
     expect(isPagerDutyWebhookPayload(customIncident)).toBe(false);
     expect(slimWebhookPayload(customIncident)).toEqual(customIncident);
     expect(serializeWebhookPayload(customIncident)).toContain("custom webhook");
+  });
+
+  it("does not classify custom messages payloads without PagerDuty markers as PagerDuty", () => {
+    const customBatch = {
+      messages: [
+        {
+          event: "incident.created",
+          incident: { id: "1", title: "Alert", details: { foo: "bar", custom: "legacy data" } },
+        },
+      ],
+    };
+    expect(isPagerDutyWebhookPayload(customBatch)).toBe(false);
+    expect(slimWebhookPayload(customBatch)).toEqual(customBatch);
+    expect(serializeWebhookPayload(customBatch)).toContain("legacy data");
   });
 });
 

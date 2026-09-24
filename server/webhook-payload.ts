@@ -589,11 +589,25 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
       if (!rec) return false;
       const eventName = pickStr(rec, "event") ?? pickStr(rec, "type");
       const inc = asRecord(rec.incident);
-      if (eventName?.startsWith("incident.") && inc) {
+      if (!inc) return false;
+      if (
+        isPagerDutyUrl(inc.html_url) ||
+        isPagerDutyUrl(inc.url) ||
+        isPagerDutyUrl(pickStr(asRecord(inc.service), "html_url"))
+      ) {
         return true;
       }
-      if (inc && isPagerDutyUrl(inc.html_url)) {
-        return true;
+      if (eventName?.startsWith("incident.")) {
+        const hasLegacyMarker = Boolean(
+          inc.status !== undefined ||
+          inc.urgency !== undefined ||
+          inc.service !== undefined ||
+          inc.incident_number !== undefined ||
+          inc.incident_key !== undefined ||
+          rec.created_on !== undefined ||
+          inc.created_on !== undefined
+        );
+        if (hasLegacyMarker) return true;
       }
       return false;
     });
