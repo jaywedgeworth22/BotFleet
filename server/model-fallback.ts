@@ -6,8 +6,29 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { STATIC_ANTIGRAVITY_MODELS } from "./antigravity-models.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import type { ModelSelection, ProviderErrorCode } from "./contracts.ts";
+
+/** Antigravity offers no 3.1 Flash, so a naive -pro -> -flash rewrite of
+ *  gemini-3.1-pro-high/low yields ids the engine rejects.  Prefer the
+ *  same-family Flash when the catalog has one (2.5), else the newest Flash
+ *  at the same tier, else the catalog default. */
+const ANTIGRAVITY_FLASH_BY_TIER: Record<string, string> = {
+  high: "gemini-3.8-flash-high",
+  medium: "gemini-3.8-flash-medium",
+  low: "gemini-3.8-flash-low",
+};
+
+function antigravityFlashModel(model: string): string {
+  const candidate = model.replace("-pro", "-flash");
+  if (candidate === model) return model;
+  if (STATIC_ANTIGRAVITY_MODELS.options.some((option) => option.id === candidate)) {
+    return candidate;
+  }
+  const tier = /-(high|medium|low)$/.exec(model)?.[1];
+  return (tier && ANTIGRAVITY_FLASH_BY_TIER[tier]) || STATIC_ANTIGRAVITY_MODELS.default;
+}
 
 /** Downgrade the model for an unattended turn: explicit unattended turns
  *  and fresh automation deliveries (webhook/resource triggers pass
@@ -34,8 +55,10 @@ export function unattendedModelDowngrade(
     opts.automationSource === "resource";
   if (!automated) return selection;
   let model = selection.model;
-  if (selection.instanceId === "gemini" || selection.instanceId === "antigravity") {
+  if (selection.instanceId === "gemini") {
     model = model.replace("-pro", "-flash");
+  } else if (selection.instanceId === "antigravity") {
+    model = antigravityFlashModel(model);
   } else if (selection.instanceId === "claude") {
     if (model.includes("sonnet") || model.includes("opus")) {
       // The driver's own current Haiku — claude-3-5-haiku-latest was a
