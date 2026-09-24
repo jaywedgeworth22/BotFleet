@@ -2,24 +2,23 @@ import XCTest
 @testable import CompanionCore
 
 final class CompanionGatewayFailurePolicyTests: XCTestCase {
-    private let paired = Connection(
-        name: "Mac",
-        host: "mac.companion.example",
-        port: 443,
-        activeEndpoint: CompanionEndpoint(
+    private var paired: Connection!
+
+    override func setUpWithError() throws {
+        let hosted = try XCTUnwrap(CompanionEndpoint(
             url: "https://mac.companion.example",
             kind: .hosted,
             priority: 0
-        ),
-        endpoints: [
-            CompanionEndpoint(
-                url: "https://mac.companion.example",
-                kind: .hosted,
-                priority: 0
-            )
-        ],
-        allowedRouteKinds: [.hosted]
-    )
+        ))
+        paired = Connection(
+            name: "Mac",
+            host: "mac.companion.example",
+            port: 443,
+            activeEndpoint: hosted,
+            endpoints: [hosted],
+            allowedRouteKinds: [.hosted]
+        )
+    }
 
     func testSuppressesExpectedOfflineStatusesFromPairedGateway() {
         for statusCode in [502, 503, 530] {
@@ -44,28 +43,23 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         )
     }
 
-    func testRecognizesAnAuthorizedFallbackRouteForThePairedGateway() {
+    func testRecognizesAnAuthorizedFallbackRouteForThePairedGateway() throws {
+        let hosted = try XCTUnwrap(CompanionEndpoint(
+            url: "https://mac.companion.example",
+            kind: .hosted,
+            priority: 0
+        ))
+        let tailnet = try XCTUnwrap(CompanionEndpoint(
+            url: "http://mac.tail1234.ts.net:8810",
+            kind: .tailnet,
+            priority: 1
+        ))
         let pairedWithFallback = Connection(
             name: "Mac",
             host: "mac.companion.example",
             port: 443,
-            activeEndpoint: CompanionEndpoint(
-                url: "https://mac.companion.example",
-                kind: .hosted,
-                priority: 0
-            ),
-            endpoints: [
-                CompanionEndpoint(
-                    url: "https://mac.companion.example",
-                    kind: .hosted,
-                    priority: 0
-                ),
-                CompanionEndpoint(
-                    url: "http://mac.tail1234.ts.net:8810",
-                    kind: .tailnet,
-                    priority: 1
-                )
-            ],
+            activeEndpoint: hosted,
+            endpoints: [hosted, tailnet],
             allowedRouteKinds: [.hosted, .tailnet]
         )
 
