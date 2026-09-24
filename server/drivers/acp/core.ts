@@ -261,7 +261,7 @@ export interface AcpSupport {
   }): Promise<void>;
 }
 
-const INIT_TIMEOUT = 30_000;
+const INIT_TIMEOUT = 60_000;
 const SESSION_CONFIG_TIMEOUT = 20_000; // configureSession's per-request default
 /** Upper bound on per-driver model discovery during registry load. */
 const BOOT_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;

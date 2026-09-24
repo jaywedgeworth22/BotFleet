@@ -181,6 +181,7 @@ import {
   type CloudBackend,
   type InstanceConfigMap,
   type ModelSelection,
+  type EffortLevel,
   type ProviderInstance,
   type RequestOutcome,
   type RuntimeEvent,
@@ -2423,7 +2424,7 @@ bus.subscribe((event: RuntimeEvent) => {
         let chain = configuredChain && configuredChain.length > 0 ? configuredChain : undefined;
         if (!chain && quotaOrCap) {
           deferredAutoFallback = true;
-          chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+          chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId, actualSelection.effort);
         }
         // A provider reload fences every dispatch, including a fallback to an
         // unrelated instance.  Keep this completion fold and its busy owner
@@ -2444,7 +2445,7 @@ bus.subscribe((event: RuntimeEvent) => {
               await waitForProviderReloads();
             }
             const refreshedAt = providerReloadGeneration;
-            chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+            chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId, actualSelection.effort);
             if (!providerReloadInProgress && providerReloadGeneration === refreshedAt) break;
           }
         }
@@ -2686,12 +2687,13 @@ bus.subscribe((event: RuntimeEvent) => {
  * instance (by fleet priority) is offered as a one-step chain. The caller
  * still runs it through selectTurnFallback, so the produced / quota /
  * stop-reason rules apply exactly as they do for a configured chain. */
-async function autoFallbackChain(botId: string, currentInstanceId: string): Promise<ModelSelection[]> {
+async function autoFallbackChain(botId: string, currentInstanceId: string, effort?: EffortLevel): Promise<ModelSelection[]> {
   try {
     const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
     return eligibleAutoFallbackChain(described, {
       botId,
       currentInstanceId,
+      effort,
       // The fleet ladder itself lives in model-fallback.ts so the ordering
       // is unit-testable without booting the server — minimax sits after
       // codex and ahead of openaiCompat, per the PR 10 owner decision.

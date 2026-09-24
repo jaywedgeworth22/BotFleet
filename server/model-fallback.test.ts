@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
-import type { ModelSelection } from "./contracts.ts";
+import type { EffortLevel, ModelSelection } from "./contracts.ts";
 import {
   AUTO_FALLBACK_PRIORITY,
   DEFAULT_QUOTA_COOLDOWN_TTL_MS,
@@ -457,6 +457,37 @@ describe("AUTO_FALLBACK_PRIORITY — #90 auto-failover ordering", () => {
       isCooling: () => false,
       priority: AUTO_FALLBACK_PRIORITY,
     })[0]?.instanceId;
+
+  it("fits the failing dispatch's effort to what the fallback model offers", () => {
+    const codex: AutoFallbackCandidate = {
+      instanceId: "codex",
+      driverKind: "codex",
+      capabilities: { effortLevels: ["low", "medium", "high", "xhigh"] },
+      snapshot: { state: "available", authenticated: true },
+      models: { default: "gpt-6" },
+    };
+    const run = (effort: EffortLevel | undefined, candidate = codex) =>
+      eligibleAutoFallbackChain([candidate], {
+        botId: "bot-1",
+        currentInstanceId: "claude",
+        effort,
+        isCooling: () => false,
+        priority: AUTO_FALLBACK_PRIORITY,
+      })[0];
+    // max is not offered by Codex: step down to its top level, not a 409.
+    expect(run("max")?.effort).toBe("xhigh");
+    // A supported effort is kept as-is.
+    expect(run("medium")?.effort).toBe("medium");
+    // No lower offered level: send no effort.
+    expect(run("none")).not.toHaveProperty("effort");
+    // A fallback engine without effort support never gets one.
+    const noEffort = { ...codex, capabilities: {} };
+    expect(run("high", noEffort)).not.toHaveProperty("effort");
+    // Per-model levels win over the engine's list.
+    const perModel = { ...codex, models: { default: "gpt-6", options: [{ id: "gpt-6", effortLevels: ["low", "high"] as EffortLevel[] }] } };
+    expect(run("xhigh", perModel)?.effort).toBe("high");
+    expect(run(undefined)).not.toHaveProperty("effort");
+  });
 
   it("prefers minimax over the lower-priority openaiCompat and grok instances", () => {
     expect(pick(["grok", "openaiCompat", "minimax"])).toBe("minimax");
