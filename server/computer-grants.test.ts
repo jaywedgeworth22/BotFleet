@@ -687,6 +687,48 @@ describe("routine failure resiliency and unattended safety", () => {
     expect(result.mounts.map((m) => m.kind)).toEqual(["local"]);
     expect(notices).toContain("VPS computer not mounted: VPS container is stopped");
   });
+  it("fails a cloud failure when the host grant mounted nothing (MCP engine, CUA down)", async () => {
+    const deps: TurnComputerDeps<object> = { ...makeBaseDeps(), readHostConnection: () => null };
+    deps.vps.vpsComputerAction = async () => {
+      throw new Error("Docker-over-SSH command timed out");
+    };
+
+    await expect(
+      resolveTurnComputerMounts({
+        bot: { id: "b1", name: "Compiler", computers: ["cloud", "local"], cloudBackend: "vps" },
+        cfg: {} as AppConfig,
+        engine: { driverKind: "claude", computerMcp: true, localComputerMcp: true, toolLoop: false },
+        threadId: "t1",
+        dispatchId: 1,
+        runOn: undefined,
+        allowed: null,
+        deps,
+      }),
+    ).rejects.toThrow("Docker-over-SSH command timed out");
+  });
+
+  it("degrades a cloud failure onto an acquired Local VM", async () => {
+    const notices: string[] = [];
+    const deps = makeBaseDeps(notices);
+    deps.vps.vpsComputerAction = async () => {
+      throw new Error("Docker-over-SSH command timed out");
+    };
+
+    const result = await resolveTurnComputerMounts({
+      bot: { id: "b1", name: "Compiler", computers: ["cloud", "vm"], cloudBackend: "vps" },
+      cfg: {} as AppConfig,
+      engine: { driverKind: "claude", computerMcp: true, localComputerMcp: true, toolLoop: false },
+      threadId: "t1",
+      dispatchId: 1,
+      runOn: undefined,
+      allowed: null,
+      deps,
+    });
+
+    expect(result.mounts.map((m) => m.kind)).toEqual(["vm"]);
+    expect(notices).toContain("VPS computer not mounted: Docker-over-SSH command timed out");
+  });
+
   it("fails clearly when an unattended cloud-only turn cannot reach the VPS", async () => {
     const deps = makeBaseDeps();
     deps.vps.vpsComputerAction = async () => {
