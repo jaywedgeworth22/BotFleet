@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import {
   CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD,
   computerProviderBlocked,
+  computerProvidersStale,
+  heldComputerProviders,
+  revokedTurnProviders,
   disabledComputerProviders,
   legacyAllowlistRevokedProviders,
   providerReloadKeys,
@@ -133,9 +136,13 @@ describe("PUT /api/config provider disable", () => {
     expect(source).toContain("await interruptTurnsUsingDisabledProviders(configBeforeSave, cfg);");
   });
 
-  it("reads the legacy allowlist as well as the provider toggles", () => {
-    expect(helper).toContain("revokedComputerProviders(");
-    expect(helper).toContain("allowed: allowedBotComputers(after)");
+  it("compares each turn's providers before and after the whole botDefaults save", () => {
+    expect(helper).toContain("revokedTurnProviders(held(before, bot, runOn), held(after, bot, runOn))");
+    // Every input turn mounting reads, from the settings being compared.
+    expect(helper).toContain("allowedBotComputers(settings)");
+    expect(helper).toContain("settings.botDefaults?.computers");
+    expect(helper).toContain("settings.botDefaults?.cloudBackend");
+    expect(helper).toContain("settings.botDefaults?.computerProviders");
   });
 
   it("latches each targeted turn as stopped before interrupting the engine", () => {
@@ -177,5 +184,71 @@ describe("computerProviderBlocked (lifecycle gates)", () => {
     expect(source).toContain('return computerProviderOff(config, "localVm");');
     // The old toggle-only check is gone from the cloud route.
     expect(source).not.toContain("if (providers && providers[providerId] !== true) {");
+  });
+});
+
+describe("heldComputerProviders / revokedTurnProviders", () => {
+  const all = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+  const both = ["cloud", "local"] as ("cloud" | "vm" | "local")[];
+  const held = (
+    granted: ("cloud" | "vm" | "local")[],
+    auto: boolean,
+    cloudBackend: "box" | "vps",
+    providers: typeof all | undefined = all,
+    autoAllows: ("cloud" | "vm" | "local")[] = both,
+  ) => heldComputerProviders({ granted, auto, autoAllows, cloudBackend }, providers);
+
+  it("revokes the host when an inherited workspace default moves from local to cloud", () => {
+    // An Auto bot resolves to the workspace default; resolveGrants hands it
+    // ["local"] before the save and ["cloud"] after.
+    const before = held(["local"], false, "box");
+    const after = held(["cloud"], false, "box");
+    expect(before).toEqual(["localMac"]);
+    expect(revokedTurnProviders(before, after)).toEqual(["localMac"]);
+  });
+
+  it("revokes the old backend when the workspace cloud backend switches", () => {
+    expect(revokedTurnProviders(held(["cloud"], false, "box"), held(["cloud"], false, "vps"))).toEqual(["asciiBox"]);
+  });
+
+  it("revokes a provider toggled off and leaves the rest", () => {
+    const after = held(["cloud", "vm"], false, "box", { ...all, localVm: false });
+    expect(revokedTurnProviders(held(["cloud", "vm"], false, "box"), after)).toEqual(["localVm"]);
+  });
+
+  it("counts Auto's reachable destinations, filtered by the toggles", () => {
+    expect(held([], true, "vps")).toEqual(["selfHostedVps", "localMac"]);
+    expect(held([], true, "vps", { ...all, localMac: false })).toEqual(["selfHostedVps"]);
+    expect(held([], true, "box", all, ["cloud"])).toEqual(["asciiBox"]);
+    expect(held([], false, "box")).toEqual([]);
+  });
+
+  it("revokes nothing when a save only grants more or changes nothing", () => {
+    expect(revokedTurnProviders(held(["cloud"], false, "box"), held(["cloud", "local"], false, "box"))).toEqual([]);
+    expect(revokedTurnProviders(held(["vm"], false, "box"), held(["vm"], false, "vps"))).toEqual([]);
+  });
+});
+
+describe("computerProvidersStale (PUT /api/config compare-and-swap)", () => {
+  const current = { asciiBox: true, selfHostedVps: false, localVm: true, localMac: false };
+  it("accepts a save that saw the stored toggles", () => {
+    expect(computerProvidersStale({ ...current }, current)).toBe(false);
+  });
+
+  it("refuses a save from a window that saw an older state", () => {
+    // Another window turned This Computer off; this one still shows it on.
+    expect(computerProvidersStale({ ...current, localMac: true }, current)).toBe(true);
+    expect(computerProvidersStale({ asciiBox: true }, current)).toBe(true);
+    expect(computerProvidersStale(null, current)).toBe(true);
+    expect(computerProvidersStale([true, false], current)).toBe(true);
+  });
+
+  it("is checked by PUT /api/config before anything is saved", () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const route = source.slice(source.indexOf('path === "/api/config") {'));
+    const cas = route.indexOf("computerProvidersStale(body.expectedComputerProviders, current)");
+    expect(cas).toBeGreaterThan(0);
+    expect(route.indexOf("providerConfigBusy = true;")).toBeGreaterThan(cas);
+    expect(route).toContain('code: "computer_providers_stale"');
   });
 });
