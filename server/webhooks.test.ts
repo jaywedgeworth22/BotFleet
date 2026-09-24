@@ -1269,6 +1269,17 @@ describe("WebhookManager", () => {
     const notAssignResult = h.manager.receive(notAssignHook.endpointId, notAssignSecret, warningAssignEvent);
     expect(notAssignResult).toMatchObject({ ignored: true });
 
+    // 58. Negated passive assignment instructions ("No assignments should be ignored") preserve assignment deliveries
+    const { webhook: noIgnoreHook, secret: noIgnoreSecret } = h.manager.create({
+      name: "No Assignments Ignored",
+      prompt: "No assignments should be ignored.",
+      botId: "maus-1",
+    });
+    const noIgnoreResult = h.manager.receive(noIgnoreHook.endpointId, noIgnoreSecret, warningAssignEvent);
+    expect(noIgnoreResult).toMatchObject({ duplicate: false });
+    expect(noIgnoreResult.runId).toBeDefined();
+    expect(noIgnoreResult.ignored).toBeUndefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

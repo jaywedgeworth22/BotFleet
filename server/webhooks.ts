@@ -511,6 +511,14 @@ export function shouldIgnoreWebhookEvent(
           `${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
           "i",
         );
+        const negationPattern = new RegExp(
+          `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
+            `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
+            `|${negativeWord}\\s+[^.;\\n]*?${assignmentTarget}[^.;\\n]*?${exclusionVerb})`,
+          "i",
+        );
+        if (negationPattern.test(prompt) || negationPattern.test(name)) return false;
+
         const negatedTargetPattern = new RegExp(
           `\\b(?:not|no|neither|without|never)\\s+(?:any\\s+)?${assignmentTarget}` +
             `|${assignmentTarget}\\s+(?:are|is\\s+)?(?:not|never|out\\s+of\\s+scope)\\b`,
@@ -532,14 +540,6 @@ export function shouldIgnoreWebhookEvent(
           "i",
         );
         if (interveningPattern.test(prompt)) return false;
-
-        const negationPattern = new RegExp(
-          `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
-            `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
-            `|${negativeWord}\\s+[^.;\\n]*?${assignmentTarget}[^.;\\n]*?${exclusionVerb})`,
-          "i",
-        );
-        if (negationPattern.test(prompt)) return false;
 
         // A conditional carve-out ("ignore assignment updates unless assigned to
         // the on-call engineer", "except in production", "only for primary") qualifies the
