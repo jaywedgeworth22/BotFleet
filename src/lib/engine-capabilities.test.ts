@@ -41,6 +41,7 @@ describe("ENGINE_CAPABILITIES registry", () => {
     expect(map.get("grok-4")).toBe("grok");
     expect(map.get("grok-4.7")).toBe("grok");
     expect(map.get("grok-4.6")).toBe("grok");
+    expect(map.get("grok-4.7-build-fast")).toBe("grok");
   });
 
   it("exposes one entry for every known engine id", () => {
