@@ -310,6 +310,10 @@ struct SettingsView: View {
             // every background/foreground and the sidecar updates only on
             // an actual send anyway).
             if session.connection != nil {
+                // Enter engine loading before push-health / config preflight
+                // so an empty cache does not flash "No engines yet" for up
+                // to ~20s per request.
+                loadingEngines = true
                 await session.refreshPushSenderHealth()
                 await loadSettingsExtras()
             }
@@ -418,9 +422,13 @@ struct SettingsView: View {
         // already starts with false; only set true after a successful seed.
         guard session.connection != nil else {
             engines = []
+            loadingEngines = false
             // Leave drafts alone so typing during disconnect is not wiped.
             return
         }
+        // Mark loading before configStatus (and any caller-side preflight) so
+        // an empty engines cache is not shown as "No engines yet".
+        loadingEngines = true
         if let status = await session.configStatus() {
             let serverName = status.profile?.name ?? ""
             let serverEmail = status.profile?.email ?? ""
@@ -456,7 +464,6 @@ struct SettingsView: View {
         } else if !settingsLoaded {
             settingsLoadFailed = true
         }
-        loadingEngines = true
         let fetched = await session.instances()
         engines = fetched.filter(\.isEnabled)
         loadingEngines = false

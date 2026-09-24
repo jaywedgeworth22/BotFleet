@@ -1712,7 +1712,9 @@ final class Session: ObservableObject {
 
     /// Chain one settings flush behind any in-flight full-config settings work.
     /// The latest generation drains every pending field group so a superseded
-    /// task cannot leave another endpoint's coalesce stranded.
+    /// task cannot leave another endpoint's coalesce stranded.  Superseded
+    /// waiters follow `settingsUpdateTail` to that drain instead of treating
+    /// latest-wins as a failed save.
     @MainActor
     private func enqueueSettingsUpdate() async -> SettingsFlushOutcome? {
         settingsUpdateGeneration += 1
@@ -1721,16 +1723,47 @@ final class Session: ObservableObject {
         let previous = settingsUpdateTail
         let task = Task<SettingsFlushOutcome?, Never> { @MainActor in
             _ = await previous?.value
-            // Latest-wins: a newer enqueue already holds our coalesced fields.
-            guard self.settingsUpdateGeneration == generation else { return nil }
             guard self.pairingGeneration == enqueuePairing else { return nil }
+            // Latest-wins: a newer enqueue already holds our coalesced fields.
+            // Return nil from this generation's task; the waiter below follows
+            // the replacement tail so callers are not told the save failed.
+            guard self.settingsUpdateGeneration == generation else { return nil }
             return await self.flushPendingSettingsMutations(
                 enqueuePairing: enqueuePairing,
                 generation: generation
             )
         }
         settingsUpdateTail = task
-        return await task.value
+        if let outcome = await task.value {
+            return outcome
+        }
+        return await awaitSettingsFlushAfterSupersede(
+            generation: generation,
+            enqueuePairing: enqueuePairing
+        )
+    }
+
+    /// After latest-wins skips our generation, await the flush that inherited
+    /// our pending fields so `updateRoomTurnTimeout` (and siblings) observe
+    /// that outcome instead of a false nil / "Could not save".
+    @MainActor
+    private func awaitSettingsFlushAfterSupersede(
+        generation: Int,
+        enqueuePairing: Int
+    ) async -> SettingsFlushOutcome? {
+        while true {
+            guard pairingGeneration == enqueuePairing else { return nil }
+            let generationAtAwait = settingsUpdateGeneration
+            // We were still the tip and finished with nil → real failure / empty.
+            guard generationAtAwait > generation else { return nil }
+            guard let tail = settingsUpdateTail else { return nil }
+            let outcome = await tail.value
+            if let outcome { return outcome }
+            // That tail was also superseded. Loop if a newer generation exists.
+            if settingsUpdateGeneration == generationAtAwait {
+                return nil
+            }
+        }
     }
 
 
