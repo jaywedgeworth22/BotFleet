@@ -463,6 +463,17 @@ export function slimSentryPayload(payload: JsonValue): JsonValue {
   return Object.keys(out).length ? out : payload;
 }
 
+function slimPagerDutyUser(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "id", pickStr(rec, "id"));
+  assignDefined(out, "summary", pickStr(rec, "summary") ?? pickStr(rec, "name"));
+  assignDefined(out, "name", pickStr(rec, "name") ?? pickStr(rec, "summary"));
+  assignDefined(out, "type", pickStr(rec, "type"));
+  return Object.keys(out).length ? out : undefined;
+}
+
 function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefined {
   const rec = asRecord(value);
   if (!rec) return undefined;
@@ -480,6 +491,38 @@ function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefi
     assignDefined(sOut, "id", pickStr(service, "id"));
     assignDefined(sOut, "name", pickStr(service, "name") ?? pickStr(service, "summary"));
     if (Object.keys(sOut).length) out.service = sOut;
+  }
+  if (Array.isArray(rec.assignments)) {
+    const slimAssignments = rec.assignments
+      .slice(0, 5)
+      .map((a) => {
+        const aRec = asRecord(a);
+        if (!aRec) return undefined;
+        const aOut: Record<string, JsonValue> = {};
+        assignDefined(aOut, "at", pickStr(aRec, "at"));
+        const user = slimPagerDutyUser(aRec.assignee) ?? slimPagerDutyUser(aRec);
+        if (user) {
+          if (asRecord(aRec.assignee)) {
+            aOut.assignee = user;
+          } else {
+            Object.assign(aOut, user);
+          }
+        }
+        return Object.keys(aOut).length ? aOut : undefined;
+      })
+      .filter((a): a is Record<string, JsonValue> => Boolean(a));
+    if (slimAssignments.length) out.assignments = slimAssignments;
+  }
+  if (Array.isArray(rec.assignees)) {
+    const slimAssignees = rec.assignees
+      .slice(0, 5)
+      .map((a) => slimPagerDutyUser(a))
+      .filter((a): a is Record<string, JsonValue> => Boolean(a));
+    if (slimAssignees.length) out.assignees = slimAssignees;
+  }
+  if (rec.assignee) {
+    const user = slimPagerDutyUser(rec.assignee);
+    if (user) out.assignee = user;
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -541,7 +584,6 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
       out.messages = slimmedMessages;
       const first = slimmedMessages[0];
       assignDefined(out, "event_type", pickStr(first, "event"));
-      if (first.incident) out.incident = first.incident;
     }
   }
 

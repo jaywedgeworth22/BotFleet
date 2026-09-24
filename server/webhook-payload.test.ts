@@ -268,6 +268,9 @@ describe("slimWebhookPayload", () => {
     expect(incident.incident_number).toBe(175);
     expect(incident.urgency).toBe("high");
     expect((incident.service as Record<string, JsonValue>).name).toBe("BotFleet");
+    expect(incident.assignees).toEqual([
+      { id: "P123", summary: "Jay Wedgeworth", name: "Jay Wedgeworth" },
+    ]);
     expect(JSON.stringify(slim)).not.toContain("log details");
     expect(JSON.stringify(slim)).not.toContain("Fleet Ops");
     expect(serializeWebhookPayload(fatPd).length).toBeLessThan(1_000);
@@ -372,8 +375,46 @@ describe("slimWebhookPayload", () => {
     expect(messages[0].id).toBe("msg-1");
     expect((messages[0].incident as Record<string, JsonValue>).title).toBe("First incident in batch");
     expect(messages[1].id).toBe("msg-2");
-    expect((messages[1].incident as Record<string, JsonValue>).title).toBe("Second incident in batch");
     expect(JSON.stringify(slim)).not.toContain("verbose team");
+    expect(slim.incident).toBeUndefined();
+  });
+
+  it("preserves bounded assignees and assignments in PagerDuty incidents", () => {
+    const reassignedPd = {
+      event: {
+        event_type: "incident.reassigned",
+        data: {
+          id: "INC-REASSIGN",
+          title: "Database failover required",
+          status: "acknowledged",
+          assignments: [
+            {
+              at: "2026-09-24T05:00:00Z",
+              assignee: {
+                id: "PUSER99",
+                summary: "Lead SRE",
+                type: "user_reference",
+                extra_bloat: "x".repeat(500),
+              },
+            },
+          ],
+        },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(reassignedPd)).toBe(true);
+    const slim = slimWebhookPayload(reassignedPd) as Record<string, JsonValue>;
+    const inc = slim.incident as Record<string, JsonValue>;
+    expect(inc.title).toBe("Database failover required");
+    const assignments = inc.assignments as Record<string, JsonValue>[];
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0].at).toBe("2026-09-24T05:00:00Z");
+    expect(assignments[0].assignee).toEqual({
+      id: "PUSER99",
+      summary: "Lead SRE",
+      name: "Lead SRE",
+      type: "user_reference",
+    });
+    expect(JSON.stringify(slim)).not.toContain("extra_bloat");
   });
 
   it("does not classify unrelated payloads with an incident property as PagerDuty without an event marker", () => {

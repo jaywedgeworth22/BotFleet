@@ -480,6 +480,24 @@ describe("WebhookManager", () => {
     expect(exceptWarningResult.runId).toBeDefined();
     const exceptDebugResult = h.manager.receive(exceptHook.endpointId, exceptSecret, clauseDebug);
     expect(exceptDebugResult).toMatchObject({ ignored: true });
+
+    // 12. "Monitor errors and ignore warning events" should ignore warning events
+    const { webhook: scopedVerbHook, secret: scopedVerbSecret } = h.manager.create({
+      name: "Error Monitor Warning Ignorer",
+      prompt: "Monitor errors and ignore warning events.",
+      botId: "maus-1",
+    });
+    const scopedVerbResult = h.manager.receive(scopedVerbHook.endpointId, scopedVerbSecret, clauseWarning);
+    expect(scopedVerbResult).toMatchObject({ ignored: true });
+
+    // 13. "Ignore warnings" should match plural level names
+    const { webhook: pluralHook, secret: pluralSecret } = h.manager.create({
+      name: "Plural Warning Ignorer",
+      prompt: "Ignore warnings. Investigate errors.",
+      botId: "maus-1",
+    });
+    const pluralResult = h.manager.receive(pluralHook.endpointId, pluralSecret, clauseWarning);
+    expect(pluralResult).toMatchObject({ ignored: true });
     expect(dropNounResult.runId).toBeDefined();
   });
 });
