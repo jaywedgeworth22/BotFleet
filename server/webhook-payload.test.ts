@@ -272,4 +272,71 @@ describe("slimWebhookPayload", () => {
     expect(JSON.stringify(slim)).not.toContain("Fleet Ops");
     expect(serializeWebhookPayload(fatPd).length).toBeLessThan(1_000);
   });
+
+  it("preserves non-issue Sentry resources such as metric_alert and custom alert data", () => {
+    const sentryMetricAlert = {
+      action: "created",
+      installation: { uuid: "inst-uuid-42" },
+      actor: { type: "application", id: "sentry", name: "Sentry" },
+      data: {
+        metric_alert: {
+          id: "98765",
+          title: "High API Error Rate Alert",
+          threshold: 50,
+          project: { id: "1001", slug: "agentic-trading" },
+        },
+      },
+    };
+    expect(isSentryWebhookPayload(sentryMetricAlert)).toBe(true);
+    const slim = slimWebhookPayload(sentryMetricAlert) as Record<string, JsonValue>;
+    expect(slim.action).toBe("created");
+    expect(slim.metric_alert).toEqual({
+      id: "98765",
+      title: "High API Error Rate Alert",
+      threshold: 50,
+      project: { id: "1001", slug: "agentic-trading" },
+    });
+    expect((slim.data as Record<string, JsonValue>).metric_alert).toBeDefined();
+    expect(serializeWebhookPayload(sentryMetricAlert)).toContain("High API Error Rate Alert");
+  });
+
+  it("retains and slims every message in a multi-incident PagerDuty delivery batch", () => {
+    const multiPd = {
+      messages: [
+        {
+          id: "msg-1",
+          event: "incident.trigger",
+          incident: {
+            id: "INC-1",
+            number: 101,
+            title: "First incident in batch",
+            urgency: "high",
+            status: "triggered",
+            teams: [{ id: "T1", summary: "verbose team ".repeat(20) }],
+          },
+        },
+        {
+          id: "msg-2",
+          event: "incident.trigger",
+          incident: {
+            id: "INC-2",
+            number: 102,
+            title: "Second incident in batch",
+            urgency: "low",
+            status: "triggered",
+            teams: [{ id: "T2", summary: "verbose team ".repeat(20) }],
+          },
+        },
+      ],
+    };
+    expect(isPagerDutyWebhookPayload(multiPd)).toBe(true);
+    const slim = slimWebhookPayload(multiPd) as Record<string, JsonValue>;
+    const messages = slim.messages as Record<string, JsonValue>[];
+    expect(messages).toHaveLength(2);
+    expect(messages[0].id).toBe("msg-1");
+    expect((messages[0].incident as Record<string, JsonValue>).title).toBe("First incident in batch");
+    expect(messages[1].id).toBe("msg-2");
+    expect((messages[1].incident as Record<string, JsonValue>).title).toBe("Second incident in batch");
+    expect(JSON.stringify(slim)).not.toContain("verbose team");
+  });
 });

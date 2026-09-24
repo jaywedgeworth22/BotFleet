@@ -318,7 +318,7 @@ export interface IngressIgnoreDecision {
 }
 
 export function shouldIgnoreWebhookEvent(
-  trigger: { prompt?: string; name?: string },
+  trigger: { prompt?: string; name?: string; eventTypes?: string[] },
   event: WebhookEvent,
 ): IngressIgnoreDecision {
   const payload = event.payload;
@@ -352,9 +352,29 @@ export function shouldIgnoreWebhookEvent(
     }
 
     if (action === "assigned" || action === "unassigned") {
+      const isAssignmentExcluded = (): boolean => {
+        const filterPattern = /(?:out of scope|stay silent|ignore|drop)[^.]*?\b(?:assign(?:ed|ment|ee)?|ownership)\b/i;
+        if (!filterPattern.test(prompt)) return false;
+        const negationPattern = /(?:do\\s+not|don't|never|not)\\s+(?:out of scope|stay silent|ignore|drop)[^.]*?\b(?:assign(?:ed|ment|ee)?|ownership)\b/i;
+        return !negationPattern.test(prompt);
+      };
+
+      if (isAssignmentExcluded()) {
+        return {
+          ignore: true,
+          reason: `Sentry action '${action}' is marked out of scope by trigger instructions`,
+        };
+      }
+
+      const handlesAssignments =
+        (trigger.eventTypes ?? []).some((e) => /\b(?:assign(?:ed|ment|ee)?|ownership)\b/i.test(e)) ||
+        /\b(?:assign(?:ed|ment|ee)?|ownership|router|triage)\b/i.test(prompt) ||
+        /\b(?:assign(?:ed|ment|ee)?|ownership)\b/i.test(name);
+
       if (
-        /\b(?:incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
-        /\b(?:incident|fatal|broken|crash)\b/i.test(prompt)
+        !handlesAssignments &&
+        (/\b(?:incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
+          /\b(?:incident|fatal|broken|crash)\b/i.test(prompt))
       ) {
         return {
           ignore: true,

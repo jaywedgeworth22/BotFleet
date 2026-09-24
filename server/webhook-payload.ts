@@ -418,6 +418,37 @@ export function slimSentryPayload(payload: JsonValue): JsonValue {
     const uuid = pickStr(installation, "uuid");
     if (uuid) out.installation = { uuid };
   }
+
+  // Preserve non-issue/non-event Sentry payload data (e.g. metric_alert, comment)
+  if (data) {
+    const remainingData: Record<string, JsonValue> = {};
+    for (const [key, val] of Object.entries(data)) {
+      if (key === "issue" || key === "event") continue;
+      out[key] = val;
+      remainingData[key] = val;
+    }
+    if (Object.keys(remainingData).length > 0) {
+      out.data = remainingData;
+    }
+  }
+
+  // Also preserve any custom or non-standard top-level resources
+  for (const [key, val] of Object.entries(root)) {
+    if (
+      key === "action" ||
+      key === "actor" ||
+      key === "installation" ||
+      key === "data" ||
+      key === "issue" ||
+      key === "event"
+    ) {
+      continue;
+    }
+    if (out[key] === undefined) {
+      out[key] = val;
+    }
+  }
+
   return Object.keys(out).length ? out : payload;
 }
 
@@ -450,10 +481,10 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
     return true;
   }
   if (Array.isArray(root.messages)) {
-    const first = asRecord(root.messages[0]);
-    if (first && (pickStr(first, "event")?.startsWith("incident.") || asRecord(first.incident))) {
-      return true;
-    }
+    return root.messages.some((msg) => {
+      const rec = asRecord(msg);
+      return Boolean(rec && (pickStr(rec, "event")?.startsWith("incident.") || asRecord(rec.incident)));
+    });
   }
   return false;
 }
@@ -470,11 +501,23 @@ export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
     const incident = slimPagerDutyIncident(data ?? event);
     if (incident) out.incident = incident;
   } else if (Array.isArray(root.messages)) {
-    const first = asRecord(root.messages[0]);
-    if (first) {
+    const rawMessages = root.messages.slice(0, 10);
+    const slimmedMessages: Record<string, JsonValue>[] = [];
+    for (const rawMsg of rawMessages) {
+      const msgRec = asRecord(rawMsg);
+      if (!msgRec) continue;
+      const sMsg: Record<string, JsonValue> = {};
+      assignDefined(sMsg, "event", pickStr(msgRec, "event") ?? pickStr(msgRec, "type"));
+      assignDefined(sMsg, "id", pickStr(msgRec, "id"));
+      const inc = slimPagerDutyIncident(msgRec.incident);
+      if (inc) sMsg.incident = inc;
+      if (Object.keys(sMsg).length) slimmedMessages.push(sMsg);
+    }
+    if (slimmedMessages.length > 0) {
+      out.messages = slimmedMessages;
+      const first = slimmedMessages[0];
       assignDefined(out, "event_type", pickStr(first, "event"));
-      const incident = slimPagerDutyIncident(first.incident);
-      if (incident) out.incident = incident;
+      if (first.incident) out.incident = first.incident;
     }
   }
   return Object.keys(out).length ? out : payload;

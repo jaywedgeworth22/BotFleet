@@ -333,5 +333,58 @@ describe("WebhookManager", () => {
       outcome: "ignored",
       reason: expect.stringContaining("action 'requested' ignored"),
     });
+
+    // 4. Sentry assignment should be processed if trigger handles ownership/assignments
+    const { webhook: assignHook, secret: assignSecret } = h.manager.create({
+      name: "Sentry Incident Ownership",
+      prompt: "Handle assigned incidents and triage assignees.",
+      botId: "maus-1",
+    });
+
+    const assignEvent = {
+      payload: {
+        action: "assigned",
+        installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+        actor: { type: "user", id: "sentry", name: "Jay" },
+        data: {
+          issue: {
+            id: "102",
+            shortId: "ST-3",
+            title: "Assigned incident for triage",
+            level: "error",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    };
+    const assignResult = h.manager.receive(assignHook.endpointId, assignSecret, assignEvent);
+    expect(assignResult).toMatchObject({ duplicate: false });
+    expect(assignResult.runId).toBeDefined();
+
+    // 5. Sentry assignment should be ignored if trigger is purely incident responder without assignment handling
+    const { webhook: incidentHook, secret: incidentSecret } = h.manager.create({
+      name: "Fatal Incident Alert Responder",
+      prompt: "Investigate fatal crashes and broken runtime services.",
+      botId: "maus-1",
+    });
+    const unhandledAssignResult = h.manager.receive(incidentHook.endpointId, incidentSecret, assignEvent);
+    expect(unhandledAssignResult).toMatchObject({ ignored: true });
+    expect(h.manager.listAttempts().at(-1)).toMatchObject({
+      outcome: "ignored",
+      reason: expect.stringContaining("is an issue assignment update, not a runtime incident"),
+    });
+
+    // 6. Explicit exclusion instruction should ignore assignments even if name matches
+    const { webhook: excludeHook, secret: excludeSecret } = h.manager.create({
+      name: "Incident Triage",
+      prompt: "Assignments are out of scope. Stay silent on assigned events.",
+      botId: "maus-1",
+    });
+    const excludedAssignResult = h.manager.receive(excludeHook.endpointId, excludeSecret, assignEvent);
+    expect(excludedAssignResult).toMatchObject({ ignored: true });
+    expect(h.manager.listAttempts().at(-1)).toMatchObject({
+      outcome: "ignored",
+      reason: expect.stringContaining("is marked out of scope by trigger instructions"),
+    });
   });
 });
