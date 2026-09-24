@@ -83,6 +83,19 @@ interface ExtractedInstruction {
   body: string;
 }
 
+const UNTRUSTED_CLOSE_TAG = "[/UNTRUSTED WEBHOOK EVENT DATA]";
+
+/** Cut one delivery section to `budget` chars without losing the closing
+ * untrusted-data delimiter: a bare slice would leave everything after it
+ * (the rest of the batch prompt) inside the untrusted block. */
+function truncateSection(section: string, budget: number): string {
+  if (section.length <= budget) return section;
+  if (!section.endsWith(UNTRUSTED_CLOSE_TAG)) return section.slice(0, budget);
+  const marker = "\n[Event data truncated for length]\n";
+  const contentBudget = Math.max(0, budget - marker.length - UNTRUSTED_CLOSE_TAG.length);
+  return `${section.slice(0, contentBudget)}${marker}${UNTRUSTED_CLOSE_TAG}`;
+}
+
 function extractInstruction(prompt: string): ExtractedInstruction {
   const trimmed = prompt.trim();
   const match = trimmed.match(
@@ -152,7 +165,7 @@ export function foldPrompts(decision: GapDecision): string {
       if (kept.length > 0 && used + extra > MAX_FOLD_CHARS) break;
       if (kept.length === 0 && used + extra > MAX_FOLD_CHARS) {
         const budget = Math.max(0, MAX_FOLD_CHARS - used - 2);
-        kept.unshift(sections[i]!.slice(0, budget));
+        kept.unshift(truncateSection(sections[i]!, budget));
         break;
       }
       kept.unshift(sections[i]!);
@@ -173,7 +186,7 @@ export function foldPrompts(decision: GapDecision): string {
     if (kept.length > 0 && used + extra > MAX_FOLD_CHARS) break;
     if (kept.length === 0 && used + extra > MAX_FOLD_CHARS) {
       const budget = Math.max(0, MAX_FOLD_CHARS - used - 2);
-      kept.unshift(sections[i]!.slice(0, budget));
+      kept.unshift(truncateSection(sections[i]!, budget));
       break;
     }
     kept.unshift(sections[i]!);
