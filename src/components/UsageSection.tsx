@@ -13,7 +13,7 @@ import type { MausColor } from "@/lib/mascot";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import { UsageMonitorQuotaGrid } from "./UsageMonitorQuotaGrid";
 import { UsageWhatIfProjection } from "./UsageWhatIfProjection";
-import { ENGINE_CAPABILITIES, engineIdFromDriverKind } from "@/lib/engine-capabilities";
+import { ENGINE_CAPABILITIES, engineIdFromDriverKind, uniqueModelToEngineId } from "@/lib/engine-capabilities";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, headlinesExhausted, headlinesNearCap, isEngineUnconfigured, localQuotaStatusLine, minimaxQuotaLine, providerIssueLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines, type LocalQuotaFreshnessView } from "@/lib/quota-display";
@@ -395,6 +395,85 @@ export function UsageSection() {
     }
     return map;
   }, [state.instances]);
+
+  // Attribution helpers shared by the what-if projection rows and the
+  // unattributed scan below.  A bucket banked with engine metadata wins;
+  // a legacy bucket (no engineId) resolves only through a live instance
+  // id — history from a deleted connection goes to the unattributed
+  // total rather than being guessed onto the task's configured engine.
+  const engineFor = (instanceId: string) =>
+    instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
+  const bucketEngine = (instanceId: string, engineId?: string) =>
+    (engineId && (engineIdFromDriverKind(engineId) ?? instanceIdToEngineId.get(engineId) ?? engineId)) || engineFor(instanceId);
+  // Only model ids unique to one engine map at all — a shared id
+  // (claude-sonnet-4.5 is listed under Cursor AND Claude) used to
+  // first-win onto Cursor and steal legacy Claude usage.
+  const modelToEngineId = uniqueModelToEngineId();
+  const legacyEngine = (instanceId: string | undefined, model?: string) => {
+    if (instanceId) {
+      const resolved = engineFor(instanceId);
+      if (ENGINE_CAPABILITIES[resolved]) return resolved;
+    }
+    if (model) {
+      const byModelId = modelToEngineId.get(model);
+      if (byModelId) return byModelId;
+    }
+    return null;
+  };
+  // A metadata-free bucket keyed by a custom connection slug must NOT
+  // resolve through the live instance map: the slug can be deleted and
+  // recreated with a different driver, and the live id would then credit
+  // the new driver with the old bucket's history (forkKey kept the
+  // buckets apart — the lookup must not rejoin them).  Only built-in,
+  // driver-kind instance ids are stable enough to resolve.
+  const legacyBucketEngine = (instanceId: string) =>
+    instanceId.startsWith("custom-") ? null : legacyEngine(instanceId, undefined);
+  // One pass over the same records the projection walks: metadata-free
+  // buckets whose instance id no longer resolves to a registry engine
+  // (deleted connections) cannot be honestly credited to any engine row,
+  // so they total into an unattributed figure the projection footnote
+  // shows instead of dropping the history.
+  let unattributedTokens30d = 0;
+  {
+    const periodStartMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    for (const bot of state.bots) {
+      for (const task of bot.tasks ?? []) {
+        if ((task.lastActivity ?? task.createdAt) < periodStartMs) continue;
+        const buckets = Object.entries(task.usageByInstance ?? {});
+        let bucketedTurns = 0;
+        let bucketedInput = 0;
+        let bucketedOutput = 0;
+        for (const [bucketInstanceId, bucketUsage] of buckets) {
+          bucketedTurns += bucketUsage.turns ?? 0;
+          bucketedInput += bucketUsage.input;
+          bucketedOutput += bucketUsage.output;
+          if ((bucketUsage.turns ?? 0) <= 0) continue;
+          if (bucketUsage.engineId) continue;
+          if (legacyBucketEngine(bucketInstanceId)) continue;
+          unattributedTokens30d += bucketUsage.input + bucketUsage.output;
+        }
+        // Un-bucketed usage (a task with no buckets at all, or the
+        // pre-banking remainder) whose legacy resolution comes back null
+        // — a deleted custom connection with an unknown model — is
+        // counted nowhere in the engine rows; total it here too.
+        const legacy = task.usage;
+        if (!legacy || (legacy.turns ?? 0) <= 0) continue;
+        if (legacyEngine(task.modelSelection?.instanceId ?? bot.modelSelection?.instanceId, task.modelSelection?.model)) continue;
+        if (buckets.length === 0) {
+          unattributedTokens30d += legacy.input + legacy.output;
+        } else if ((legacy.turns ?? 0) - bucketedTurns > 0) {
+          unattributedTokens30d += Math.max(0, legacy.input - bucketedInput) + Math.max(0, legacy.output - bucketedOutput);
+        }
+      }
+      for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
+        if (roomUsage.lastAt < periodStartMs) continue;
+        if ((roomUsage.turns ?? 0) <= 0) continue;
+        if (roomUsage.engineId) continue;
+        if (legacyBucketEngine(roomInstanceId)) continue;
+        unattributedTokens30d += roomUsage.input + roomUsage.output;
+      }
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -949,9 +1028,9 @@ export function UsageSection() {
             The "PAYG / 1k in" column shows the public API rate only when the engine's
             pricing block carries an API rate — subscription-only engines render{" "}
             <span className="text-emerald-700 dark:text-emerald-300">Included</span>{" "}
-            instead.  MiniMax sits on the Mavis Token Plan Max subscription ($55/mo flat)
+            instead.{"\u00A0 "}MiniMax sits on the Mavis Token Plan Max subscription ($55/mo flat)
             — its PAYG column is reference data for the "what-if API" projection below,
-            never what you are billed.  The same registry backs the Capability Matrix at
+            never what you are billed.{"\u00A0 "}The same registry backs the Capability Matrix at
             the top of the Settings → Engines panel so the two views cannot drift.
           </div>
         </div>
@@ -959,6 +1038,7 @@ export function UsageSection() {
 
       <UsageWhatIfProjection
         periodLabel="Last 30 days"
+        unattributedTokens={unattributedTokens30d}
         byEngine={[
           // Populated from the same rows we render above: each engine that
           // has a registered api or subscription+api pricing block gets a
@@ -993,8 +1073,8 @@ export function UsageSection() {
             // aggregates into the canonical row; engineIdFromDriverKind
             // covers instances deleted since the turn ran, including the
             // legacy deepseek/dshAgent aliases.
-            const engineFor = (instanceId: string) =>
-              instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
+            // (engineFor/bucketEngine/legacyEngine are hoisted above the
+            // component's return so the unattributed scan shares them.)
             let tokensForEngine = 0;
             let cachedForEngine = 0;
             let inputForEngine = 0;
@@ -1025,7 +1105,22 @@ export function UsageSection() {
                     bucketedOutput += bucketUsage.output;
                     bucketedCached += cachedInput(bucketUsage);
                     if ((bucketUsage.turns ?? 0) <= 0) continue;
-                    if (engineFor(bucketInstanceId) !== id) continue;
+                    // Legacy buckets banked before engine metadata existed
+                    // carry no engineId; a deleted custom connection id
+                    // resolves to nothing, so fall back to the model map —
+                    // otherwise the usage is skipped here yet still
+                    // subtracted from the legacy remainder and vanishes.
+                    // A metadata-free bucket whose instance id no longer
+                    // resolves came from a deleted connection.  Guessing
+                    // the engine — from the task's configured model OR
+                    // from a recreated slug's live mapping — would credit
+                    // the wrong driver with the old bucket's history
+                    // (review flagged both) — those tokens surface in the
+                    // unattributed total instead of any engine row.
+                    const resolvedBucketEngine = bucketUsage.engineId
+                      ? bucketEngine(bucketInstanceId, bucketUsage.engineId)
+                      : legacyBucketEngine(bucketInstanceId);
+                    if (resolvedBucketEngine !== id) continue;
                     tokensForEngine += bucketUsage.input + bucketUsage.output;
                     cachedForEngine += cachedInput(bucketUsage);
                     inputForEngine += bucketUsage.input;
@@ -1038,8 +1133,8 @@ export function UsageSection() {
                   // projection does not drop that history.
                   const legacy = task.usage;
                   if (legacy && (legacy.turns ?? 0) - bucketedTurns > 0) {
-                    const legacyInstanceId = task.modelSelection?.instanceId ?? botInstanceId;
-                    if (legacyInstanceId && engineFor(legacyInstanceId) === id) {
+                    const legacyEngineId = legacyEngine(task.modelSelection?.instanceId ?? botInstanceId, task.modelSelection?.model);
+                    if (legacyEngineId === id) {
                       const rInput = Math.max(0, legacy.input - bucketedInput);
                       const rOutput = Math.max(0, legacy.output - bucketedOutput);
                       const rCached = Math.max(0, cachedInput(legacy) - bucketedCached);
@@ -1052,9 +1147,8 @@ export function UsageSection() {
                   continue;
                 }
                 if ((task.usage?.turns ?? 0) <= 0) continue;
-                const instanceId = task.modelSelection?.instanceId ?? botInstanceId;
-                if (!instanceId) continue;
-                if (engineFor(instanceId) !== id) continue;
+                const legacyEngineId = legacyEngine(task.modelSelection?.instanceId ?? botInstanceId, task.modelSelection?.model);
+                if (legacyEngineId !== id) continue;
                 tokensForEngine += task.usage!.input + task.usage!.output;
                 cachedForEngine += cachedInput(task.usage!);
                 inputForEngine += task.usage!.input;
@@ -1067,13 +1161,22 @@ export function UsageSection() {
               for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
                 if (roomUsage.lastAt < periodStartMs) continue;
                 if ((roomUsage.turns ?? 0) <= 0) continue;
-                if (engineFor(roomInstanceId) !== id) continue;
+                const resolvedRoomEngine = roomUsage.engineId
+                  ? bucketEngine(roomInstanceId, roomUsage.engineId)
+                  : legacyBucketEngine(roomInstanceId);
+                if (resolvedRoomEngine !== id) continue;
                 tokensForEngine += roomUsage.input + roomUsage.output;
                 cachedForEngine += cachedInput(roomUsage);
                 inputForEngine += roomUsage.input;
                 outputForEngine += roomUsage.output;
               }
             }
+            // NOTE: tokens fold per ENGINE before pricing, so multi-model
+            // engines price every token at the registry's single PAYG rate
+            // block (Gemini Flash as Pro, MiniMax H3 at the M3 rates).
+            // Buckets now bank per-model usage (`byModel`), but per-model
+            // PAYG rates do not exist in the registry yet — adding them
+            // needs owner-confirmed pricing data, not invented numbers.
             const actualCostUsd = id === "minimax"
               ? 55
               : entry.pricing.kind === "subscription+api" && entry.pricing.subscription.costPerMonth != null
@@ -1311,7 +1414,7 @@ function UsageRow({
   open,
   onToggle,
 }: {
-  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }> };
+  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number; engineId?: string; byModel?: Record<string, TaskUsage> }> };
   usage: TaskUsage;
   open: boolean;
   onToggle: () => void;
@@ -1332,7 +1435,7 @@ function UsageRow({
       createdAt: u.lastAt,
       lastActivity: u.lastAt,
       usage: u,
-      modelSelection: { instanceId, model: "" },
+      modelSelection: { instanceId, model: Object.keys(u.byModel ?? {}).join(", ") },
     }));
   const tasks: TaskLike[] = [
     ...(bot.tasks ?? []).filter((task) => (task.usage?.turns ?? 0) > 0 || (task.usage?.input ?? 0) + (task.usage?.output ?? 0) > 0),
@@ -1359,10 +1462,44 @@ function UsageRow({
   const cumulative = tasks.map((task) => {
     const taskUsage = task.usage ?? { input: 0, output: 0, costUsd: null, turns: 0 };
     const isRoomRow = task.threadId.startsWith("room:");
+    // Show the model that PRODUCED the usage when the per-instance
+    // buckets banked one (post-upgrade turns); the configured selection
+    // is only the fallback for legacy records — it is the task's current
+    // setting, not necessarily what ran.
+    const ranModels = isRoomRow
+      ? []
+      : [...new Set(Object.values(task.usageByInstance ?? {}).flatMap((b) => Object.keys(b.byModel ?? {})))];
+    // A session that mostly ran before per-model banking exists has only
+    // its newest turns in byModel — labeling it by those alone would hide
+    // the model that produced the bulk of the usage, so when the banked
+    // turns do not cover the task total, keep the configured model too.
+    const bankedTurns = isRoomRow
+      ? 0
+      : Object.values(task.usageByInstance ?? {}).reduce(
+          (n, b) => n + Object.values(b.byModel ?? {}).reduce((m, mu) => m + (mu.turns ?? 0), 0),
+          0,
+        );
+    const configuredModel = task.modelSelection?.model ?? bot.modelSelection.model;
+    // Whenever the banked per-model turns do not cover the task total the
+    // label is incomplete — even when the configured model is already in
+    // the list (many legacy Opus turns + one banked Haiku turn with Haiku
+    // configured must not read as plain "Haiku") — so mark it.
+    const historyIncomplete = ranModels.length > 0 && bankedTurns < (task.usage?.turns ?? 0);
+    const labelModels = ranModels.length > 0
+      ? historyIncomplete && configuredModel && !ranModels.includes(configuredModel)
+        ? [...ranModels, configuredModel]
+        : ranModels
+      : [];
     const model = isRoomRow
-      ? task.modelSelection?.instanceId ?? "room"
-      : task.modelSelection?.model ?? bot.modelSelection.model;
-    if (model && !isRoomRow) modelSet.add(model);
+      ? task.modelSelection?.model || task.modelSelection?.instanceId || "room"
+      : labelModels.length > 0
+        ? labelModels.join(", ") + (historyIncomplete ? " + earlier usage" : "")
+        : configuredModel;
+    if (!isRoomRow && labelModels.length > 0) {
+      for (const m of labelModels) modelSet.add(m);
+    } else if (model && !isRoomRow) {
+      modelSet.add(model);
+    }
     const running = cumulativeByThread.get(task.threadId) ?? { tokens: 0, cost: 0 };
     return {
       task,
@@ -1466,8 +1603,11 @@ interface TaskLike {
   lastActivity?: number;
   usage?: TaskUsage;
   /** Per-instance breakdown of `usage`, banked from the selection that
-   *  actually ran each turn (post-fallback).  Absent on older records. */
-  usageByInstance?: Record<string, TaskUsage>;
+   *  actually ran each turn (post-fallback).  `engineId` is the registry
+   *  engine resolved at bank time, so attribution survives deleting the
+   *  connection;  `byModel` splits the bucket per model that ran.
+   *  Absent on older records. */
+  usageByInstance?: Record<string, TaskUsage & { engineId?: string; byModel?: Record<string, TaskUsage> }>;
   modelSelection?: ModelSelectionLike;
 }
 interface ModelSelectionLike {

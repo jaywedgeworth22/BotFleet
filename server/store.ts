@@ -244,7 +244,7 @@ export interface TaskRecord {
    *  the engine that ran, not the configured one.  Absent on records from
    *  before the field existed; those attribute whole-task, by the
    *  configured selection. */
-  usageByInstance?: Record<string, TaskUsage>;
+  usageByInstance?: Record<string, InstanceUsage>;
   /** the folder this task's turns run in, pinned on its first turn from
    * the bot's `cwd` at that moment. Pinned, not read live: Claude keeps
    * sessions per project directory and Codex threads carry their cwd, so
@@ -281,6 +281,18 @@ export interface TaskUsage {
   turns: number;
 }
 
+/** Per-instance usage bucket: the running tally plus the registry engine
+ *  (driver kind) resolved when the turn banked — so attribution survives
+ *  the connection being deleted — and a per-model breakdown so pricing
+ *  and session rows can follow the model that actually ran. */
+export type InstanceUsage = TaskUsage & {
+  engineId?: string;
+  byModel?: Record<string, TaskUsage>;
+};
+
+/** Room buckets add the most-recent-turn timestamp for period windows. */
+export type RoomUsage = InstanceUsage & { lastAt: number };
+
 /** Merge one settled turn into a running usage tally.  Shared by the
  *  per-task ledger, its per-instance breakdown, and the per-bot room
  *  ledger so all three clean and accumulate identically. */
@@ -310,6 +322,50 @@ function mergeTaskUsage(
     costUsd: cost === null ? prevCost : (prevCost ?? 0) + cost,
     turns: base.turns + 1,
   };
+}
+
+/** A custom connection can be deleted and recreated under the same slug
+ *  with a DIFFERENT driver.  Banking the new turns into the same bucket
+ *  would re-attribute the old usage to the new engine, so an engine change
+ *  on an already-banked instance forks the bucket onto a suffixed key.
+ *  The same holds for a pre-upgrade bucket with turns but no engineId:
+ *  stamping it with whatever engine banks next would re-attribute history
+ *  that may belong to a different (possibly deleted) driver, so it forks
+ *  too — the legacy bucket keeps its honest "unknown engine" shape. */
+function forkKey(
+  byInstance: Record<string, InstanceUsage>,
+  instanceId: string,
+  meta?: { engineId?: string; model?: string },
+): string {
+  const prev = byInstance[instanceId];
+  if (meta?.engineId) {
+    if (prev?.engineId && prev.engineId !== meta.engineId) {
+      return `${instanceId}~${meta.engineId}`;
+    }
+    if (!prev?.engineId && (prev?.turns ?? 0) > 0) {
+      return `${instanceId}~${meta.engineId}`;
+    }
+  }
+  return instanceId;
+}
+
+/** Merge one settled turn into a per-instance bucket, preserving any
+ *  engineId/byModel the bucket already carries. */
+function mergeInstanceUsage(
+  prev: InstanceUsage | undefined,
+  turn: { input?: number; output?: number; cachedInput?: number; costUsd: number | null; billingMode?: TurnBillingMode },
+  meta?: { engineId?: string; model?: string },
+): InstanceUsage {
+  const out: InstanceUsage = mergeTaskUsage(prev, turn);
+  const engineId = meta?.engineId ?? prev?.engineId;
+  if (engineId) out.engineId = engineId;
+  if (meta?.model) {
+    out.byModel = { ...(prev?.byModel ?? {}) };
+    out.byModel[meta.model] = mergeTaskUsage(prev?.byModel?.[meta.model], turn);
+  } else if (prev?.byModel) {
+    out.byModel = prev.byModel;
+  }
+  return out;
 }
 
 /** Everything the BOT authored is scrubbed of content-shaped secrets before
@@ -416,7 +472,7 @@ export interface BotRecord {
   /** Shared-room turns this bot spoke, banked per engine instance (room
    *  threads are not bot tasks, so they cannot live on the task ledger).
    *  `lastAt` is the most recent turn in the bucket, for period windows. */
-  roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }>;
+  roomUsageByInstance?: Record<string, RoomUsage>;
   id: string;
   /** the ACTIVE task's thread — everything that runs a turn reads this */
   threadId: ThreadId;
@@ -1593,13 +1649,15 @@ export class Store {
     threadId: string,
     turn: { input?: number; output?: number; cachedInput?: number; costUsd: number | null; billingMode?: TurnBillingMode },
     instanceId?: string,
+    meta?: { engineId?: string; model?: string },
   ): TaskUsage | null {
     const task = this.taskByThread(botId, threadId);
     if (!task) return null;
     task.usage = mergeTaskUsage(task.usage, turn);
     if (instanceId) {
       const byInstance = (task.usageByInstance ??= {});
-      byInstance[instanceId] = mergeTaskUsage(byInstance[instanceId], turn);
+      const key = forkKey(byInstance, instanceId, meta);
+      byInstance[key] = mergeInstanceUsage(byInstance[key], turn, meta);
     }
     this.saveBots();
     this.emit({ type: "bot", botId });
@@ -1615,11 +1673,13 @@ export class Store {
     botId: string,
     instanceId: string,
     turn: { input?: number; output?: number; cachedInput?: number; costUsd: number | null; billingMode?: TurnBillingMode },
+    meta?: { engineId?: string; model?: string },
   ): void {
     const bot = this.bot(botId);
     if (!bot) return;
     const byInstance = (bot.roomUsageByInstance ??= {});
-    byInstance[instanceId] = { ...mergeTaskUsage(byInstance[instanceId], turn), lastAt: Date.now() };
+    const key = forkKey(byInstance, instanceId, meta);
+    byInstance[key] = { ...mergeInstanceUsage(byInstance[key], turn, meta), lastAt: Date.now() };
     this.saveBots();
     this.emit({ type: "bot", botId });
   }

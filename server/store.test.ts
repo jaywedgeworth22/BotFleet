@@ -69,6 +69,53 @@ describe("Store", () => {
     expect(store.messagesFor(bot.threadId)).toHaveLength(0);
   });
 
+  it("addTaskUsage banks the engine kind and model that actually ran, and keeps them across later turns", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    // A turn that fell over to another engine banks under the instance
+    // that ran, with the registry engine + model remembered — a deleted
+    // custom connection must not drop the usage out of attribution.
+    store.addTaskUsage(bot.id, bot.threadId, { input: 100, output: 20, costUsd: 0.01 }, "custom-work-mm", { engineId: "minimax", model: "minimax-m3" });
+    store.addTaskUsage(bot.id, bot.threadId, { input: 50, output: 10, costUsd: 0.005 }, "custom-work-mm", { model: "minimax-m3" });
+    const bucket = store.taskByThread(bot.id, bot.threadId)?.usageByInstance?.["custom-work-mm"];
+    expect(bucket?.engineId).toBe("minimax");
+    expect(bucket?.byModel?.["minimax-m3"]).toMatchObject({ input: 150, output: 30, turns: 2 });
+
+    store.addRoomUsage(bot.id, "custom-work-mm", { input: 7, output: 3, costUsd: null }, { engineId: "minimax", model: "minimax-m3" });
+    const roomBucket = store.bot(bot.id)?.roomUsageByInstance?.["custom-work-mm"];
+    expect(roomBucket?.engineId).toBe("minimax");
+    expect(roomBucket?.byModel?.["minimax-m3"]).toMatchObject({ input: 7, output: 3, turns: 1 });
+    expect(typeof roomBucket?.lastAt).toBe("number");
+
+    // The slug comes back pointing at a DIFFERENT engine: the old bucket
+    // must keep its attribution, the new turns fork onto a suffixed key.
+    store.addTaskUsage(bot.id, bot.threadId, { input: 9, output: 4, costUsd: 0.001 }, "custom-work-mm", { engineId: "deepseek-harness", model: "deepseek-v4" });
+    const afterFork = store.taskByThread(bot.id, bot.threadId)?.usageByInstance;
+    expect(afterFork?.["custom-work-mm"]?.engineId).toBe("minimax");
+    expect(afterFork?.["custom-work-mm"]?.byModel?.["minimax-m3"]).toMatchObject({ input: 150, output: 30, turns: 2 });
+    expect(afterFork?.["custom-work-mm~deepseek-harness"]?.engineId).toBe("deepseek-harness");
+    expect(afterFork?.["custom-work-mm~deepseek-harness"]?.byModel?.["deepseek-v4"]).toMatchObject({ input: 9, output: 4, turns: 1 });
+  });
+
+  it("addTaskUsage forks a metadata-free legacy bucket instead of stamping it with the next engine", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    // Pre-upgrade record: turns banked with no engine metadata at all.
+    store.addTaskUsage(bot.id, bot.threadId, { input: 500, output: 100, costUsd: 0.05 }, "custom-work-mm");
+    // The first post-upgrade turn must fork, not stamp the whole bucket
+    // with whatever engine happens to bank next.
+    store.addTaskUsage(bot.id, bot.threadId, { input: 10, output: 2, costUsd: 0.001 }, "custom-work-mm", { engineId: "minimax", model: "minimax-m3" });
+    const buckets = store.taskByThread(bot.id, bot.threadId)?.usageByInstance;
+    expect(buckets?.["custom-work-mm"]?.engineId).toBeUndefined();
+    expect(buckets?.["custom-work-mm"]).toMatchObject({ input: 500, output: 100, turns: 1 });
+    expect(buckets?.["custom-work-mm~minimax"]?.engineId).toBe("minimax");
+    expect(buckets?.["custom-work-mm~minimax"]).toMatchObject({ input: 10, output: 2, turns: 1 });
+    // An empty bucket (no turns yet) takes the stamp without forking.
+    store.addTaskUsage(bot.id, bot.threadId, { input: 5, output: 1, costUsd: null }, "custom-fresh", { engineId: "minimax", model: "minimax-m3" });
+    const fresh = store.taskByThread(bot.id, bot.threadId)?.usageByInstance;
+    expect(fresh?.["custom-fresh"]?.engineId).toBe("minimax");
+  });
+
   it("addTaskUsage accumulates settled-turn totals per task and survives a restart", () => {
     const store = new Store(selection);
     const bot = store.createBot();

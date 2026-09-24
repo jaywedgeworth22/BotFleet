@@ -10,7 +10,36 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { UsageWhatIfProjection, apiEquivalentCost, projectionRows } from "./UsageWhatIfProjection.tsx";
-import { ENGINE_CAPABILITIES } from "@/lib/engine-capabilities.tsx";
+import { ENGINE_CAPABILITIES, uniqueModelToEngineId } from "@/lib/engine-capabilities.tsx";
+
+describe("uniqueModelToEngineId", () => {
+  it("maps unique model ids and leaves shared ids unmapped", () => {
+    const map = uniqueModelToEngineId();
+    // claude-sonnet-4.5 is listed under Cursor AND Claude — first-wins
+    // would credit Cursor with legacy Claude usage, so it maps nowhere.
+    expect(map.has("claude-sonnet-4.5")).toBe(false);
+    // Unique ids still resolve: cursor-default only exists under Cursor,
+    // claude-opus-4 only under Claude.
+    expect(map.get("cursor-default")).toBe("cursor");
+    expect(map.get("claude-opus-4")).toBe("claude");
+  });
+});
+
+describe("UsageWhatIfProjection unattributed footnote", () => {
+  it("shows the unattributed-usage footnote only when tokens could not be attributed", () => {
+    const byEngine = [
+      { engineId: "minimax", totalTokens: 1_000_000, cachedTokens: 100_000, actualCostUsd: 55 },
+    ];
+    const withUnattributed = renderToStaticMarkup(
+      createElement(UsageWhatIfProjection, { periodLabel: "Last 30 days", byEngine, unattributedTokens: 12_345 }),
+    );
+    expect(withUnattributed).toContain("12,345 tokens ran on connections deleted before");
+    const without = renderToStaticMarkup(
+      createElement(UsageWhatIfProjection, { periodLabel: "Last 30 days", byEngine }),
+    );
+    expect(without).not.toContain("connections deleted before");
+  });
+});
 
 describe("UsageWhatIfProjection", () => {
   it("renders one row per engine that has a pricing block with API", () => {

@@ -2239,6 +2239,14 @@ bus.subscribe((event: RuntimeEvent) => {
           ? registry.get(event.providerInstanceId)?.models.default ?? fallbackPolicy?.model ?? ""
           : fallbackPolicy?.model ?? "",
       };
+      // Resolve the registry engine (driver kind) once so usage banking
+      // keeps attributing correctly even after the connection is deleted.
+      const actualUsageMeta = {
+        engineId: actualSelection.instanceId
+          ? registry.get(actualSelection.instanceId)?.driverKind ?? undefined
+          : undefined,
+        model: actualSelection.model || undefined,
+      };
       if (fallbackBot) {
         completionFoldOwners.set(event.threadId, {
           botId: fallbackBot.id,
@@ -2392,7 +2400,7 @@ bus.subscribe((event: RuntimeEvent) => {
           billingMode: event.billingMode,
           // actualSelection, not the configured selection: a turn that
           // fell over to another engine is that engine's spend.
-        }, actualSelection.instanceId);
+        }, actualSelection.instanceId, actualUsageMeta);
         if (typeof event.cost === "number" && event.cost > 0) {
           rollingSpendTracker.recordTurn({
             at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
@@ -2506,7 +2514,7 @@ bus.subscribe((event: RuntimeEvent) => {
             cachedInput: tokens?.cachedInput,
             costUsd: event.cost ?? null,
             billingMode: event.billingMode,
-          });
+          }, actualUsageMeta);
           if (typeof event.cost === "number" && event.cost > 0) {
             rollingSpendTracker.recordTurn({
               at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
