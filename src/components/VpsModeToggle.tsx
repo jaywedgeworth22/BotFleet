@@ -29,7 +29,7 @@ const OPTIONS: ReadonlyArray<{ value: VpsMode; label: string; aria: string }> = 
 
 const CAPTION: Record<"shared" | "per-bot", string> = {
   shared: "Shared VPS is a single bot-net across all bots — every bot that has the VPS in its grant lands on the same container.",
-  "per-bot": "Per-bot VPS gives each bot a private container, durable workspace, and loopback viewer. Idle desktops stop on their own after 8 hours.",
+  "per-bot": "Per-bot VPS gives each bot a private container, durable workspace, and loopback viewer.\u00a0 Idle desktops stop on their own after 8 hours.",
 };
 
 export function VpsModeToggle({ value: stored, busy, onChange }: VpsModeToggleProps) {
