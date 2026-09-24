@@ -982,6 +982,20 @@ describe("WebhookManager", () => {
     const retriedMutableResult = h.manager.receive(mutableHook.endpointId, mutableSecret, mutableWarning);
     expect(retriedMutableResult).toMatchObject({ duplicate: true, runId: firstMutableResult.runId });
 
+    // 41. "Ignore debug events, warning events are in scope" preserves warning deliveries and ignores debug deliveries
+    const { webhook: clauseInScopeHook, secret: clauseInScopeSecret } = h.manager.create({
+      name: "Debug Ignorer Warning In-Scope",
+      prompt: "Ignore debug events, warning events are in scope.",
+      botId: "maus-1",
+    });
+    const clauseInScopeWarningResult = h.manager.receive(clauseInScopeHook.endpointId, clauseInScopeSecret, clauseWarning);
+    expect(clauseInScopeWarningResult).toMatchObject({ duplicate: false });
+    expect(clauseInScopeWarningResult.runId).toBeDefined();
+    expect(clauseInScopeWarningResult.ignored).toBeUndefined();
+
+    const clauseInScopeDebugResult = h.manager.receive(clauseInScopeHook.endpointId, clauseInScopeSecret, clauseDebug);
+    expect(clauseInScopeDebugResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

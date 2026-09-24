@@ -344,8 +344,9 @@ export function shouldIgnoreWebhookEvent(
       const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b))`;
       // Positive handling/investigation verbs that govern events
       const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
-      // An exception word, contrast word (not), or positive handling verb stops exclusion scanning so exclusions bind to their target
-      const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}`;
+      const inScopePhrase = String.raw`\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
+      // An exception word, contrast word (not), positive handling verb, or in-scope assertion stops exclusion scanning so exclusions bind to their target
+      const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
       const verbFirstPattern = new RegExp(
         `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b`,
         "i",
@@ -354,6 +355,8 @@ export function shouldIgnoreWebhookEvent(
         `\\b${lvl}s?\\b(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
         "i",
       );
+      const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
+      const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
       if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) {
         if (lvl !== "error") {
           const errorOnlyPattern = new RegExp(
@@ -369,7 +372,7 @@ export function shouldIgnoreWebhookEvent(
 
             const positiveTargetsLevel = new RegExp(
               `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b` +
-                `|\\b${lvl}s?\\b(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:are\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
+                `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
               "i",
             );
             if (positiveTargetsLevel.test(prompt)) return false;
@@ -380,8 +383,6 @@ export function shouldIgnoreWebhookEvent(
             );
             if (carveOutPattern.test(prompt)) return false;
 
-            const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
-            const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
             const exceptClause = `(?:except(?:\\s+for)?(?!\\s+${otherLevelsPattern}\\b))`;
             const conditional = `(?:unless|${exceptClause}|only\\s+(?:if|when|in|from|for|on)|if|when)`;
             const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
@@ -398,9 +399,10 @@ export function shouldIgnoreWebhookEvent(
         return false;
       }
 
-      // Positive investigation verbs override exclusion only when they specifically target this level
+      // Positive investigation verbs or in-scope assertions override exclusion only when they specifically target this level
       const positiveTargetsLevel = new RegExp(
-        `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b`,
+        `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b` +
+          `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
         "i",
       );
       if (positiveTargetsLevel.test(prompt)) return false;
@@ -427,8 +429,6 @@ export function shouldIgnoreWebhookEvent(
       // would have kept.  The scan must not cross another instruction
       // verb — "ignore warnings, notify when resolved" conditions the
       // notify, not the ignore.
-      const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
-      const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
       const exceptClause = `(?:except(?:\\s+for)?(?!\\s+${otherLevelsPattern}\\b))`;
       const conditional = `(?:unless|${exceptClause}|only\\s+(?:if|when|in|from|for|on)|if|when)`;
       const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
@@ -456,7 +456,8 @@ export function shouldIgnoreWebhookEvent(
         const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b))`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
         const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
-        const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}`;
+        const inScopePhrase = String.raw`\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
+        const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
         const verbFirstPattern = new RegExp(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}`,
           "i",
@@ -468,7 +469,8 @@ export function shouldIgnoreWebhookEvent(
         if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
 
         const positiveTargetsAssignment = new RegExp(
-          `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?${assignmentTarget}`,
+          `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?${assignmentTarget}` +
+            `|${assignmentTarget}(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:are|is\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
           "i",
         );
         if (positiveTargetsAssignment.test(prompt)) return false;
