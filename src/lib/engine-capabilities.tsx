@@ -182,7 +182,9 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
         includedQuota: "Bundled into this seat's SuperGrok Heavy",
         notes: CURSOR_ULTRA_NOTE,
       },
-      notes: "MARKED: needs Jay's confirmation — Cursor Ultra costPerMonth is null until Jay confirms whether it is billed standalone or only via the xAI bundle.",
+      // No outer `notes`: UsageSection shows `pricing.notes` ahead of the
+      // subscription note, and the open costPerMonth question is tracked in
+      // the MARKED comment above CURSOR_ULTRA_NOTE, not in UI copy.
     },
     capabilities: {
       files: "yes",
