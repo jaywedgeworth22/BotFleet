@@ -31,10 +31,37 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         allowedRouteKinds: [.hosted, .tailnet]
     )
 
+    private static let tunnelDown = ["cf-error-type": "1033"]
+
+    func testRequiresTheCloudflare1033MarkerOnA530() {
+        let cases: [([String: String]?, Bool)] = [
+            (["cf-error-type": "1033"], true),
+            (["CF-Error-Type": " 1033 "], true),
+            (["cf-error-type": "1016"], false),
+            (["cf-error-type": "1000"], false),
+            (["server": "cloudflare"], false),
+            ([:], false),
+            (nil, false)
+        ]
+        for (headers, expected) in cases {
+            XCTAssertEqual(
+                CompanionGatewayFailurePolicy.shouldSuppress(
+                    statusCode: 530,
+                    responseHeaders: headers,
+                    requestURL: "https://mac.companion.example/api/health",
+                    pairedConnection: paired
+                ),
+                expected,
+                "headers \(String(describing: headers))"
+            )
+        }
+    }
+
     func testSuppressesTheTunnelOfflineStatusFromThePairedHostedGateway() {
         XCTAssertTrue(
             CompanionGatewayFailurePolicy.shouldSuppress(
                 statusCode: 530,
+                responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                 requestURL: "https://mac.companion.example/api/health",
                 pairedConnection: paired
             )
@@ -48,6 +75,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
             XCTAssertFalse(
                 CompanionGatewayFailurePolicy.shouldSuppress(
                     statusCode: statusCode,
+                    responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                     requestURL: "https://mac.companion.example/api/health",
                     pairedConnection: paired
                 ),
@@ -60,6 +88,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         XCTAssertFalse(
             CompanionGatewayFailurePolicy.shouldSuppress(
                 statusCode: 530,
+                responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                 requestURL: "https://status.example/api/health",
                 pairedConnection: paired
             )
@@ -70,6 +99,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         XCTAssertFalse(
             CompanionGatewayFailurePolicy.shouldSuppress(
                 statusCode: 530,
+                responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                 requestURL: "http://mac.tail1234.ts.net:8810/api/health",
                 pairedConnection: pairedWithTailnet
             )
@@ -77,6 +107,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         XCTAssertTrue(
             CompanionGatewayFailurePolicy.shouldSuppress(
                 statusCode: 530,
+                responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                 requestURL: "https://mac.companion.example/api/health",
                 pairedConnection: pairedWithTailnet
             )
@@ -92,6 +123,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
             XCTAssertFalse(
                 CompanionGatewayFailurePolicy.shouldSuppress(
                     statusCode: 530,
+                    responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                     requestURL: requestURL,
                     pairedConnection: paired
                 ),
@@ -104,6 +136,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         XCTAssertFalse(
             CompanionGatewayFailurePolicy.shouldSuppress(
                 statusCode: 530,
+                responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                 requestURL: "https://mac.companion.example/api/health",
                 pairedConnection: nil
             )
@@ -111,6 +144,7 @@ final class CompanionGatewayFailurePolicyTests: XCTestCase {
         XCTAssertFalse(
             CompanionGatewayFailurePolicy.shouldSuppress(
                 statusCode: 530,
+                responseHeaders: CompanionGatewayFailurePolicyTests.tunnelDown,
                 requestURL: "not a url",
                 pairedConnection: paired
             )
