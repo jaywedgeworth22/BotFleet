@@ -606,7 +606,7 @@ async function resolveMounts<Lease>(
   // One derivation for every destination — see computer-capability.ts.  The
   // names below are kept because the mount sites read as "does this turn
   // mount X", not "can this engine reach X".
-  const unattendedAgy = Boolean(input.unattended && engine.driverKind === "antigravity");
+  const unattendedAgy = Boolean(input.unattended && engine.driverKind === "antigravityAgent");
   const reach = computerReach({
     driverKind: engine.driverKind,
     capabilities: { computerMcp: engine.computerMcp, localComputerMcp: engine.localComputerMcp, toolLoop: engine.toolLoop },
