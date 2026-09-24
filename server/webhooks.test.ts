@@ -1193,6 +1193,29 @@ describe("WebhookManager", () => {
       expect(adjResult.ignored).toBeUndefined();
     }
 
+    // 52. Non-error exclusions ("Ignore all non-error events") treat non-errors as error-only scope
+    const { webhook: nonErrorHook, secret: nonErrorSecret } = h.manager.create({
+      name: "Non-Error Ignorer",
+      prompt: "Ignore all non-error events. Fix critical issues.",
+      botId: "maus-1",
+    });
+    const nonErrorWarningResult = h.manager.receive(nonErrorHook.endpointId, nonErrorSecret, clauseWarning);
+    expect(nonErrorWarningResult).toMatchObject({ ignored: true });
+
+    const nonErrorErrorResult = h.manager.receive(nonErrorHook.endpointId, nonErrorSecret, clauseError);
+    expect(nonErrorErrorResult).toMatchObject({ duplicate: false });
+    expect(nonErrorErrorResult.runId).toBeDefined();
+
+    // 53. Bare triage/router terms without assignment context ("Triage production crashes")
+    // do not treat triggers as assignment handlers; assignment deliveries are ignored.
+    const { webhook: crashTriageHook, secret: crashTriageSecret } = h.manager.create({
+      name: "Crash Triage Responder",
+      prompt: "Triage production crashes immediately.",
+      botId: "maus-1",
+    });
+    const crashTriageAssignResult = h.manager.receive(crashTriageHook.endpointId, crashTriageSecret, warningAssignEvent);
+    expect(crashTriageAssignResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

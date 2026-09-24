@@ -370,6 +370,21 @@ export function shouldIgnoreWebhookEvent(
       const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
       if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) {
         if (lvl !== "error") {
+          const nonErrorTarget = `\\bnon-?errors?(?:\\s+events?)?\\b`;
+          const nonErrorExclusionPattern = new RegExp(
+            `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${nonErrorTarget}` +
+              `|${nonErrorTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
+            "i",
+          );
+          const isNonErrorExcluded =
+            (nonErrorExclusionPattern.test(prompt) || nonErrorExclusionPattern.test(name)) &&
+            !new RegExp(
+              `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${nonErrorTarget}` +
+                `|${nonErrorTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
+                `|${negativeWord}\\s+[^.;\\n]*?${nonErrorTarget}[^.;\\n]*?${exclusionVerb})`,
+              "i",
+            ).test(prompt);
+
           const positiveHandling = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)`;
           const inclusionPhrase = `(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed|investigated|triaged|resolved)`;
           const errorOnlyPattern = new RegExp(
@@ -382,7 +397,7 @@ export function shouldIgnoreWebhookEvent(
             `)`,
             "i",
           );
-          if (errorOnlyPattern.test(prompt) || errorOnlyPattern.test(name)) {
+          if (isNonErrorExcluded || errorOnlyPattern.test(prompt) || errorOnlyPattern.test(name)) {
             const negationErrorOnly = new RegExp(
               `\\b(?:do\\s+not|don't|never|not)\\s+(?:only|exclusively)\\b`,
               "i",
@@ -537,16 +552,19 @@ export function shouldIgnoreWebhookEvent(
       }
 
       const assignmentMatcher = /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i;
+      const assignmentContextMatcher = /\b(?:(?:assignment|ownership|issue)\s+(?:router|triage)|(?:router|triage)\s+(?:for\s+)?(?:assignments?|assignees?|ownership|owners?))\b/i;
       const handlesAssignments =
         (trigger.eventTypes ?? []).some((e) => assignmentMatcher.test(e)) ||
-        /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership|router|triage)\b/i.test(prompt) ||
-        assignmentMatcher.test(name);
+        assignmentMatcher.test(name) ||
+        assignmentMatcher.test(prompt) ||
+        assignmentContextMatcher.test(prompt) ||
+        assignmentContextMatcher.test(name);
 
       if (handlesAssignments) {
         isAssignmentHandled = true;
       } else if (
-        /\b(?:incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
-        /\b(?:incident|fatal|broken|crash)\b/i.test(prompt)
+        /\b(?:incidents?|alerts?|fatal|errors?|breakages?|crash(?:es)?)\b/i.test(name) ||
+        /\b(?:incidents?|fatal|broken|crash(?:es)?)\b/i.test(prompt)
       ) {
         return {
           ignore: true,
