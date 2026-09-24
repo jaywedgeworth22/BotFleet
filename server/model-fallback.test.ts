@@ -21,6 +21,7 @@ import {
   turnHitQuotaOrCap,
   turnQuotaOrCapEvidence,
   turnProducedAssistantOutput,
+  unattendedModelDowngrade,
   type FallbackScanMessage,
 } from "./model-fallback.ts";
 import { eligibleAutoFallbackChain, type AutoFallbackCandidate } from "./turn-safety.ts";
@@ -880,5 +881,75 @@ describe("QuotaCooldownRegistry", () => {
     expect(cd).toBeDefined();
     expect(cd?.resetsAt).toBe(now + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
     expect(registry.get("bot1", "antigravity", "gemini-3.8-flash-high", now + DEFAULT_QUOTA_COOLDOWN_TTL_MS + 1)).toBeUndefined();
+  });
+});
+
+describe("unattendedModelDowngrade", () => {
+  const gemini: ModelSelection = { instanceId: "gemini", model: "gemini-3.1-pro-preview" };
+  const claude: ModelSelection = { instanceId: "claude", model: "claude-sonnet-5" };
+
+  it("leaves attended turns untouched", () => {
+    expect(unattendedModelDowngrade(gemini, { effortLevels: ["low"] })).toEqual(gemini);
+    expect(
+      unattendedModelDowngrade(gemini, {
+        unattended: false,
+        automationSource: undefined,
+        effortLevels: ["low"],
+      }),
+    ).toEqual(gemini);
+  });
+
+  it("downgrades model and effort on unattended turns when the engine offers effort", () => {
+    expect(
+      unattendedModelDowngrade(gemini, { unattended: true, effortLevels: ["low"] }),
+    ).toEqual({ ...gemini, model: "gemini-3.1-flash-preview", effort: "low" });
+  });
+
+  it("downgrades the model but omits effort when the engine has no effortLevels", () => {
+    // Antigravity / some API drivers reject effort at the turn-start capability
+    // check; stamping "low" would 409 the whole unattended turn.
+    const antigravity: ModelSelection = { instanceId: "antigravity", model: "claude-opus-4-1" };
+    const out = unattendedModelDowngrade(antigravity, { unattended: true, effortLevels: undefined });
+    expect(out).toEqual({ ...antigravity, model: "claude-opus-4-1".replace("-pro", "-flash") });
+    expect(out).not.toHaveProperty("effort");
+  });
+
+  it("downgrades fresh webhook and resource deliveries, which carry automationSource not unattended", () => {
+    for (const automationSource of ["webhook", "resource"]) {
+      expect(
+        unattendedModelDowngrade(gemini, { automationSource, effortLevels: ["low"] }),
+      ).toEqual({ ...gemini, model: "gemini-3.1-flash-preview", effort: "low" });
+    }
+  });
+
+  it("leaves schedule/manual automation and plain turns on the selected model", () => {
+    for (const automationSource of ["schedule", "manual", undefined]) {
+      expect(
+        unattendedModelDowngrade(gemini, { automationSource, effortLevels: ["low"] }),
+      ).toEqual(gemini);
+    }
+  });
+
+  it("never overrides an explicit caller modelSelection", () => {
+    expect(
+      unattendedModelDowngrade(gemini, {
+        unattended: true,
+        automationSource: "webhook",
+        hasExplicitSelection: true,
+        effortLevels: ["low"],
+      }),
+    ).toEqual(gemini);
+  });
+
+  it("pins Claude downgrades to the driver's current Haiku", () => {
+    expect(
+      unattendedModelDowngrade(claude, { unattended: true, effortLevels: ["low"] }),
+    ).toEqual({ ...claude, model: "claude-haiku-4-5", effort: "low" });
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-opus-4-1" },
+        { unattended: true, effortLevels: ["low"] },
+      ),
+    ).toEqual({ instanceId: "claude", model: "claude-haiku-4-5", effort: "low" });
   });
 });
