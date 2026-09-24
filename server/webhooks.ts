@@ -319,6 +319,26 @@ export interface IngressIgnoreDecision {
   reason?: string;
 }
 
+// The scope patterns below are large (several KB each) and costly to compile.
+// A fresh `new RegExp` per event lets V8 drop the compiled code on GC and
+// recompile it on the next event, which made ingress take tens of seconds on
+// slower CI runners.  Keep one compiled instance per (source, flags).  Every
+// pattern here is non-global and non-sticky, so a shared instance carries no
+// `lastIndex` state between calls.  The level text comes from the payload, so
+// the cache is capped rather than allowed to grow with every distinct value.
+const SCOPE_PATTERN_CACHE_LIMIT = 256;
+const scopePatternCache = new Map<string, RegExp>();
+function scopePattern(source: string, flags: string): RegExp {
+  const key = `${flags}/${source}`;
+  let pattern = scopePatternCache.get(key);
+  if (!pattern) {
+    pattern = new RegExp(source, flags);
+    if (scopePatternCache.size >= SCOPE_PATTERN_CACHE_LIMIT) scopePatternCache.clear();
+    scopePatternCache.set(key, pattern);
+  }
+  return pattern;
+}
+
 export function shouldIgnoreWebhookEvent(
   trigger: { prompt?: string; name?: string; eventTypes?: string[] },
   event: WebhookEvent,
@@ -364,22 +384,22 @@ export function shouldIgnoreWebhookEvent(
       const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
       // An exception word, contrast word (not), positive handling verb, or in-scope assertion stops exclusion scanning so exclusions bind to their target
       const exceptionBoundary = String.raw`\b(?:except|but|without|not(?!\s+in\s+scope\b)|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
-      const verbFirstPattern = new RegExp(
+      const verbFirstPattern = scopePattern(
         `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b`,
         "i",
       );
-      const targetFirstPattern = new RegExp(
+      const targetFirstPattern = scopePattern(
         `\\b${lvl}s?\\b(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
         "i",
       );
-      const positiveScopeException = new RegExp(
+      const positiveScopeException = scopePattern(
         `(?:${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b` +
           `|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b(?:(?!${exclusionVerb})[^.;\\n])*?${contrastingVerb})`,
         "i",
       );
       const allLevelsPattern = `(?:error|warning|info|debug)s?(?:\\s+events?)?`;
       const levelCoordination = `(?:\\b${allLevelsPattern}\\b\\s*(?:,|/|\\bor\\b|\\band\\b|\\bnor\\b)\\s*)*`;
-      const bareNegativePattern = new RegExp(
+      const bareNegativePattern = scopePattern(
         `(?:^|[.;\\n]|${contrastingVerb}[^.;\\n]*?)\\s*\\b(?:no|not|neither)\\s+(?:any\\s+)?${levelCoordination}\\b${lvl}s?(?:\\s+events?)?\\b`,
         "i",
       );
@@ -402,24 +422,24 @@ export function shouldIgnoreWebhookEvent(
       if (!hasLevelExclusion) {
         if (lvl !== "error") {
           const nonErrorTarget = `\\bnon-?errors?(?:\\s+events?)?\\b`;
-          const nonErrorExclusionPattern = new RegExp(
+          const nonErrorExclusionPattern = scopePattern(
             `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${nonErrorTarget}` +
               `|${nonErrorTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
             "i",
           );
-          const nonErrorNegationPattern = new RegExp(
+          const nonErrorNegationPattern = scopePattern(
             `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${nonErrorTarget}` +
               `|${nonErrorTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
               `|${negativeWord}\\s+[^.;\\n]*?${nonErrorTarget}[^.;\\n]*?${exclusionVerb})`,
             "i",
           );
           const positiveHandling = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)`;
-          const negationErrorOnly = new RegExp(
+          const negationErrorOnly = scopePattern(
             `\\b(?:do\\s+not|don't|never|not)(?:\\s+${positiveHandling})?\\s+(?:only|exclusively)\\b`,
             "i",
           );
           const inclusionPhrase = `(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed|investigated|triaged|resolved)`;
-          const errorOnlyPattern = new RegExp(
+          const errorOnlyPattern = scopePattern(
             `(?:` +
               `\\b(?:only|exclusively)\\s+${positiveHandling}\\s+errors?(?:\\s+events?)?\\b` +
               `|\\b${positiveHandling}\\s+(?:only|exclusively)\\s+errors?(?:\\s+events?)?\\b` +
@@ -431,7 +451,7 @@ export function shouldIgnoreWebhookEvent(
             "i",
           );
 
-          const allExceptErrorsPattern = new RegExp(
+          const allExceptErrorsPattern = scopePattern(
             `(?:` +
               `${exclusionVerb}\\s+(?:all(?:\\s+(?:events?|deliveries|payloads|alerts?|issues?|notifications?|messages?))?|everything|anything)\\s+(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\s+errors?(?:\\s+events?)?\\b` +
               `|\\b(?:all(?:\\s+(?:events?|deliveries|payloads|alerts?|issues?|notifications?|messages?))?|everything|anything)\\s+(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\s+errors?(?:\\s+events?)?(?:[^.;\\n]*?\\b(?:are|is|should(?:\\s+be)?|were|was|must(?:\\s+be)?)\\s+)?${exclusionVerb}` +
@@ -440,7 +460,7 @@ export function shouldIgnoreWebhookEvent(
             `)`,
             "i",
           );
-          const negationAllExceptErrors = new RegExp(
+          const negationAllExceptErrors = scopePattern(
             `(?:` +
               `${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?(?:all|everything|anything)[^.;\\n]*?errors?` +
               `|${negativeWord}\\s+[^.;\\n]*?(?:all|everything|anything)\\s+(?:except|aside|other|excluding|without)[^.;\\n]*?errors?[^.;\\n]*?${exclusionVerb}` +
@@ -463,14 +483,14 @@ export function shouldIgnoreWebhookEvent(
           const isErrorOnlyScope = prompt.trim() ? isPromptErrorOnly : isNameErrorOnly;
           if (isErrorOnlyScope) {
 
-            const positiveTargetsLevel = new RegExp(
+            const positiveTargetsLevel = scopePattern(
               `${contrastingVerb}(?:(?!(?:${exclusionVerb}|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b))[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+)\\b${lvl}s?\\b` +
                 `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
               "i",
             );
             if (positiveTargetsLevel.test(overrideText)) return false;
 
-            const carveOutPattern = new RegExp(
+            const carveOutPattern = scopePattern(
               `\\b(?:except|and|also|or|but|along\\s+with|as\\s+well\\s+as|unless)\\b(?:(?!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\b)[^.;\\n])*?\\b${lvl}s?\\b`,
               "i",
             );
@@ -479,7 +499,7 @@ export function shouldIgnoreWebhookEvent(
             const exceptClause = `(?:except(?:\\s+for)?(?!\\s+${otherLevelsPattern}\\b))`;
             const conditional = `(?:unless|${exceptClause}|only\\s+(?:if|when|in|from|for|on)|if|when)`;
             const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
-            const conditionalPattern = new RegExp(
+            const conditionalPattern = scopePattern(
               `\\b${conditional}\\b${conditionalGap}\\b${lvl}s?\\b` +
                 `|\\b${lvl}s?\\b${conditionalGap}\\b${conditional}\\b`,
               "i",
@@ -494,14 +514,14 @@ export function shouldIgnoreWebhookEvent(
 
       // Positive investigation verbs or in-scope assertions override exclusion only when they specifically target this level
       // (read from `levelSources`: the prompt, plus the name when it states the exclusion)
-      const positiveTargetsLevel = new RegExp(
+      const positiveTargetsLevel = scopePattern(
         `${contrastingVerb}(?:(?!(?:${exclusionVerb}|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b))[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+)\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
         "i",
       );
       if (levelSources.some((text) => positiveTargetsLevel.test(text))) return false;
 
-      const interveningPattern = new RegExp(
+      const interveningPattern = scopePattern(
         `${exclusionVerb}[^.;\\n]*?${contrastingVerb}[^.;\\n]*?\\b${lvl}s?\\b`,
         "i",
       );
@@ -510,7 +530,7 @@ export function shouldIgnoreWebhookEvent(
       // "Don't just ignore", "do not ever ignore": up to two adverbs may sit
       // between the negation and the exclusion verb.  Closed list, so an
       // unrelated word in between never turns an exclusion into a negation.
-      const negationPattern = new RegExp(
+      const negationPattern = scopePattern(
         `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
           `|${negativeWord}\\s+[^.;\\n]*?\\b${lvl}s?\\b[^.;\\n]*?${exclusionVerb})`,
@@ -528,7 +548,7 @@ export function shouldIgnoreWebhookEvent(
       const exceptClause = `(?:except(?:\\s+for)?(?!\\s+${otherLevelsPattern}\\b))`;
       const conditional = `(?:unless|${exceptClause}|only\\s+(?:if|when|in|from|for|on)|if|when)`;
       const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
-      const conditionalPattern = new RegExp(
+      const conditionalPattern = scopePattern(
         `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b${conditionalGap}\\b${conditional}\\b` +
           `|\\b${conditional}\\b${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${conditional}\\b`,
@@ -557,15 +577,15 @@ export function shouldIgnoreWebhookEvent(
         const contrastingVerb = `(?<!\\b(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|without|stop|quit|avoid)(?:\\s+\\w+){0,2}\\s+)\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
         const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
         const exceptionBoundary = String.raw`\b(?:except|but|without|not(?!\s+in\s+scope\b)|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
-        const verbFirstPattern = new RegExp(
+        const verbFirstPattern = scopePattern(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}`,
           "i",
         );
-        const targetFirstPattern = new RegExp(
+        const targetFirstPattern = scopePattern(
           `${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
           "i",
         );
-        const negationPattern = new RegExp(
+        const negationPattern = scopePattern(
           `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
             `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
             `|${negativeWord}\\s+[^.;\\n]*?${assignmentTarget}[^.;\\n]*?${exclusionVerb})`,
@@ -573,7 +593,7 @@ export function shouldIgnoreWebhookEvent(
         );
         if (negationPattern.test(prompt) || negationPattern.test(name)) return false;
 
-        const negatedTargetPattern = new RegExp(
+        const negatedTargetPattern = scopePattern(
           `\\b(?:not|no|neither|without|never|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+(?:any\\s+)?${assignmentTarget}` +
             `|${assignmentTarget}\\s+(?:are|is\\s+)?(?:not|never|out\\s+of\\s+scope)\\b`,
           "i",
@@ -585,14 +605,14 @@ export function shouldIgnoreWebhookEvent(
         // Overrides read the prompt, plus the name when it states the exclusion.
         const assignmentSources = [prompt, ...(assignmentExcludes(name) ? [name] : [])].filter((text) => text.trim());
 
-        const positiveTargetsAssignment = new RegExp(
+        const positiveTargetsAssignment = scopePattern(
           `${contrastingVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+(?:any\\s+)?)${assignmentTarget}` +
             `|${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
           "i",
         );
         if (assignmentSources.some((text) => positiveTargetsAssignment.test(text))) return false;
 
-        const interveningPattern = new RegExp(
+        const interveningPattern = scopePattern(
           `${exclusionVerb}[^.;\\n]*?${contrastingVerb}[^.;\\n]*?${assignmentTarget}`,
           "i",
         );
@@ -604,7 +624,7 @@ export function shouldIgnoreWebhookEvent(
         // Conservative: keep the event rather than drop one the condition would have kept.
         const conditional = `(?:unless|except(?:\\s+for)?|only\\s+(?:if|when|in|from|for|on)|if|when)`;
         const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
-        const conditionalPattern = new RegExp(
+        const conditionalPattern = scopePattern(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}${conditionalGap}\\b${conditional}\\b` +
             `|\\b${conditional}\\b${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}` +
             `|${assignmentTarget}${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${conditional}\\b`,
@@ -622,7 +642,7 @@ export function shouldIgnoreWebhookEvent(
       }
 
       const assignmentMatcher = /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i;
-      const positiveAssignmentMatcher = new RegExp(
+      const positiveAssignmentMatcher = scopePattern(
         `(?<!\\b(?:not|no|neither|without|never|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+(?:any\\s+)?)${assignmentTarget}`,
         "i",
       );
