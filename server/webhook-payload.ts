@@ -604,10 +604,18 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
       dataType === "incident" ||
       dataType === "incident_reference";
 
+    const priorityObj = asRecord(data?.priority);
+    const hasPdPriority =
+      priorityObj !== undefined &&
+      (priorityObj.type === "priority" ||
+        priorityObj.type === "priority_reference" ||
+        isPagerDutyUrl(pickStr(priorityObj, "self")) ||
+        isPagerDutyUrl(pickStr(priorityObj, "html_url")));
+
     const hasPdStatus = data?.status === "triggered" || data?.status === "acknowledged" || data?.status === "resolved";
     const hasExclusiveField =
       data?.incident_key !== undefined ||
-      data?.priority !== undefined ||
+      hasPdPriority ||
       data?.urgency === "high" ||
       data?.urgency === "low" ||
       Array.isArray(data?.teams) ||

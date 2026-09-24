@@ -686,6 +686,42 @@ describe("slimWebhookPayload", () => {
     expect(serializeWebhookPayload(customPayload)).toContain("important-payload-data");
   });
 
+  it("does not classify modern custom incident envelopes with generic priority as PagerDuty", () => {
+    const customModernPayload = {
+      event: {
+        event_type: "incident.trigger",
+        resource_type: "incident",
+        data: {
+          id: "custom-inc-1",
+          type: "incident",
+          priority: "high",
+          details: { important_context: "keep-this-unaltered" },
+        },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(customModernPayload)).toBe(false);
+    expect(slimWebhookPayload(customModernPayload)).toEqual(customModernPayload);
+    expect(serializeWebhookPayload(customModernPayload)).toContain("keep-this-unaltered");
+
+    const pdModernPayload = {
+      event: {
+        event_type: "incident.trigger",
+        resource_type: "incident",
+        data: {
+          id: "pd-inc-1",
+          type: "incident",
+          priority: {
+            id: "P1",
+            type: "priority",
+            summary: "P1",
+          },
+          details: { bloat: "x".repeat(500) },
+        },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(pdModernPayload)).toBe(true);
+  });
+
   it("preserves canonical investigation URLs in slimmed Sentry event payloads", () => {
     const sentryEvent = {
       event: {

@@ -366,9 +366,19 @@ export function shouldIgnoreWebhookEvent(
         `\\b${lvl}s?\\b(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
         "i",
       );
+      const positiveScopeException = new RegExp(
+        `(?:${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b` +
+          `|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b(?:(?!${exclusionVerb})[^.;\\n])*?${contrastingVerb})`,
+        "i",
+      );
       const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
       const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
-      if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) {
+      const hasLevelExclusion =
+        verbFirstPattern.test(prompt) ||
+        targetFirstPattern.test(prompt) ||
+        positiveScopeException.test(prompt) ||
+        positiveScopeException.test(name);
+      if (!hasLevelExclusion) {
         if (lvl !== "error") {
           const nonErrorTarget = `\\bnon-?errors?(?:\\s+events?)?\\b`;
           const nonErrorExclusionPattern = new RegExp(
@@ -411,7 +421,7 @@ export function shouldIgnoreWebhookEvent(
           if (isErrorOnlyScope) {
 
             const positiveTargetsLevel = new RegExp(
-              `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+)\\b${lvl}s?\\b` +
+              `${contrastingVerb}(?:(?!(?:${exclusionVerb}|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b))[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+)\\b${lvl}s?\\b` +
                 `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
               "i",
             );
@@ -441,7 +451,7 @@ export function shouldIgnoreWebhookEvent(
 
       // Positive investigation verbs or in-scope assertions override exclusion only when they specifically target this level
       const positiveTargetsLevel = new RegExp(
-        `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+)\\b${lvl}s?\\b` +
+        `${contrastingVerb}(?:(?!(?:${exclusionVerb}|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b))[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+)\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
         "i",
       );

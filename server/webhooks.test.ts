@@ -1298,6 +1298,30 @@ describe("WebhookManager", () => {
     const exceptAssignResult = h.manager.receive(exceptAssignHook.endpointId, exceptAssignSecret, warningAssignEvent);
     expect(exceptAssignResult).toMatchObject({ ignored: true });
 
+    // 61. Positive-scope exclusions ("Handle all events except warning events")
+    // ignore warning deliveries but preserve error deliveries.
+    const { webhook: positiveScopeHook, secret: positiveScopeSecret } = h.manager.create({
+      name: "All Except Warning Handler",
+      prompt: "Handle all events except warning events.",
+      botId: "maus-1",
+    });
+    const positiveScopeWarningResult = h.manager.receive(positiveScopeHook.endpointId, positiveScopeSecret, clauseWarning);
+    expect(positiveScopeWarningResult).toMatchObject({ ignored: true });
+
+    const positiveScopeErrorResult = h.manager.receive(positiveScopeHook.endpointId, positiveScopeSecret, clauseError);
+    expect(positiveScopeErrorResult).toMatchObject({ duplicate: false });
+    expect(positiveScopeErrorResult.runId).toBeDefined();
+
+    // 62. Exception-first positive-scope exclusions ("Except for warning events, handle all events")
+    // ignore warning deliveries.
+    const { webhook: exceptFirstHook, secret: exceptFirstSecret } = h.manager.create({
+      name: "Except First Handler",
+      prompt: "Except for warning events, handle all events.",
+      botId: "maus-1",
+    });
+    const exceptFirstWarningResult = h.manager.receive(exceptFirstHook.endpointId, exceptFirstSecret, clauseWarning);
+    expect(exceptFirstWarningResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
