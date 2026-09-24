@@ -6656,6 +6656,60 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     }
   });
 
+  it("refuses provider policy, which only PUT /api/config may change", async () => {
+    const before = (await api("GET", "/api/config")).body.botDefaults;
+    for (const policy of [
+      { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: false } },
+      { vpsMode: "per-bot" },
+      { allowedComputers: ["cloud"] },
+    ]) {
+      const refused = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"], ...policy },
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toMatch(/PUT \/api\/config/);
+    }
+    const after = (await api("GET", "/api/config")).body.botDefaults;
+    expect(after.computerProviders).toEqual(before.computerProviders);
+    expect(after.allowedComputers).toEqual(before.allowedComputers);
+    expect(after.vpsMode).toEqual(before.vpsMode);
+  });
+
+  it("filters an atomic backend switch with the backend being applied", async () => {
+    // Box off, VPS on, workspace backend Box.  Applying ["cloud"] together
+    // with cloudBackend "vps" must judge each inheriting bot by the VPS
+    // toggle it will actually run on, not the Box toggle being replaced.
+    expect((await api("PUT", "/api/config", {
+      botDefaults: {
+        allowedComputers: null,
+        cloudBackend: "box",
+        computerProviders: { asciiBox: false, selfHostedVps: true, localVm: true, localMac: true },
+      },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Backend Switch Apply" })).body.bot;
+    try {
+      const apply = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"], cloudBackend: "vps" },
+      });
+      expect(apply.status).toBe(200);
+      const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot.id);
+      expect(after.computers).toEqual(["cloud"]);
+      expect((await api("GET", "/api/config")).body.botDefaults.cloudBackend).toBe("vps");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: {
+          allowedComputers: null,
+          cloudBackend: "box",
+          computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+        },
+      })).status).toBe(200);
+      expect((await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"] },
+      })).status).toBe(200);
+    }
+  });
+
   it("rejects a non-array destination list and an unknown destination", async () => {
     const notArray = await api("POST", "/api/bots/apply-defaults", { botDefaults: { computers: "cloud" } });
     expect(notArray.status).toBe(400);
