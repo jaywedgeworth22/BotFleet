@@ -250,7 +250,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
-import { serializedPreview } from "./serialized-preview.ts";
+import { fitListToBudget, serializedPreview } from "./serialized-preview.ts";
 import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
@@ -3724,6 +3724,9 @@ const routineRequests = new RoutineRequestService({
   cloudReady: cloudRoutineReadiness,
   canPersist: routineProposalPersistence,
 });
+/** Serialized byte budget for one list_routines response (50 KB target,
+ * with headroom for the tool wrapper). */
+const ROUTINE_LIST_BUDGET_BYTES = 48_000;
 const ROUTINE_WEEKDAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 const agentRoutine = (
   routine: ReturnType<RoutineManager["listRoutines"]>[number],
@@ -3738,9 +3741,13 @@ const agentRoutine = (
   // or control-character instructions cannot push 100 previews past the list
   // budget, and an emoji is never split at the cut.
   const preview = includeInstructions ? undefined : serializedPreview(safeInstructions, 160);
+  // Names are capped at 80 characters on write, not 80 bytes: bound the list
+  // copy by serialized size too (the full name is in the routine_id lookup).
+  const name = includeInstructions ? { preview: safeName, truncated: false } : serializedPreview(safeName, 80);
   return {
     id: routine.id,
-    name: safeName,
+    name: name.preview,
+    ...(name.truncated ? { nameTruncated: true } : {}),
     ...(includeInstructions
       ? { instructions: safeInstructions }
       : {
@@ -4114,14 +4121,17 @@ export function executeListRoutinesRequest(input: {
       },
     };
   }
+  const envelope = { now: new Date().toISOString(), timeZone: routineTimeZone() };
   return {
     status: 200,
     body: {
-      now: new Date().toISOString(),
-      timeZone: routineTimeZone(),
-      routines: ownedRoutines
-        .slice(0, 100)
-        .map((routine) => agentRoutine(routine)),
+      ...envelope,
+      // The whole list, not just each field, stays inside the budget.
+      ...fitListToBudget(
+        envelope,
+        ownedRoutines.slice(0, 100).map((routine) => agentRoutine(routine)),
+        ROUTINE_LIST_BUDGET_BYTES,
+      ),
     },
   };
 }
