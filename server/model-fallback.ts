@@ -79,7 +79,11 @@ export function unattendedModelDowngrade(
   } else if (family === "antigravity") {
     model = antigravityFlashModel(model);
   } else if (family === "claude") {
-    if (model.includes("sonnet") || model.includes("opus")) {
+    // Only built-in Claude routes (claude-sonnet-*, claude-opus-*) are
+    // swapped.  Local-inject ids (host::model, e.g. ollama::my-sonnet-model)
+    // and other custom ids are the operator's chosen route; rewriting them
+    // would break applyClaudeInject host routing.
+    if (/^claude-(sonnet|opus)(-|$)/.test(model)) {
       // The driver's own current Haiku — claude-3-5-haiku-latest was a
       // stale alias pinned before Haiku 4.5 shipped.
       model = "claude-haiku-4-5";
