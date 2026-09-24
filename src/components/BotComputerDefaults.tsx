@@ -25,35 +25,9 @@ import { ApiError, api, useStore, type ConfigStatus } from "@/state/store";
 import { Card } from "./SettingsPrimitives";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { cn } from "@/lib/cn";
-import { DEFAULT_VPS_MODE, type ComputerProviders, type VpsMode } from "../../shared/local-auto-consent";
+import type { ComputerProviders, VpsMode } from "../../shared/local-auto-consent";
 
-/** Derive the new per-provider shape from the legacy allowlist array so
- * the primary editor (LocalComputerSection) renders the same on-disk
- * state this legacy card just wrote.
- *
- * The legacy "cloud" destination cannot tell ASCII.dev Box from the
- * Self-Hosted VPS, so a legacy save must not decide that split: while
- * cloud stays allowed, the Box/VPS values the primary editor last wrote
- * are carried over unchanged.  Without that, any save here (even just
- * changing the New Bots default) would quietly turn a provider back on
- * that the operator had turned off in the primary editor.  Only when
- * cloud goes from blocked to allowed does it enable both, which is what
- * the legacy "cloud" always meant. */
-function providersFromAllowed(
-  allowed: Destination[] | null,
-  previous: ComputerProviders | undefined,
-): ComputerProviders {
-  const cloudAllowed = allowed === null || allowed.includes("cloud");
-  const keepCloudSplit = previous !== undefined && (previous.asciiBox || previous.selfHostedVps);
-  return {
-    asciiBox: cloudAllowed && (keepCloudSplit ? Boolean(previous?.asciiBox) : true),
-    selfHostedVps: cloudAllowed && (keepCloudSplit ? Boolean(previous?.selfHostedVps) : true),
-    localVm: allowed === null || allowed.includes("vm"),
-    localMac: allowed === null || allowed.includes("local"),
-  };
-}
-
-/** Inverse: derive the legacy allowlist from the new per-provider
+/** Derive the legacy allowlist from the new per-provider
  * shape so this legacy card's toggle row renders the same state the
  * primary view shows.  `null` means "every destination is allowed" —
  * the only case every legacy destination is on. */
@@ -93,17 +67,6 @@ const DESTINATION_LABEL: Record<Destination, string> = {
   vm: "Local VM",
   local: "This Computer",
 };
-
-/** The allowlist is persisted as either absent (every destination is allowed,
- * the shipped default) or an array of destinations.  On the wire we say the
- * first state as an explicit `null`, and the server drops the stored key when
- * it sees one — omitting the field instead would merge into whatever is
- * already on disk, so turning the last destination back on would appear to
- * work and then come back narrowed on the next reload. */
-function allowedForWire(value: Destination[] | null | undefined): Destination[] | null {
-  if (value === null || value === undefined) return null;
-  return value;
-}
 
 const DESTINATIONS: Destination[] = ["cloud", "vm", "local"];
 
@@ -217,21 +180,18 @@ export function BotComputerDefaults() {
       });
   };
 
-  // The allowlist is read-only in this legacy card (see
+  // Provider policy is read-only in this legacy card (see
   // AllowedComputersSummary): turning a provider off must go through the
-  // Providers card's affected-bot confirmation, so a save here only ever
-  // re-sends the allowlist the primary editor last wrote.
+  // Providers card's affected-bot confirmation, and every provider save there
+  // carries a compare-and-swap snapshot.  So a save here sends only the
+  // computer defaults.  Re-sending the allowlist, provider flags or VPS mode
+  // from this card's copy of the config let a stale card write old flags
+  // back over a newer save; the server keeps the stored ones untouched.
   const save = (next: { computers?: Destination[]; backend?: Backend }) => {
     const nextComputers = [...(next.computers ?? computers)];
     const nextBackend = next.backend ?? backend;
-    const nextAllowed = allowed;
     setComputers(nextComputers);
     setBackend(nextBackend);
-    // Mirror the legacy allowlist onto the new `computerProviders`
-    // shape so the redesigned primary editor renders the same state.
-    // The Box/VPS split and the VPS mode are owned by the primary view;
-    // see providersFromAllowed for how they are carried over.
-    const nextProviders = providersFromAllowed(nextAllowed, saved?.computerProviders);
     submit({
       kind: "save",
       method: "PUT",
@@ -240,12 +200,6 @@ export function BotComputerDefaults() {
         botDefaults: {
           computers: nextComputers,
           cloudBackend: nextBackend,
-          allowedComputers: allowedForWire(nextAllowed),
-          computerProviders: nextProviders,
-          // Keep the stored mode while the VPS stays on; clear it when this
-          // save turns the VPS off, and pick the default when it turns it on,
-          // so the primary view never sees an on-VPS with no mode.
-          vpsMode: nextProviders.selfHostedVps ? (saved?.vpsMode ?? DEFAULT_VPS_MODE) : null,
         },
       },
     });
