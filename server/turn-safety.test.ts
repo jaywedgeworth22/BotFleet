@@ -27,6 +27,30 @@ const candidate = (
 });
 
 describe("active turn ownership", () => {
+  it("measures each dispatch with a monotonic clock, even on a shared room thread", () => {
+    let clock = 100;
+    const owners = new ActiveTurnOwners(() => clock);
+    const selection = (instanceId: string) => ({ instanceId, model: "m" });
+    owners.claim("room", { botId: "bot-1", selection: selection("primary"), fallbackPolicy: selection("primary") });
+    clock = 350;
+    owners.claim("room", { botId: "bot-2", selection: selection("fallback"), fallbackPolicy: selection("fallback") });
+    clock = 600;
+
+    expect(owners.settle("room", "primary")?.latencyMs).toBe(500);
+    clock = 850;
+    expect(owners.settle("room", "fallback")?.latencyMs).toBe(500);
+    expect(owners.settle("room", "primary")).toBeUndefined();
+  });
+
+  it("leaves duration unavailable if a clock reading cannot form an elapsed interval", () => {
+    let clock = 100;
+    const owners = new ActiveTurnOwners(() => clock);
+    const selection = { instanceId: "primary", model: "m" };
+    owners.claim("thread", { botId: "bot", selection, fallbackPolicy: selection });
+    clock = NaN;
+    expect(owners.settle("thread", "primary")?.latencyMs).toBeUndefined();
+  });
+
   it("records what a live dispatch mounted, and nothing for a replaced one", () => {
     const owners = new ActiveTurnOwners();
     const selection = { instanceId: "primary", model: "m" };

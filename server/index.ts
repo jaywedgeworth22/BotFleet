@@ -2546,6 +2546,7 @@ bus.subscribe((event: RuntimeEvent) => {
           cachedInputTokens: tokens?.cachedInput,
           costUsd: event.cost ?? null,
           billingMode: event.billingMode,
+          latencyMs: settledOwner?.latencyMs,
           success: event.ok !== false,
         });
         // settled → idle; a setup failure already marked it dead, keep that
@@ -2621,6 +2622,7 @@ bus.subscribe((event: RuntimeEvent) => {
             cachedInputTokens: tokens?.cachedInput,
             costUsd: event.cost ?? null,
             billingMode: event.billingMode,
+            latencyMs: settledOwner?.latencyMs,
             success: event.ok !== false,
             roomId: group.id,
             roomName: group.name,

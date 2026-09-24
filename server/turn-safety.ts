@@ -19,6 +19,10 @@ export interface TurnComputerInputs {
 
 export interface ActiveTurnOwner {
   dispatchId: number;
+  /** Monotonic dispatch time, including provider setup and retry backoff. */
+  startedAtMs: number;
+  /** Available only after this exact dispatch settles. */
+  latencyMs?: number;
   botId: string;
   selection: ModelSelection;
   fallbackPolicy: ModelSelection;
@@ -40,7 +44,9 @@ export class ActiveTurnOwners {
   private readonly latestDispatchByThread = new Map<string, number>();
   private nextDispatchId = 1;
 
-  claim(threadId: string, owner: Omit<ActiveTurnOwner, "dispatchId">): ActiveTurnOwner {
+  constructor(private readonly now: () => number = () => performance.now()) {}
+
+  claim(threadId: string, owner: Omit<ActiveTurnOwner, "dispatchId" | "startedAtMs" | "latencyMs">): ActiveTurnOwner {
     let owners = this.byThread.get(threadId);
     if (!owners) {
       owners = new Map();
@@ -51,7 +57,7 @@ export class ActiveTurnOwners {
         `thread ${threadId} already has a live turn on provider instance ${owner.selection.instanceId}`,
       );
     }
-    const claimed = { ...owner, dispatchId: this.nextDispatchId++ };
+    const claimed = { ...owner, dispatchId: this.nextDispatchId++, startedAtMs: this.now() };
     owners.set(owner.selection.instanceId, claimed);
     this.latestDispatchByThread.set(threadId, claimed.dispatchId);
     return claimed;
@@ -131,6 +137,8 @@ export class ActiveTurnOwners {
   settle(threadId: string, providerInstanceId?: string): ActiveTurnOwner | undefined {
     const owner = this.forEvent(threadId, providerInstanceId);
     if (!owner) return undefined;
+    const elapsed = this.now() - owner.startedAtMs;
+    if (Number.isFinite(elapsed) && elapsed >= 0) owner.latencyMs = Math.round(elapsed);
     const owners = this.byThread.get(threadId)!;
     owners.delete(owner.selection.instanceId);
     if (owners.size === 0) this.byThread.delete(threadId);
