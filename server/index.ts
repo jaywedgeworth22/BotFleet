@@ -799,6 +799,12 @@ function turnComputerInputs(
   };
 }
 
+/** The providers a turn's resolved mounts hold, for `recordMounted`. */
+function mountedProviders(mounts: readonly { kind: "box" | "vps" | "vm" | "local" }[]): NonNullable<TurnComputerInputs["mounted"]> {
+  const byKind = { box: "asciiBox", vps: "selfHostedVps", vm: "localVm", local: "localMac" } as const;
+  return [...new Set(mounts.map((mount) => byKind[mount.kind]))];
+}
+
 /** Whether the Auto This Computer fallback can mount for a turn on this
  * engine, the way turn mounting decides it (`shouldMountLocalComputer`):
  * macOS only, and only on an engine with local reach.  An engine missing from
@@ -3267,6 +3273,9 @@ async function startTurn(
       // so does the catch below.
       vpsLease = turnComputers.vpsLease;
       if (turnComputers.cancelled) return;
+      // What this turn really holds from here on; a provider disable judges
+      // the turn by it (see interruptTurnsUsingDisabledProviders).
+      activeTurnOwners.recordMounted(threadId, dispatchOwner.dispatchId, mountedProviders(turnComputers.mounts));
       const granted_mounts = turnComputers.mounts;
       const previewCapture = turnComputers.previewCapture;
       applyComputerMounts(integrations, granted_mounts);
@@ -4806,6 +4815,7 @@ async function runGroupMemberTurn(
     releaseRoomSpeaker();
     return false;
   }
+  activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers.mounts));
   // One function for both lanes, so the room cannot set `computers` without
   // also setting the legacy `computer` / `localComputer` fields several
   // drivers still read exclusively — Antigravity's own MCP builder matches
@@ -6006,10 +6016,12 @@ async function interruptTurnsUsingDisabledProviders(
     // engine with local reach.  Elsewhere it was never held, so turning This
     // Computer off must not interrupt the turn.
     const autoHost = autoHostMounts(turn.instanceId ?? bot.modelSelection.instanceId);
-    if (revokedTurnProviders(
-      heldProvidersFor(before, inputs, runOn, { autoHost }),
-      heldProvidersFor(after, inputs, runOn, { autoHost }),
-    ).length === 0) return;
+    // Once its computers resolved, the turn holds exactly what it mounted:
+    // an Auto turn that fell back to This Computer because Box or the VPS was
+    // unavailable holds no cloud provider, so turning one off leaves it alone.
+    // Before that, judge by everything the grant could reach.
+    const holds = inputs.mounted ?? heldProvidersFor(before, inputs, runOn, { autoHost });
+    if (revokedTurnProviders(holds, heldProvidersFor(after, inputs, runOn, { autoHost })).length === 0) return;
     // Latch the stop before anything is awaited, same as the full reload and
     // the Stop button.  The driver may settle the turn the instant it is
     // killed; without the latch an exit_before_result cancellation reads as
@@ -10538,6 +10550,30 @@ const server = createServer(async (req, res) => {
       const patch = parseConfigPatch(body);
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      // The window confirmed a provider disable against its own copy of the
+      // bots and automations.  Another client can add a grant or a cloud
+      // automation after that check, so the impact is recomputed on the
+      // server's state and the save refused when it names a bot the confirm
+      // did not.  Run before anything is written, and again right before the
+      // save itself: bot and automation routes are not fenced by
+      // `providerConfigBusy`, and the credential checks below await.
+      const checksProviderImpact =
+        Boolean(patch.botDefaults?.computerProviders) && Object.hasOwn(body, "expectedComputerProviders");
+      const unseenProviderImpact = () => {
+        if (!checksProviderImpact) return null;
+        const unseen = unacknowledgedImpact(
+          body.acknowledgedImpact,
+          botsLosingProviders(cfg, { ...cfg, botDefaults: { ...cfg.botDefaults, ...patch.botDefaults } }),
+        );
+        return unseen.length > 0
+          ? {
+              error: "More bots use this provider than the list you confirmed.\u00a0 Review the new list and try again.",
+              code: "computer_impact_changed",
+              impacted: unseen,
+              config: configStatus(),
+            }
+          : null;
+      };
       // Compare-and-swap for the provider toggles.  The section merge replaces
       // `computerProviders` whole, so a window that saw an older state would
       // write it back over a newer one.  A save that says what it saw is
@@ -10561,23 +10597,8 @@ const server = createServer(async (req, res) => {
             config: configStatus(),
           });
         }
-        // The window confirmed a disable against its own copy of the bots
-        // and automations.  Another client can add a grant or a cloud
-        // automation between that check and this save, so recompute the
-        // impact here, on the server's state, in the same synchronous step
-        // as the write, and refuse when it names a bot the confirm did not.
-        const unseen = unacknowledgedImpact(
-          body.acknowledgedImpact,
-          botsLosingProviders(cfg, { ...cfg, botDefaults: { ...cfg.botDefaults, ...patch.botDefaults } }),
-        );
-        if (unseen.length > 0) {
-          return json(res, 409, {
-            error: "More bots use this provider than the list you confirmed.\u00a0 Review the new list and try again.",
-            code: "computer_impact_changed",
-            impacted: unseen,
-            config: configStatus(),
-          });
-        }
+        const refusal = unseenProviderImpact();
+        if (refusal) return json(res, 409, refusal);
       }
       if (patch.vps !== undefined) {
         const currentAlias = vpsSshAlias(cfg);
@@ -10799,6 +10820,11 @@ const server = createServer(async (req, res) => {
       if (changedConsent) {
         return json(res, 409, { error: LOCAL_AUTO_ACK_ERROR, needsAcknowledgement: changedConsent });
       }
+      // Same for the provider-disable impact: a grant or cloud automation
+      // added while the checks above awaited must be listed before it loses
+      // the provider.  Nothing is awaited from here to the save.
+      const lateImpact = unseenProviderImpact();
+      if (lateImpact) return json(res, 409, lateImpact);
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
       if (externalSecretStorage) {
         // The packaged Electron caller commits supplied credentials to the
