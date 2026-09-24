@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { impactedBotsForProvider, type CloudAutomationSource } from "./computer-impact";
+import { impactedBotsForProvider, revalidateImpact, type CloudAutomationSource } from "./computer-impact";
 import { ComputerImpactConfirmModal } from "../components/ComputerImpactConfirmModal";
 import { COMPUTER_PROVIDER_DISABLE_IMPACT } from "../../shared/local-auto-consent";
 import type { Bot } from "../state/store";
@@ -191,5 +191,49 @@ describe("BotComputerMatrix and the impact list agree", () => {
     expect(effectiveProvidersForBot(makeBot("off", []), { workspaceProviders: ALL_ON, automations })).toEqual({
       asciiBox: false, selfHostedVps: false, localVm: false, localMac: false,
     });
+  });
+});
+
+describe("revalidateImpact (disable confirm)", () => {
+  const a = { id: "a", name: "A", usage: "ASCII.dev Box", providers: { ...ALL_ON } };
+  const b = { id: "b", name: "B", usage: "Cloud Routine on ASCII.dev Box", providers: { ...ALL_ON } };
+  it("confirms when the list is unchanged or only shrank", () => {
+    expect(revalidateImpact([a, b], [a, b])).toEqual({ kind: "confirmed" });
+    expect(revalidateImpact([a, b], [a])).toEqual({ kind: "confirmed" });
+    expect(revalidateImpact([a], [])).toEqual({ kind: "confirmed" });
+  });
+
+  it("asks again when a bot joined the list or its usage changed", () => {
+    expect(revalidateImpact([a], [a, b])).toEqual({ kind: "changed", impacted: [a, b] });
+    expect(revalidateImpact([], [a])).toEqual({ kind: "changed", impacted: [a] });
+    const moved = { ...a, usage: "ASCII.dev Box · Cloud Routine on ASCII.dev Box" };
+    expect(revalidateImpact([a], [moved])).toEqual({ kind: "changed", impacted: [moved] });
+  });
+
+  it("is what the confirm handler runs before saving", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    const confirm = source.slice(source.lastIndexOf("<ComputerImpactConfirmModal"), source.lastIndexOf("<LocalComputerAutoWarning"));
+    const check = confirm.indexOf("revalidateImpact(impact.impacted, botsUsingProvider(impact.provider))");
+    expect(check).toBeGreaterThan(0);
+    expect(confirm.indexOf("persist(nextProviders")).toBeGreaterThan(check);
+  });
+});
+
+describe("Apply new default to all", () => {
+  it("sends only the computer defaults, never provider policy", async () => {
+    const { applyDefaultsBody } = await import("./workspace-providers");
+    expect(applyDefaultsBody({ computers: ["cloud", "local"], cloudBackend: "vps" })).toEqual({
+      botDefaults: { computers: ["cloud", "local"], cloudBackend: "vps" },
+    });
+    const withPolicy = {
+      computers: ["vm"],
+      computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+      vpsMode: "per-bot",
+      allowedComputers: null,
+    } as any;
+    expect(applyDefaultsBody(withPolicy)).toEqual({ botDefaults: { computers: ["vm"] } });
+    expect(applyDefaultsBody(undefined)).toEqual({});
+    expect(applyDefaultsBody({})).toEqual({});
   });
 });
