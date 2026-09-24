@@ -411,7 +411,7 @@ export function ComputerPanel({
   const live = state.screens[bot.id];
   const [screenStreamState, setScreenStreamState] = useState<"connecting" | "connected" | "failed">("connecting");
   useEffect(() => {
-    if (phase !== "ready" || viewerOpen || !pageVisible) return;
+    if (phase !== "ready" || panelView !== "computer" || viewerOpen || !pageVisible) return;
     setScreenStreamState("connecting");
     const stream = new EventSource(`/api/events?screens=on&botId=${encodeURIComponent(bot.id)}`);
     let active = true;
@@ -443,10 +443,10 @@ export function ComputerPanel({
       active = false;
       stream.close();
     };
-  }, [phase, viewerOpen, pageVisible, bot.id, dispatch]);
+  }, [phase, panelView, viewerOpen, pageVisible, bot.id, dispatch]);
   const inFlight = useRef(false);
   useEffect(() => {
-    if (phase !== "ready" || (bot.busy && screenStreamState !== "failed") || viewerOpen || !pageVisible) return;
+    if (phase !== "ready" || panelView !== "computer" || (bot.busy && screenStreamState !== "failed") || viewerOpen || !pageVisible) return;
     let alive = true;
     const shoot = async () => {
       if (inFlight.current) return;
@@ -466,7 +466,7 @@ export function ComputerPanel({
       alive = false;
       clearInterval(timer);
     };
-  }, [phase, screenStreamState, bot.id, viewerOpen, pageVisible, bot.busy]);
+  }, [phase, panelView, screenStreamState, bot.id, viewerOpen, pageVisible, bot.busy]);
 
   // Local VM preview comes directly from Cua Driver through the harness. It
   // does not use the password-protected noVNC viewer or cloud endpoints.
