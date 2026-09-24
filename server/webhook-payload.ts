@@ -12,12 +12,12 @@ import type { JsonValue } from "./schema.ts";
 
 export const MAX_EVENT_CHARS = 48_000;
 
-function asRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
+export function asRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   return value as Record<string, JsonValue>;
 }
 
-function pickStr(obj: Record<string, JsonValue> | undefined, key: string): string | undefined {
+export function pickStr(obj: Record<string, JsonValue> | undefined, key: string): string | undefined {
   const value = obj?.[key];
   return typeof value === "string" && value ? value : undefined;
 }
@@ -247,22 +247,19 @@ function slimCommit(value: JsonValue | undefined): JsonValue | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
-export function isGithubWebhookPayload(payload: JsonValue): boolean {
-  const root = asRecord(payload);
-  if (!root) return false;
-  return Boolean(slimRepo(root.repository) || slimRepo(root.head_repository));
-}
-
-/** Drop GitHub URL farms and log blobs.  Other JSON is unchanged. */
-export function slimWebhookPayload(payload: JsonValue): JsonValue {
-  const root = asRecord(payload);
-  if (!root || !isGithubWebhookPayload(root)) return payload;
+function slimGithubPayload(root: Record<string, JsonValue>): Record<string, JsonValue> {
   const out: Record<string, JsonValue> = {};
   assignDefined(out, "action", pickStr(root, "action"));
   assignDefined(out, "ref", pickStr(root, "ref"));
   assignDefined(out, "after", pickStr(root, "after"));
   assignDefined(out, "before", pickStr(root, "before"));
   assignDefined(out, "master_branch", pickStr(root, "master_branch"));
+  assignDefined(out, "state", pickStr(root, "state"));
+  assignDefined(out, "sha", pickStr(root, "sha"));
+  assignDefined(out, "context", pickStr(root, "context"));
+  const description = pickStr(root, "description");
+  if (description) out.description = description.length > 500 ? `${description.slice(0, 500)}…` : description;
+  assignDefined(out, "target_url", pickStr(root, "target_url"));
   assignDefined(out, "created", pickBool(root, "created"));
   assignDefined(out, "deleted", pickBool(root, "deleted"));
   assignDefined(out, "forced", pickBool(root, "forced"));
@@ -292,6 +289,463 @@ export function slimWebhookPayload(payload: JsonValue): JsonValue {
   const installationId = pickNum(installation, "id");
   if (installationId !== undefined) out.installation = { id: installationId };
   return out;
+}
+
+function slimSentryProject(value: JsonValue | undefined): JsonValue | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "id", pickStr(rec, "id") ?? (pickNum(rec, "id") !== undefined ? String(rec.id) : undefined));
+  assignDefined(out, "name", pickStr(rec, "name"));
+  assignDefined(out, "slug", pickStr(rec, "slug"));
+  assignDefined(out, "platform", pickStr(rec, "platform"));
+  return Object.keys(out).length ? out : undefined;
+}
+
+function slimSentryActor(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "type", pickStr(rec, "type"));
+  assignDefined(out, "id", pickStr(rec, "id") ?? (pickNum(rec, "id") !== undefined ? String(rec.id) : undefined));
+  assignDefined(out, "name", pickStr(rec, "name"));
+  assignDefined(out, "email", pickStr(rec, "email"));
+  return Object.keys(out).length ? out : undefined;
+}
+
+function slimSentryIssue(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "id", pickStr(rec, "id") ?? (pickNum(rec, "id") !== undefined ? String(rec.id) : undefined));
+  assignDefined(out, "shortId", pickStr(rec, "shortId"));
+  assignDefined(out, "title", pickStr(rec, "title"));
+  assignDefined(out, "culprit", pickStr(rec, "culprit"));
+  assignDefined(out, "level", pickStr(rec, "level"));
+  assignDefined(out, "status", pickStr(rec, "status"));
+  assignDefined(out, "substatus", pickStr(rec, "substatus"));
+  assignDefined(out, "project", slimSentryProject(rec.project));
+  assignDefined(out, "permalink", pickStr(rec, "permalink") ?? pickStr(rec, "web_url") ?? pickStr(rec, "url"));
+  assignDefined(out, "count", pickStr(rec, "count") ?? (pickNum(rec, "count") !== undefined ? String(rec.count) : undefined));
+  assignDefined(out, "userCount", pickNum(rec, "userCount"));
+  assignDefined(out, "firstSeen", pickStr(rec, "firstSeen"));
+  assignDefined(out, "lastSeen", pickStr(rec, "lastSeen"));
+  assignDefined(out, "priority", pickStr(rec, "priority"));
+  assignDefined(out, "seerFixabilityScore", pickNum(rec, "seerFixabilityScore"));
+  // Assignment deliveries live or die by the new owner surviving the slim.
+  assignDefined(out, "assignedTo", slimSentryActor(rec.assignedTo));
+  return Object.keys(out).length ? out : undefined;
+}
+
+function slimSentryException(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "type", pickStr(rec, "type"));
+  assignDefined(out, "value", pickStr(rec, "value"));
+  assignDefined(out, "module", pickStr(rec, "module"));
+  const stacktrace = asRecord(rec.stacktrace);
+  if (stacktrace && Array.isArray(stacktrace.frames)) {
+    const frames = stacktrace.frames.slice(-2).map((f) => {
+      const fr = asRecord(f);
+      if (!fr) return undefined;
+      const sf: Record<string, JsonValue> = {};
+      assignDefined(sf, "filename", pickStr(fr, "filename"));
+      assignDefined(sf, "function", pickStr(fr, "function"));
+      assignDefined(sf, "lineno", pickNum(fr, "lineno"));
+      assignDefined(sf, "colno", pickNum(fr, "colno"));
+      assignDefined(sf, "context_line", pickStr(fr, "context_line")?.trim());
+      return Object.keys(sf).length ? sf : undefined;
+    }).filter((f): f is Record<string, JsonValue> => f !== undefined);
+    if (frames.length) out.frames = frames;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function slimSentryEvent(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "id", pickStr(rec, "id") ?? pickStr(rec, "event_id"));
+  assignDefined(out, "title", pickStr(rec, "title") ?? pickStr(rec, "message"));
+  assignDefined(out, "level", pickStr(rec, "level"));
+  assignDefined(out, "culprit", pickStr(rec, "culprit"));
+  assignDefined(out, "release", pickStr(rec, "release"));
+  assignDefined(out, "environment", pickStr(rec, "environment"));
+  assignDefined(out, "timestamp", pickStr(rec, "timestamp") ?? pickStr(rec, "datetime"));
+  assignDefined(out, "project", slimSentryProject(rec.project));
+  assignDefined(out, "permalink", pickStr(rec, "permalink") ?? pickStr(rec, "web_url") ?? pickStr(rec, "url"));
+
+  const exc = asRecord(rec.exception) ?? (Array.isArray(rec.entries) ? asRecord(asRecord(rec.entries.find((e) => asRecord(e)?.type === "exception"))?.data) : undefined);
+  if (exc) {
+    const values = Array.isArray(exc.values) ? exc.values : [exc];
+    // Keep the tail of chained exceptions so the newest failure (which surfaced the event) survives slimming.
+    const slimExc = values.slice(-2).map(slimSentryException).filter((e): e is JsonValue => e !== undefined);
+    if (slimExc.length) out.exceptions = slimExc;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function isSentryUrl(val: unknown): boolean {
+  if (typeof val !== "string" || !val) return false;
+  try {
+    const parsed = new URL(val);
+    return parsed.hostname === "sentry.io" || parsed.hostname.endsWith(".sentry.io");
+  } catch {
+    return false;
+  }
+}
+
+export function isSentryWebhookPayload(payload: JsonValue): boolean {
+  const root = asRecord(payload);
+  if (!root) return false;
+  if (root.actor) {
+    const act = asRecord(root.actor);
+    if (act?.name === "Sentry" || act?.id === "sentry") return true;
+  }
+  if (root.installation && pickStr(asRecord(root.installation), "uuid")) {
+    if (root.action !== undefined || root.data !== undefined) return true;
+  }
+  const data = asRecord(root.data) ?? root;
+  const issue = asRecord(data.issue);
+  const event = asRecord(data.event);
+  // culprit and shortId are not Sentry-exclusive — generic issue trackers carry
+  // them — so only validated Sentry URLs, actor, or installation mark the payload.
+  if (
+    issue &&
+    (isSentryUrl(issue.permalink) || isSentryUrl(issue.url))
+  ) {
+    return true;
+  }
+  if (
+    event &&
+    (isSentryUrl(event.url) || isSentryUrl(event.web_url) || isSentryUrl(event.permalink))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function slimSentryPayload(payload: JsonValue): JsonValue {
+  const root = asRecord(payload);
+  if (!root) return payload;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "action", pickStr(root, "action"));
+  const data = asRecord(root.data);
+  const issue = slimSentryIssue(data?.issue ?? root.issue);
+  const event = slimSentryEvent(data?.event ?? root.event);
+  if (issue) out.issue = issue;
+  if (event) out.event = event;
+  assignDefined(out, "actor", slimSentryActor(root.actor));
+  const installation = asRecord(root.installation);
+  if (installation) {
+    const uuid = pickStr(installation, "uuid");
+    if (uuid) out.installation = { uuid };
+  }
+
+  // Preserve non-issue/non-event Sentry payload data (e.g. metric_alert,
+  // comment), hoisted to the root like issue/event.  Keep ONE copy:  a
+  // duplicate under out.data doubled large alerts past MAX_EVENT_CHARS and
+  // the serializer sliced them into invalid JSON.
+  if (data) {
+    for (const [key, val] of Object.entries(data)) {
+      if (key === "issue" || key === "event") continue;
+      out[key] = val;
+    }
+  }
+
+  // Also preserve any custom or non-standard top-level resources
+  for (const [key, val] of Object.entries(root)) {
+    if (
+      key === "action" ||
+      key === "actor" ||
+      key === "installation" ||
+      key === "data" ||
+      key === "issue" ||
+      key === "event"
+    ) {
+      continue;
+    }
+    if (out[key] === undefined) {
+      out[key] = val;
+    }
+  }
+
+  return Object.keys(out).length ? out : payload;
+}
+
+function slimPagerDutyUser(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "id", pickStr(rec, "id"));
+  assignDefined(out, "summary", pickStr(rec, "summary") ?? pickStr(rec, "name"));
+  assignDefined(out, "name", pickStr(rec, "name") ?? pickStr(rec, "summary"));
+  assignDefined(out, "type", pickStr(rec, "type"));
+  return Object.keys(out).length ? out : undefined;
+}
+
+function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "id", pickStr(rec, "id"));
+  assignDefined(out, "incident_number", pickNum(rec, "incident_number") ?? pickNum(rec, "number"));
+  assignDefined(out, "title", pickStr(rec, "title") ?? pickStr(rec, "summary"));
+  const description = pickStr(rec, "description");
+  if (description) {
+    out.description = description.length > 500 ? `${description.slice(0, 500)}…` : description;
+  }
+  const bodyRec = asRecord(rec.body);
+  const bodyDetails = pickStr(bodyRec, "details") ?? pickStr(rec, "details");
+  if (bodyDetails) {
+    const boundedDetails = bodyDetails.length > 500 ? `${bodyDetails.slice(0, 500)}…` : bodyDetails;
+    out.body = { details: boundedDetails };
+    if (!out.description) {
+      out.description = boundedDetails;
+    }
+  }
+  assignDefined(out, "status", pickStr(rec, "status"));
+  assignDefined(out, "urgency", pickStr(rec, "urgency"));
+  assignDefined(out, "html_url", pickStr(rec, "html_url") ?? pickStr(rec, "self"));
+  assignDefined(out, "created_at", pickStr(rec, "created_at") ?? pickStr(rec, "created_on"));
+  assignDefined(out, "created_on", pickStr(rec, "created_on") ?? pickStr(rec, "created_at"));
+  const priorityRec = asRecord(rec.priority);
+  if (priorityRec) {
+    const pOut: Record<string, JsonValue> = {};
+    assignDefined(pOut, "id", pickStr(priorityRec, "id"));
+    assignDefined(pOut, "summary", pickStr(priorityRec, "summary") ?? pickStr(priorityRec, "name"));
+    if (Object.keys(pOut).length) out.priority = pOut;
+  } else if (typeof rec.priority === "string" && rec.priority.trim()) {
+    out.priority = { summary: rec.priority.trim() };
+  }
+  const service = asRecord(rec.service);
+  if (service) {
+    const sOut: Record<string, JsonValue> = {};
+    assignDefined(sOut, "id", pickStr(service, "id"));
+    assignDefined(sOut, "name", pickStr(service, "name") ?? pickStr(service, "summary"));
+    if (Object.keys(sOut).length) out.service = sOut;
+  }
+  if (Array.isArray(rec.assignments)) {
+    const slimAssignments = rec.assignments
+      .slice(0, 5)
+      .map((a) => {
+        const aRec = asRecord(a);
+        if (!aRec) return undefined;
+        const aOut: Record<string, JsonValue> = {};
+        assignDefined(aOut, "at", pickStr(aRec, "at"));
+        const user = slimPagerDutyUser(aRec.assignee) ?? slimPagerDutyUser(aRec);
+        if (user) {
+          if (asRecord(aRec.assignee)) {
+            aOut.assignee = user;
+          } else {
+            Object.assign(aOut, user);
+          }
+        }
+        return Object.keys(aOut).length ? aOut : undefined;
+      })
+      .filter((a): a is Record<string, JsonValue> => Boolean(a));
+    if (slimAssignments.length) out.assignments = slimAssignments;
+  }
+  if (Array.isArray(rec.assignees)) {
+    const slimAssignees = rec.assignees
+      .slice(0, 5)
+      .map((a) => slimPagerDutyUser(a))
+      .filter((a): a is Record<string, JsonValue> => Boolean(a));
+    if (slimAssignees.length) out.assignees = slimAssignees;
+  }
+  if (rec.assignee) {
+    const user = slimPagerDutyUser(rec.assignee);
+    if (user) out.assignee = user;
+  }
+  if (rec.assigned_to_user) {
+    const user = slimPagerDutyUser(rec.assigned_to_user);
+    if (user) {
+      out.assigned_to_user = user;
+      if (!out.assignee) out.assignee = user;
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function isPagerDutyUrl(val: unknown): boolean {
+  if (typeof val !== "string" || !val) return false;
+  try {
+    const parsed = new URL(val);
+    return parsed.hostname === "pagerduty.com" || parsed.hostname.endsWith(".pagerduty.com");
+  } catch {
+    return false;
+  }
+}
+
+export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
+  const root = asRecord(payload);
+  if (!root) return false;
+  const event = asRecord(root.event);
+  if (event) {
+    const data = asRecord(event.data);
+    const htmlUrl = pickStr(data, "html_url") ?? pickStr(event, "html_url") ?? pickStr(data, "self") ?? pickStr(event, "self");
+    if (isPagerDutyUrl(htmlUrl)) return true;
+    if (data && (isPagerDutyUrl(data.self) || isPagerDutyUrl(pickStr(asRecord(data.service), "html_url")) || isPagerDutyUrl(pickStr(asRecord(data.service), "self")))) return true;
+    if (event.agent && (isPagerDutyUrl(pickStr(asRecord(event.agent), "html_url")) || isPagerDutyUrl(pickStr(asRecord(event.agent), "self")))) return true;
+
+    const eventType = pickStr(event, "event_type");
+    const isPdEvent =
+      eventType === "incident.trigger" ||
+      eventType === "incident.triggered" ||
+      eventType === "incident.acknowledge" ||
+      eventType === "incident.acknowledged" ||
+      eventType === "incident.unacknowledge" ||
+      eventType === "incident.unacknowledged" ||
+      eventType === "incident.resolve" ||
+      eventType === "incident.resolved" ||
+      eventType === "incident.assign" ||
+      eventType === "incident.reassigned" ||
+      eventType === "incident.escalate" ||
+      eventType === "incident.escalated" ||
+      eventType === "incident.delegate" ||
+      eventType === "incident.reopened" ||
+      eventType === "incident.annotated" ||
+      eventType === "incident.priority_updated" ||
+      Boolean(eventType?.startsWith("incident.responder."));
+
+    const resourceType = pickStr(event, "resource_type");
+    const dataType = pickStr(data, "type");
+    const hasResourceType =
+      resourceType === "incident" ||
+      dataType === "incident" ||
+      dataType === "incident_reference";
+
+    const priorityObj = asRecord(data?.priority);
+    const hasPdPriority =
+      priorityObj !== undefined &&
+      (priorityObj.type === "priority" ||
+        priorityObj.type === "priority_reference" ||
+        isPagerDutyUrl(pickStr(priorityObj, "self")) ||
+        isPagerDutyUrl(pickStr(priorityObj, "html_url")));
+
+    const hasPdStatus = data?.status === "triggered" || data?.status === "acknowledged" || data?.status === "resolved";
+    const hasExclusiveField =
+      data?.incident_key !== undefined ||
+      hasPdPriority ||
+      data?.urgency === "high" ||
+      data?.urgency === "low" ||
+      Array.isArray(data?.teams) ||
+      Array.isArray(data?.assignments) ||
+      asRecord(data?.service)?.type === "service_reference" ||
+      asRecord(event.agent)?.type === "user_reference";
+
+    if (hasResourceType && ((isPdEvent && (hasPdStatus || hasExclusiveField)) || data?.incident_key !== undefined)) {
+      return true;
+    }
+  }
+  if (Array.isArray(root.messages) && root.messages.length > 0) {
+    return root.messages.some((msg) => {
+      const rec = asRecord(msg);
+      if (!rec) return false;
+      const eventName = pickStr(rec, "event") ?? pickStr(rec, "type");
+      const inc = asRecord(rec.incident);
+      if (!inc) return false;
+      if (
+        isPagerDutyUrl(inc.html_url) ||
+        isPagerDutyUrl(inc.url) ||
+        isPagerDutyUrl(pickStr(asRecord(inc.service), "html_url")) ||
+        isPagerDutyUrl(pickStr(asRecord(inc.service), "url")) ||
+        isPagerDutyUrl(pickStr(asRecord(rec.webhook), "url"))
+      ) {
+        return true;
+      }
+      const isPdEvent =
+        eventName === "incident.trigger" ||
+        eventName === "incident.acknowledge" ||
+        eventName === "incident.unacknowledge" ||
+        eventName === "incident.resolve" ||
+        eventName === "incident.assign" ||
+        eventName === "incident.escalate" ||
+        eventName === "incident.delegate";
+      if (!isPdEvent) return false;
+
+      const hasPdStatus = inc.status === "triggered" || inc.status === "acknowledged" || inc.status === "resolved";
+      const hasExclusiveField =
+        inc.incident_key !== undefined ||
+        Array.isArray(inc.teams) ||
+        Array.isArray(rec.log_entries) ||
+        rec.webhook !== undefined ||
+        inc.assigned_to_user !== undefined ||
+        inc.urgency === "high" ||
+        inc.urgency === "low";
+
+      return hasExclusiveField || hasPdStatus;
+    });
+  }
+  return false;
+}
+
+export function slimPagerDutyPayload(payload: JsonValue): JsonValue {
+  const root = asRecord(payload);
+  if (!root) return payload;
+  const out: Record<string, JsonValue> = {};
+  const event = asRecord(root.event);
+  if (event) {
+    assignDefined(out, "event_type", pickStr(event, "event_type"));
+    assignDefined(out, "occurred_at", pickStr(event, "occurred_at"));
+    const agent = slimPagerDutyUser(event.agent);
+    if (agent) out.agent = agent;
+    const data = asRecord(event.data);
+    const incident = slimPagerDutyIncident(data ?? event);
+    if (incident) out.incident = incident;
+  } else if (Array.isArray(root.messages)) {
+    const rawMessages = root.messages.slice(0, 10);
+    const slimmedMessages: Record<string, JsonValue>[] = [];
+    for (const rawMsg of rawMessages) {
+      const msgRec = asRecord(rawMsg);
+      if (!msgRec) continue;
+      const sMsg: Record<string, JsonValue> = {};
+      assignDefined(sMsg, "event", pickStr(msgRec, "event") ?? pickStr(msgRec, "type"));
+      assignDefined(sMsg, "id", pickStr(msgRec, "id"));
+      assignDefined(sMsg, "created_on", pickStr(msgRec, "created_on") ?? pickStr(msgRec, "created_at"));
+      const agent = slimPagerDutyUser(msgRec.agent);
+      if (agent) sMsg.agent = agent;
+      const inc = slimPagerDutyIncident(msgRec.incident);
+      if (inc) sMsg.incident = inc;
+      if (Object.keys(sMsg).length) slimmedMessages.push(sMsg);
+    }
+    if (slimmedMessages.length > 0) {
+      out.messages = slimmedMessages;
+      const first = slimmedMessages[0];
+      assignDefined(out, "event_type", pickStr(first, "event"));
+      assignDefined(out, "created_on", pickStr(first, "created_on"));
+      if (first.agent) out.agent = first.agent;
+    }
+    if (root.messages.length > rawMessages.length) {
+      out.omitted_messages = root.messages.length - rawMessages.length;
+    }
+  }
+
+  // Preserve any custom top-level fields
+  for (const [key, val] of Object.entries(root)) {
+    if (key === "event" || key === "messages") continue;
+    if (out[key] === undefined) out[key] = val;
+  }
+
+  return Object.keys(out).length ? out : payload;
+}
+
+export function isGithubWebhookPayload(payload: JsonValue): boolean {
+  const root = asRecord(payload);
+  if (!root) return false;
+  return Boolean(slimRepo(root.repository) || slimRepo(root.head_repository));
+}
+
+/** Drop GitHub, Sentry, and PagerDuty URL farms and log blobs. Other JSON is unchanged. */
+export function slimWebhookPayload(payload: JsonValue): JsonValue {
+  const root = asRecord(payload);
+  if (!root) return payload;
+  if (isGithubWebhookPayload(root)) return slimGithubPayload(root);
+  if (isPagerDutyWebhookPayload(root)) return slimPagerDutyPayload(root);
+  if (isSentryWebhookPayload(root)) return slimSentryPayload(root);
+  return payload;
 }
 
 export function serializeWebhookPayload(payload: JsonValue): string {

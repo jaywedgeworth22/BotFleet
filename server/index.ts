@@ -2407,6 +2407,11 @@ bus.subscribe((event: RuntimeEvent) => {
           fallbackAttemptByTurn.delete(fallbackKey);
           pendingMemberFallback.delete(event.threadId);
           quotaCooldowns.clear(fallbackBot.id, actualSelection.instanceId, actualSelection.model);
+        } else if (
+          actualSelection.instanceId &&
+          (event.stopReason === "prompt_timeout" || event.stopReason === "resume_failed")
+        ) {
+          store.setResumeCursor(fallbackBot.id, actualSelection.instanceId, undefined, event.threadId);
         }
         if (quotaOrCap && textIsCandidateForQuota) {
           quotaCooldowns.record({

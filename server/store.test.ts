@@ -341,6 +341,16 @@ describe("Store", () => {
     expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-abc", codex: "thread-xyz" });
   });
 
+  it("setResumeCursor deletes per-instance continuations when cursor is undefined", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.setResumeCursor(bot.id, "claude", "sess-abc");
+    store.setResumeCursor(bot.id, "claude", undefined);
+
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({});
+  });
+
   it("seedIfEmpty creates exactly one starter bot, once", () => {
     const store = new Store(selection);
     store.seedIfEmpty();
