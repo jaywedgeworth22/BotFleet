@@ -1024,6 +1024,24 @@ describe("unattendedModelDowngrade", () => {
     ).toBe("claude-sonnet-4-6");
   });
 
+  it("keeps custom and local-inject Claude routes as configured", () => {
+    for (const model of ["ollama::my-sonnet-model", "lmstudio::qwen-opus-distill", "my-opus-proxy"]) {
+      expect(
+        unattendedModelDowngrade(
+          { instanceId: "claude", model },
+          { unattended: true, driverKind: "claudeAgent" },
+        ).model,
+      ).toBe(model);
+    }
+    // Built-in Claude routes still downgrade.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude", model: "claude-opus-5" },
+        { unattended: true, driverKind: "claudeAgent" },
+      ).model,
+    ).toBe("claude-haiku-4-5");
+  });
+
   it("pins Claude downgrades to the driver's current Haiku", () => {
     expect(
       unattendedModelDowngrade(claude, { unattended: true, effortLevels: ["low"] }),
