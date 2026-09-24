@@ -949,9 +949,9 @@ export function UsageSection() {
             The "PAYG / 1k in" column shows the public API rate only when the engine's
             pricing block carries an API rate — subscription-only engines render{" "}
             <span className="text-emerald-700 dark:text-emerald-300">Included</span>{" "}
-            instead.  MiniMax sits on the Mavis Token Plan Max subscription ($55/mo flat)
+            instead.{"\u00A0 "}MiniMax sits on the Mavis Token Plan Max subscription ($55/mo flat)
             — its PAYG column is reference data for the "what-if API" projection below,
-            never what you are billed.  The same registry backs the Capability Matrix at
+            never what you are billed.{"\u00A0 "}The same registry backs the Capability Matrix at
             the top of the Settings → Engines panel so the two views cannot drift.
           </div>
         </div>
@@ -995,6 +995,32 @@ export function UsageSection() {
             // legacy deepseek/dshAgent aliases.
             const engineFor = (instanceId: string) =>
               instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
+            // A bucket banked with engine metadata carries the registry
+            // engine resolved at bank time — attribution survives the
+            // connection being deleted (a deleted "custom-*" id used to
+            // drop the usage out of every engine row).
+            const bucketEngine = (instanceId: string, engineId?: string) =>
+              (engineId && (engineIdFromDriverKind(engineId) ?? instanceIdToEngineId.get(engineId) ?? engineId)) || engineFor(instanceId);
+            // Legacy records banked before engine metadata existed fall
+            // back to the model id: a deleted connection's model usually
+            // still names its engine via the registry defaultModels list.
+            const modelToEngineId = new Map<string, string>();
+            for (const [engineId, engineEntry] of Object.entries(ENGINE_CAPABILITIES)) {
+              for (const m of engineEntry.defaultModels ?? []) {
+                if (!modelToEngineId.has(m.id)) modelToEngineId.set(m.id, engineId);
+              }
+            }
+            const legacyEngine = (instanceId: string | undefined, model?: string) => {
+              if (instanceId) {
+                const resolved = engineFor(instanceId);
+                if (ENGINE_CAPABILITIES[resolved]) return resolved;
+              }
+              if (model) {
+                const byModelId = modelToEngineId.get(model);
+                if (byModelId) return byModelId;
+              }
+              return null;
+            };
             let tokensForEngine = 0;
             let cachedForEngine = 0;
             let inputForEngine = 0;
@@ -1025,7 +1051,7 @@ export function UsageSection() {
                     bucketedOutput += bucketUsage.output;
                     bucketedCached += cachedInput(bucketUsage);
                     if ((bucketUsage.turns ?? 0) <= 0) continue;
-                    if (engineFor(bucketInstanceId) !== id) continue;
+                    if (bucketEngine(bucketInstanceId, bucketUsage.engineId) !== id) continue;
                     tokensForEngine += bucketUsage.input + bucketUsage.output;
                     cachedForEngine += cachedInput(bucketUsage);
                     inputForEngine += bucketUsage.input;
@@ -1038,8 +1064,8 @@ export function UsageSection() {
                   // projection does not drop that history.
                   const legacy = task.usage;
                   if (legacy && (legacy.turns ?? 0) - bucketedTurns > 0) {
-                    const legacyInstanceId = task.modelSelection?.instanceId ?? botInstanceId;
-                    if (legacyInstanceId && engineFor(legacyInstanceId) === id) {
+                    const legacyEngineId = legacyEngine(task.modelSelection?.instanceId ?? botInstanceId, task.modelSelection?.model);
+                    if (legacyEngineId === id) {
                       const rInput = Math.max(0, legacy.input - bucketedInput);
                       const rOutput = Math.max(0, legacy.output - bucketedOutput);
                       const rCached = Math.max(0, cachedInput(legacy) - bucketedCached);
@@ -1052,9 +1078,8 @@ export function UsageSection() {
                   continue;
                 }
                 if ((task.usage?.turns ?? 0) <= 0) continue;
-                const instanceId = task.modelSelection?.instanceId ?? botInstanceId;
-                if (!instanceId) continue;
-                if (engineFor(instanceId) !== id) continue;
+                const legacyEngineId = legacyEngine(task.modelSelection?.instanceId ?? botInstanceId, task.modelSelection?.model);
+                if (legacyEngineId !== id) continue;
                 tokensForEngine += task.usage!.input + task.usage!.output;
                 cachedForEngine += cachedInput(task.usage!);
                 inputForEngine += task.usage!.input;
@@ -1067,13 +1092,19 @@ export function UsageSection() {
               for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
                 if (roomUsage.lastAt < periodStartMs) continue;
                 if ((roomUsage.turns ?? 0) <= 0) continue;
-                if (engineFor(roomInstanceId) !== id) continue;
+                if (bucketEngine(roomInstanceId, roomUsage.engineId) !== id) continue;
                 tokensForEngine += roomUsage.input + roomUsage.output;
                 cachedForEngine += cachedInput(roomUsage);
                 inputForEngine += roomUsage.input;
                 outputForEngine += roomUsage.output;
               }
             }
+            // NOTE: tokens fold per ENGINE before pricing, so multi-model
+            // engines price every token at the registry's single PAYG rate
+            // block (Gemini Flash as Pro, MiniMax H3 at the M3 rates).
+            // Buckets now bank per-model usage (`byModel`), but per-model
+            // PAYG rates do not exist in the registry yet — adding them
+            // needs owner-confirmed pricing data, not invented numbers.
             const actualCostUsd = id === "minimax"
               ? 55
               : entry.pricing.kind === "subscription+api" && entry.pricing.subscription.costPerMonth != null
@@ -1311,7 +1342,7 @@ function UsageRow({
   open,
   onToggle,
 }: {
-  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number }> };
+  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number; engineId?: string; byModel?: Record<string, TaskUsage> }> };
   usage: TaskUsage;
   open: boolean;
   onToggle: () => void;
@@ -1332,7 +1363,7 @@ function UsageRow({
       createdAt: u.lastAt,
       lastActivity: u.lastAt,
       usage: u,
-      modelSelection: { instanceId, model: "" },
+      modelSelection: { instanceId, model: Object.keys(u.byModel ?? {}).join(", ") },
     }));
   const tasks: TaskLike[] = [
     ...(bot.tasks ?? []).filter((task) => (task.usage?.turns ?? 0) > 0 || (task.usage?.input ?? 0) + (task.usage?.output ?? 0) > 0),
@@ -1359,10 +1390,23 @@ function UsageRow({
   const cumulative = tasks.map((task) => {
     const taskUsage = task.usage ?? { input: 0, output: 0, costUsd: null, turns: 0 };
     const isRoomRow = task.threadId.startsWith("room:");
+    // Show the model that PRODUCED the usage when the per-instance
+    // buckets banked one (post-upgrade turns); the configured selection
+    // is only the fallback for legacy records — it is the task's current
+    // setting, not necessarily what ran.
+    const ranModels = isRoomRow
+      ? []
+      : [...new Set(Object.values(task.usageByInstance ?? {}).flatMap((b) => Object.keys(b.byModel ?? {})))];
     const model = isRoomRow
-      ? task.modelSelection?.instanceId ?? "room"
-      : task.modelSelection?.model ?? bot.modelSelection.model;
-    if (model && !isRoomRow) modelSet.add(model);
+      ? task.modelSelection?.model || task.modelSelection?.instanceId || "room"
+      : ranModels.length > 0
+        ? ranModels.join(", ")
+        : task.modelSelection?.model ?? bot.modelSelection.model;
+    if (!isRoomRow && ranModels.length > 0) {
+      for (const m of ranModels) modelSet.add(m);
+    } else if (model && !isRoomRow) {
+      modelSet.add(model);
+    }
     const running = cumulativeByThread.get(task.threadId) ?? { tokens: 0, cost: 0 };
     return {
       task,
@@ -1466,8 +1510,11 @@ interface TaskLike {
   lastActivity?: number;
   usage?: TaskUsage;
   /** Per-instance breakdown of `usage`, banked from the selection that
-   *  actually ran each turn (post-fallback).  Absent on older records. */
-  usageByInstance?: Record<string, TaskUsage>;
+   *  actually ran each turn (post-fallback).  `engineId` is the registry
+   *  engine resolved at bank time, so attribution survives deleting the
+   *  connection;  `byModel` splits the bucket per model that ran.
+   *  Absent on older records. */
+  usageByInstance?: Record<string, TaskUsage & { engineId?: string; byModel?: Record<string, TaskUsage> }>;
   modelSelection?: ModelSelectionLike;
 }
 interface ModelSelectionLike {
