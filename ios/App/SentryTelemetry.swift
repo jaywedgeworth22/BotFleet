@@ -53,8 +53,11 @@ enum SentryTelemetry {
 
         let pairedConnection = UserDefaults.standard.data(forKey: Session.connectionKey)
             .flatMap { try? JSONDecoder().decode(Connection.self, from: $0) }
+        // sentry-cocoa's failed-request context has status_code, sanitized
+        // headers, and body_size; the body itself is never captured.
         return CompanionGatewayFailurePolicy.shouldSuppress(
             statusCode: statusCode,
+            responseHeaders: response["headers"] as? [String: String],
             requestURL: event.request?.url,
             pairedConnection: pairedConnection
         )
