@@ -116,7 +116,7 @@ import {
   type TurnComputerDeps,
   type TurnComputerMounts,
 } from "./computer-grants.ts";
-import { disabledComputerProviders, providerReloadKeys, turnUsesComputerProvider } from "./config-reload-keys.ts";
+import { providerReloadKeys, revokedComputerProviders, turnUsesComputerProvider } from "./config-reload-keys.ts";
 import { computerReach } from "./computer-capability.ts";
 import {
   ensureDirs,
@@ -5875,12 +5875,15 @@ async function interruptTurnsUsingDisabledProviders(
   before: typeof cfg,
   after: typeof cfg,
 ): Promise<void> {
-  const disabled = disabledComputerProviders(
-    before.botDefaults?.computerProviders,
-    after.botDefaults?.computerProviders,
+  // Both spellings of a revocation: a provider toggle turned off, and (from
+  // an older client that writes only the legacy field) a destination removed
+  // from `allowedComputers`.
+  const allowed = allowedBotComputers(before);
+  const disabled = revokedComputerProviders(
+    { providers: before.botDefaults?.computerProviders, allowed },
+    { providers: after.botDefaults?.computerProviders, allowed: allowedBotComputers(after) },
   );
   if (disabled.length === 0) return;
-  const allowed = allowedBotComputers(before);
   const autoAllows = autoDestinations(allowed);
   await Promise.allSettled(activeInterruptedTurns().map(async (turn) => {
     const bot = store.bot(turn.botId);
@@ -5895,6 +5898,11 @@ async function interruptTurnsUsingDisabledProviders(
     );
     const cloudBackend = resolveCloudBackend(bot.cloudBackend, before.botDefaults?.cloudBackend);
     if (!turnUsesComputerProvider({ granted, auto, autoAllows, cloudBackend }, disabled)) return;
+    // Latch the stop before anything is awaited, same as the full reload and
+    // the Stop button.  The driver may settle the turn the instant it is
+    // killed; without the latch an exit_before_result cancellation reads as
+    // an engine failure and model fallback replays the prompt elsewhere.
+    latchInterruptedTurns([turn]);
     const instance = registry.get(turn.instanceId ?? bot.modelSelection.instanceId);
     await instance?.adapter.interruptTurn(turn.threadId).catch((error: unknown) => {
       console.error(`interrupt after computer provider disable failed for thread ${turn.threadId}:`, error);
