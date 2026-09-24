@@ -97,6 +97,22 @@ export function staleProviderConfig(error: unknown): ConfigStatus | null {
   return config && typeof config === "object" ? (config as ConfigStatus) : null;
 }
 
+/** The refusal a provider disable gets (409 `computer_impact_changed`) when
+ * the server finds bots the confirmed list did not name: those bots, and the
+ * current config.  Null for any other error. */
+export function impactChangedRefusal(
+  error: unknown,
+): { impacted: { id: string; name: string }[]; config: ConfigStatus | null } | null {
+  const body = (error as { body?: { code?: unknown; impacted?: unknown; config?: unknown } } | null)?.body;
+  if (!body || body.code !== "computer_impact_changed" || !Array.isArray(body.impacted)) return null;
+  const impacted = body.impacted
+    .filter((bot): bot is { id: string; name?: unknown } =>
+      Boolean(bot) && typeof bot === "object" && typeof (bot as { id?: unknown }).id === "string")
+    .map((bot) => ({ id: bot.id, name: typeof bot.name === "string" ? bot.name : bot.id }));
+  const config = body.config && typeof body.config === "object" ? (body.config as ConfigStatus) : null;
+  return { impacted, config };
+}
+
 /** The host platform the Auto This Computer fallback is judged against: the
  * one the server reports, because that is where turns run.  A desktop app
  * talking to its own server knows it locally too, so that is the fallback for
