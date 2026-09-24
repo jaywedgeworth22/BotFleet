@@ -1372,6 +1372,45 @@ describe("Sentry Crons check-ins", () => {
     expect(h.checkInFinishes[0]).toMatchObject({ checkInId: "check-in-1", ok: false });
   });
 
+  it("closes the check-in with ok:false when a running scheduled run is cancelled", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Cancel sweep",
+      prompt: "check disk",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    const run = h.manager.listRuns()[0]!;
+
+    await h.manager.cancelRun(run.id);
+    const base = { eventId: "e", provider: "claude" as const, threadId: run.threadId!, createdAt: new Date().toISOString() };
+    h.manager.handleRuntimeEvent({ ...base, type: "turn.completed", ok: false, stopReason: "interrupted" });
+
+    expect(h.checkInFinishes).toHaveLength(1);
+    expect(h.checkInFinishes[0]).toMatchObject({ checkInId: "check-in-1", ok: false });
+  });
+
+  it("closes the check-in with ok:false for a run recovered after a restart", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Restart sweep",
+      prompt: "check uptime",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]!.sentryCheckInId).toBe("check-in-1");
+
+    const reloaded = new RoutineManager(h.options);
+
+    expect(reloaded.listRuns()[0]).toMatchObject({ status: "failed", outcomeCode: "runtime_restart" });
+    expect(h.checkInFinishes).toHaveLength(1);
+    expect(h.checkInFinishes[0]).toMatchObject({ checkInId: "check-in-1", ok: false });
+  });
+
   it("never opens a check-in for a webhook, resource, or manual dispatch", async () => {
     const h = harness();
     h.manager.enqueueWebhook({
