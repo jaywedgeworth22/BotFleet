@@ -21,6 +21,10 @@ const ANTIGRAVITY_FLASH_BY_TIER: Record<string, string> = {
 };
 
 function antigravityFlashModel(model: string): string {
+  // Only built-in catalog routes are swapped.  A custom or local-inject
+  // model the operator configured (any id outside the static catalog, even
+  // one containing "-pro") is their chosen route and stays as configured.
+  if (!STATIC_ANTIGRAVITY_MODELS.options.some((option) => option.id === model)) return model;
   const candidate = model.replace("-pro", "-flash");
   if (candidate === model) return model;
   if (STATIC_ANTIGRAVITY_MODELS.options.some((option) => option.id === candidate)) {
