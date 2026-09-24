@@ -543,8 +543,17 @@ public struct ProviderSnapshot: Codable, Hashable, Sendable {
     /// into key entry or a CLI path — they only say what is true right now.
     public var engineStatusLabel: String {
         if isAvailable, authenticated == false { return "Sign in" }
-        if !isAvailable { return "Not installed" }
+        if !isAvailable { return isMissingBinary ? "Not installed" : "Unavailable" }
         return "Ready"
+    }
+
+    /// The server reports every non-ready engine as `unavailable` — missing
+    /// or rejected credentials, an outdated CLI, a failed probe, bad config,
+    /// or "Disabled in settings".  Only the drivers' missing-binary probe
+    /// ("`<cli>` CLI not found") means the engine is actually not installed.
+    var isMissingBinary: Bool {
+        guard let reason else { return false }
+        return reason.range(of: "CLI not found", options: .caseInsensitive) != nil
     }
 }
 
