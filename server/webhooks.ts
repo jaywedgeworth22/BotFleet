@@ -488,6 +488,7 @@ export function shouldIgnoreWebhookEvent(
     let isAssignmentHandled = false;
 
     if (isAssignmentAction) {
+      const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
       const isAssignmentExcluded = (): boolean => {
         const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|without|stop(?:\\s+to)?|quit|avoid)`;
         const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
@@ -500,7 +501,6 @@ export function shouldIgnoreWebhookEvent(
         const passiveExclusionAux = `(?:is|are|be|was|were|get|gets|got|(?:should|must|can|could|would|will)\\s+be)`;
         const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring|exclude|excluding|skip|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b${passiveExclusionAux}\\s+(?:ignored|dropped|excluded|skipped)\\b|${negatedHandlingVerb})`;
         const contrastingVerb = `(?<!\\b(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|without|stop|quit|avoid)(?:\\s+\\w+){0,2}\\s+)\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
-        const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
         const exceptionBoundary = String.raw`\b(?:except|but|without|not(?!\s+in\s+scope\b)|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
         const verbFirstPattern = new RegExp(
@@ -511,11 +511,18 @@ export function shouldIgnoreWebhookEvent(
           `${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
           "i",
         );
+        const negatedTargetPattern = new RegExp(
+          `\\b(?:not|no|neither|without|never)\\s+(?:any\\s+)?${assignmentTarget}` +
+            `|${assignmentTarget}\\s+(?:are|is\\s+)?(?:not|never|out\\s+of\\s+scope)\\b`,
+          "i",
+        );
+        if (negatedTargetPattern.test(prompt) || negatedTargetPattern.test(name)) return true;
+
         if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
 
         const positiveTargetsAssignment = new RegExp(
-          `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?${assignmentTarget}` +
-            `|${assignmentTarget}(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
+          `${contrastingVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+(?:any\\s+)?)${assignmentTarget}` +
+            `|${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
           "i",
         );
         if (positiveTargetsAssignment.test(prompt)) return false;
@@ -558,11 +565,15 @@ export function shouldIgnoreWebhookEvent(
       }
 
       const assignmentMatcher = /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i;
+      const positiveAssignmentMatcher = new RegExp(
+        `(?<!\\b(?:not|no|neither|without|never)\\s+(?:any\\s+)?)${assignmentTarget}`,
+        "i",
+      );
       const assignmentContextMatcher = /\b(?:(?:assignment|ownership|issue)\s+(?:router|triage)|(?:router|triage)\s+(?:for\s+)?(?:assignments?|assignees?|ownership|owners?))\b/i;
       const handlesAssignments =
         (trigger.eventTypes ?? []).some((e) => assignmentMatcher.test(e)) ||
-        assignmentMatcher.test(name) ||
-        assignmentMatcher.test(prompt) ||
+        positiveAssignmentMatcher.test(name) ||
+        positiveAssignmentMatcher.test(prompt) ||
         assignmentContextMatcher.test(prompt) ||
         assignmentContextMatcher.test(name);
 

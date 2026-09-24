@@ -1260,6 +1260,15 @@ describe("WebhookManager", () => {
     expect(notOnlyWarningResult.runId).toBeDefined();
     expect(notOnlyWarningResult.ignored).toBeUndefined();
 
+    // 57. Negated assignment mentions ("Handle incidents, not assignments") reject assignment deliveries
+    const { webhook: notAssignHook, secret: notAssignSecret } = h.manager.create({
+      name: "Incident Only Responder",
+      prompt: "Handle incidents, not assignments.",
+      botId: "maus-1",
+    });
+    const notAssignResult = h.manager.receive(notAssignHook.endpointId, notAssignSecret, warningAssignEvent);
+    expect(notAssignResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

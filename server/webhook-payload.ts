@@ -574,28 +574,49 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
     const data = asRecord(event.data);
     const htmlUrl = pickStr(data, "html_url") ?? pickStr(event, "html_url") ?? pickStr(data, "self") ?? pickStr(event, "self");
     if (isPagerDutyUrl(htmlUrl)) return true;
+    if (data && (isPagerDutyUrl(data.self) || isPagerDutyUrl(pickStr(asRecord(data.service), "html_url")) || isPagerDutyUrl(pickStr(asRecord(data.service), "self")))) return true;
+    if (event.agent && (isPagerDutyUrl(pickStr(asRecord(event.agent), "html_url")) || isPagerDutyUrl(pickStr(asRecord(event.agent), "self")))) return true;
+
     const eventType = pickStr(event, "event_type");
-    if (eventType?.startsWith("incident.")) {
-      const resourceType = pickStr(event, "resource_type");
-      const dataType = pickStr(data, "type");
-      const hasResourceType =
-        resourceType === "incident" ||
-        dataType === "incident" ||
-        dataType === "incident_reference";
-      const hasExpectedEnvelope = Boolean(
-        event.agent !== undefined ||
-        event.client !== undefined ||
-        (data && (
-          data.urgency !== undefined ||
-          data.status !== undefined ||
-          data.service !== undefined ||
-          data.assignments !== undefined ||
-          data.assignees !== undefined ||
-          data.priority !== undefined
-        ))
-      );
-      if (hasResourceType && hasExpectedEnvelope) return true;
-      if (data && (isPagerDutyUrl(data.self) || isPagerDutyUrl(pickStr(asRecord(data.service), "html_url")))) return true;
+    const isPdEvent =
+      eventType === "incident.trigger" ||
+      eventType === "incident.triggered" ||
+      eventType === "incident.acknowledge" ||
+      eventType === "incident.acknowledged" ||
+      eventType === "incident.unacknowledge" ||
+      eventType === "incident.unacknowledged" ||
+      eventType === "incident.resolve" ||
+      eventType === "incident.resolved" ||
+      eventType === "incident.assign" ||
+      eventType === "incident.reassigned" ||
+      eventType === "incident.escalate" ||
+      eventType === "incident.escalated" ||
+      eventType === "incident.delegate" ||
+      eventType === "incident.reopened" ||
+      eventType === "incident.annotated" ||
+      eventType === "incident.priority_updated" ||
+      Boolean(eventType?.startsWith("incident.responder."));
+
+    const resourceType = pickStr(event, "resource_type");
+    const dataType = pickStr(data, "type");
+    const hasResourceType =
+      resourceType === "incident" ||
+      dataType === "incident" ||
+      dataType === "incident_reference";
+
+    const hasPdStatus = data?.status === "triggered" || data?.status === "acknowledged" || data?.status === "resolved";
+    const hasExclusiveField =
+      data?.incident_key !== undefined ||
+      data?.priority !== undefined ||
+      data?.urgency === "high" ||
+      data?.urgency === "low" ||
+      Array.isArray(data?.teams) ||
+      Array.isArray(data?.assignments) ||
+      asRecord(data?.service)?.type === "service_reference" ||
+      asRecord(event.agent)?.type === "user_reference";
+
+    if (hasResourceType && ((isPdEvent && (hasPdStatus || hasExclusiveField)) || data?.incident_key !== undefined)) {
+      return true;
     }
   }
   if (Array.isArray(root.messages) && root.messages.length > 0) {

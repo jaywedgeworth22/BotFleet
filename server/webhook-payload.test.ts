@@ -520,6 +520,19 @@ describe("slimWebhookPayload", () => {
     expect(serializeWebhookPayload(generic)).toContain("important provider note");
   });
 
+  it("does not classify generic modern event envelopes as PagerDuty without provider-exclusive fields", () => {
+    const genericModern = {
+      event: {
+        event_type: "incident.created",
+        resource_type: "incident",
+        data: { type: "incident", status: "open", details: { custom: "payload" } },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(genericModern)).toBe(false);
+    expect(slimWebhookPayload(genericModern)).toEqual(genericModern);
+    expect(serializeWebhookPayload(genericModern)).toContain("custom");
+  });
+
   it("does not classify payloads with non-PagerDuty URL hostnames as PagerDuty", () => {
     const fakePdUrl = {
       event: { data: { html_url: "https://not-pagerduty.com/incidents/1", details: { foo: "bar" } } },
