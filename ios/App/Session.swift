@@ -165,6 +165,35 @@ final class Session: ObservableObject {
         var featuresOK: Bool? = nil
         var profileOK: Bool? = nil
         var timeoutOK: Bool? = nil
+
+        /// True when at least one mutation in this flush reported failure.
+        var hasFailedMutation: Bool {
+            conversationModeOK == false
+                || terminologyOK == false
+                || featuresOK == false
+                || profileOK == false
+                || timeoutOK == false
+        }
+
+        /// Merge a superseded partial with the flush that inherited requeued
+        /// fields.  Confirmed successes (`true`) win so an earlier PATCH in the
+        /// partial flush is not lost; a requeued field that the replacement
+        /// saved upgrades `false` to `true`.
+        func mergingRequeuedFollow(from replacement: SettingsFlushOutcome) -> SettingsFlushOutcome {
+            func mergeFlag(_ partial: Bool?, _ replacement: Bool?) -> Bool? {
+                if partial == true || replacement == true { return true }
+                if partial == false || replacement == false { return false }
+                return nil
+            }
+            return SettingsFlushOutcome(
+                status: replacement.status ?? status,
+                conversationModeOK: mergeFlag(conversationModeOK, replacement.conversationModeOK),
+                terminologyOK: mergeFlag(terminologyOK, replacement.terminologyOK),
+                featuresOK: mergeFlag(featuresOK, replacement.featuresOK),
+                profileOK: mergeFlag(profileOK, replacement.profileOK),
+                timeoutOK: mergeFlag(timeoutOK, replacement.timeoutOK)
+            )
+        }
     }
 
     /// One-in-flight settings PATCH chain shared by every full-config settings
@@ -1735,6 +1764,18 @@ final class Session: ObservableObject {
         }
         settingsUpdateTail = task
         if let outcome = await task.value {
+            // Superseded flush may requeue failed fields into a newer generation
+            // and still return a non-nil partial outcome (e.g. timeoutOK == false).
+            // Follow that replacement like the nil supersession path so callers
+            // are not told the save failed when the inheriting flush succeeds.
+            if outcome.hasFailedMutation, settingsUpdateGeneration > generation {
+                if let followed = await awaitSettingsFlushAfterSupersede(
+                    generation: generation,
+                    enqueuePairing: enqueuePairing
+                ) {
+                    return outcome.mergingRequeuedFollow(from: followed)
+                }
+            }
             return outcome
         }
         return await awaitSettingsFlushAfterSupersede(
@@ -1751,17 +1792,28 @@ final class Session: ObservableObject {
         generation: Int,
         enqueuePairing: Int
     ) async -> SettingsFlushOutcome? {
+        var accumulated: SettingsFlushOutcome?
         while true {
             guard pairingGeneration == enqueuePairing else { return nil }
             let generationAtAwait = settingsUpdateGeneration
             // We were still the tip and finished with nil → real failure / empty.
-            guard generationAtAwait > generation else { return nil }
-            guard let tail = settingsUpdateTail else { return nil }
+            guard generationAtAwait > generation else { return accumulated }
+            guard let tail = settingsUpdateTail else { return accumulated }
             let outcome = await tail.value
-            if let outcome { return outcome }
+            if let outcome {
+                let merged = accumulated.map { $0.mergingRequeuedFollow(from: outcome) } ?? outcome
+                // Superseded partial failure: failed fields were requeued into a
+                // newer flush — keep following, preserving any successes already
+                // confirmed in this chain.
+                if merged.hasFailedMutation, settingsUpdateGeneration > generationAtAwait {
+                    accumulated = merged
+                    continue
+                }
+                return merged
+            }
             // That tail was also superseded. Loop if a newer generation exists.
             if settingsUpdateGeneration == generationAtAwait {
-                return nil
+                return accumulated
             }
         }
     }
