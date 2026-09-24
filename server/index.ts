@@ -8738,9 +8738,11 @@ const server = createServer(async (req, res) => {
       const origin = req.headers.origin ?? "direct";
       const fromImessage = isImessageInboundSource(body.source, userAgent);
       // Honor Off / Linq: Mac-relay posts (source=imessage) must not feed a bot
-      // whose operator-selected transport is off or linq.
+      // whose operator-selected transport is off or linq.  Absent map =
+      // legacy Mac-relay (pre-per-bot transport), so upgrades keep working;
+      // an explicit "off" still rejects.
       if (fromImessage) {
-        const transport = loadConfig().botDefaults?.imessagePerBot?.[bot.id] ?? "off";
+        const transport = loadConfig().botDefaults?.imessagePerBot?.[bot.id] ?? "mac-relay";
         if (transport !== "mac-relay") {
           console.warn(`[inbound-message] rejecting Mac-relay post for bot ${bot.name} (${bot.id}): imessagePerBot=${transport}`);
           return json(res, 403, { error: "imessage_transport_disabled", transport });

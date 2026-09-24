@@ -26,6 +26,7 @@ import {
   linqUploadBytes,
 } from "../linq/client.ts";
 import type { ImessageLinqConfig } from "../linq/types.ts";
+import { peekLinqChat } from "../linq/outbound.ts";
 import { resolveLinqBinding } from "../linq/dispatch.ts";
 import type { BotRecord } from "../store.ts";
 
@@ -68,7 +69,11 @@ export function createLinqTools(
 ): Record<string, (call: TurnToolCall, ctxBot: LinqToolContext, runtime: TurnToolRuntime) => Promise<TurnToolOutcome>> {
   return {
     async send_voice_message(call): Promise<TurnToolOutcome> {
-      const chatId = String(call.arguments.chat_id ?? "").trim();
+      // Prefer an explicit chat_id; otherwise reuse the inbound chat this
+      // turn was bound to so the model need not invent a destination.
+      const remembered = peekLinqChat(ctx.threadId);
+      const chatId = String(call.arguments.chat_id ?? "").trim()
+        || (remembered?.botId === ctx.botId ? remembered.chatId : "");
       const text = String(call.arguments.text ?? "").trim();
       const ttsCfg = loadConfig().tts;
       const explicitVoice = typeof call.arguments.voice === "string" && call.arguments.voice.trim()
