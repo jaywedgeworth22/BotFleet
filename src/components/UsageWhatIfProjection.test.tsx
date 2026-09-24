@@ -35,9 +35,27 @@ describe("UsageWhatIfProjection — math", () => {
     const pricing = ENGINE_CAPABILITIES.grok.pricing;
     if (pricing.kind !== "subscription+api") throw new Error("expected subscription+api");
     const cost = apiEquivalentCost(usage, pricing);
-    // 700k * 0.005/1k + 300k * 0.015/1k = 3.5 + 4.5 = 8.0.
+    // Grok 4.7: 700k * 0.002/1k + 300k * 0.006/1k = 1.4 + 1.8 = 3.2.
     // The /1000 factor is essential — see the cached-subtract test above.
-    expect(cost).toBeCloseTo(8.0, 1);
+    expect(cost).toBeCloseTo(3.2, 2);
+  });
+
+  it("applies Grok's long-context tier once the prompt reaches 200k tokens", () => {
+    const pricing = ENGINE_CAPABILITIES.grok.pricing;
+    if (pricing.kind !== "subscription+api") throw new Error("expected subscription+api");
+    const at = (inputTokens: number, cachedTokens = 0) =>
+      apiEquivalentCost(
+        { engineId: "grok", inputTokens, outputTokens: 10_000, totalTokens: inputTokens + 10_000, cachedTokens, actualCostUsd: 0 },
+        pricing,
+      );
+    // Under 200k: $2 input / $6 output per million.
+    expect(at(199_999)).toBeCloseTo((199_999 * 0.002 + 10_000 * 0.006) / 1000, 6);
+    // At 200k: $4 / $12 on every token of the request.
+    expect(at(200_000)).toBeCloseTo((200_000 * 0.004 + 10_000 * 0.012) / 1000, 6);
+    // Cached input switches to $1 per million in the tier.
+    expect(at(300_000, 100_000)).toBeCloseTo((100_000 * 0.001 + 200_000 * 0.004 + 10_000 * 0.012) / 1000, 6);
+    // Past 512K the tier is not stacked with the generic 2x.
+    expect(at(600_000)).toBeCloseTo((600_000 * 0.004 + 10_000 * 0.012) / 1000, 6);
   });
 });
 
