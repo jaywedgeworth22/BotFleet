@@ -79,6 +79,7 @@ import {
 } from "./grok-quota.ts";
 import {
   unattendedModelDowngrade,
+  inheritedUnattended,
   AUTO_FALLBACK_PRIORITY,
   enableQuotaCooldownPersist,
   lastTurnStartIndex,
@@ -2994,10 +2995,10 @@ async function startTurn(
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
 
   selection = unattendedModelDowngrade(selection, {
-    // Continuations (cardContinuation without a fresh unattended flag) inherit
-    // the bot's marked state from the mark/clear block above; an explicit
-    // false still opts out.
-    unattended: opts?.unattended ?? isUnattended(bot.id),
+    // Only continuations and delegated work inherit the bot's marked state;
+    // a scheduled or manual run decides from its own automation source so a
+    // webhook's leftover mark cannot downgrade it.  An explicit flag wins.
+    unattended: inheritedUnattended(opts, () => isUnattended(bot.id)),
     automationSource: opts?.automationSource,
     driverKind: registry.get(selection.instanceId)?.driverKind,
     hasExplicitSelection: Boolean(opts?.modelSelection),
