@@ -123,7 +123,7 @@ process.stdin.on("data", (chunk) => {
         }
         break;
       case "thread/resume":
-        if (mode === "resume") {
+        if (mode === "resume" || mode === "resume-async-unknown-model") {
           out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
         } else if (mode === "resume-unauthorized") {
           out({
@@ -200,7 +200,7 @@ process.stdin.on("data", (chunk) => {
           }
         }
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
-        if (mode === "async-unknown-model") {
+        if (mode === "async-unknown-model" || mode === "resume-async-unknown-model") {
           notify("turn/completed", { turn: { status: "failed", error: { message: "model not found" } } });
           break;
         }
