@@ -397,7 +397,7 @@ const instanceKeyOverrides = new Map<string, string>();
 // of seconds on a machine with many CLIs installed; doing it now means the
 // first client to ask — often the phone, which waits 20 s and no longer —
 // is answered from the memo instead of waiting for a cold probe.
-void registry.describe().catch(() => {});
+void registry.describe({ maxAgeMs: 15_000, staleWhileRevalidate: true }).catch(() => {});
 usageQuotaPoller.configure({
   settings: () => ({
     ingestUrl: usageIngestUrl(cfg),
@@ -3002,7 +3002,7 @@ async function startTurn(
   // VPS-backed cloud keeps the bot's modelSelection — that is the engine that
   // actually runs on the VPS.
   const model = boxCloud ? instance.models.default : selection.model;
-  const effort = boxCloud ? undefined : selection.effort;
+  let effort = boxCloud ? undefined : selection.effort;
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
   const targetOption = instance.models.options.find((o) => o.id === model);
@@ -3012,10 +3012,17 @@ async function startTurn(
     model,
   );
   if (effort && !allowedEfforts.includes(effort)) {
-    throw Object.assign(
-      new Error(`effort "${effort}" is not offered by model "${model}" — choose another level in settings`),
-      { status: 409 },
-    );
+    if (!allowedEfforts.length) {
+      // The model does not support effort at all (legacy stored configuration).
+      // Drop it and clear it from the bot so the turn can proceed without bricking.
+      store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, effort: undefined } });
+      effort = undefined;
+    } else {
+      throw Object.assign(
+        new Error(`effort "${effort}" is not offered by model "${model}" — choose another level in settings`),
+        { status: 409 },
+      );
+    }
   }
 
   // an edit hands us its already-branched user message; a plain send appends.
@@ -8216,7 +8223,10 @@ const server = createServer(async (req, res) => {
       for (const key of ["unread", "cloudBackend", "color", "mascotExpression", "pinned", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
-      if (normalizedSelection) patch.modelSelection = normalizedSelection;
+      if (normalizedSelection) {
+        patch.modelSelection = normalizedSelection;
+        patch.activeModelSelection = normalizedSelection;
+      }
       // one pinned message per thread; null/"" clears. The id is not
       // validated against the transcript here — a pin whose message was
       // edited to another branch or deleted simply resolves to nothing.

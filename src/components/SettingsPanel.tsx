@@ -630,7 +630,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           {(() => {
             const selectedOpt = engine?.models.options.find((o) => o.id === bot.modelSelection.model);
             const effortLevels = modelEffortLevels(engine, selectedOpt, bot.modelSelection.model);
-            if (!effortLevels.length) return null;
+            if (!effortLevels.length && !bot.modelSelection.effort) return null;
             return (
               <div className="rounded-xl bg-card p-4">
                 <div className="text-[15px] font-medium text-ink">Reasoning</div>
@@ -640,27 +640,38 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     we could not keep for a thread that had already been sent
                     one. Sending nothing is true on every engine. */}
                 <div className="mt-0.5 text-[13px] text-ink-secondary">
-                  How hard this bot thinks.
+                  {effortLevels.length
+                    ? "How hard this bot thinks."
+                    : "This model does not support reasoning effort."}
                 </div>
-                <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
-                  {([undefined, ...effortLevels] as const).map((level, i) => (
-                    <button
-                      key={level ?? "default"}
-                      aria-pressed={bot.modelSelection.effort === level}
-                      onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: level } })}
-                      className={cn(
-                        "flex-1 py-1.5 text-[13px] capitalize",
-                        i > 0 && "border-l border-hairline/40",
-                        bot.modelSelection.effort === level
-                          ? "bg-control text-ink"
-                          : "text-ink-secondary hover:bg-control/60 hover:text-ink",
-                      )}
-                    >
-                      {/* the others capitalize cleanly; "xhigh" would read "X-High" */}
-                      {level === "xhigh" ? "X-High" : (level ?? "Default")}
-                    </button>
-                  ))}
-                </div>
+                {effortLevels.length > 0 ? (
+                  <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
+                    {([undefined, ...effortLevels] as const).map((level, i) => (
+                      <button
+                        key={level ?? "default"}
+                        aria-pressed={bot.modelSelection.effort === level}
+                        onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: level } })}
+                        className={cn(
+                          "flex-1 py-1.5 text-[13px] capitalize",
+                          i > 0 && "border-l border-hairline/40",
+                          bot.modelSelection.effort === level
+                            ? "bg-control text-ink"
+                            : "text-ink-secondary hover:bg-control/60 hover:text-ink",
+                        )}
+                      >
+                        {/* the others capitalize cleanly; "xhigh" would read "X-High" */}
+                        {level === "xhigh" ? "X-High" : (level ?? "Default")}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: undefined } })}
+                    className="mt-3 rounded-lg border border-hairline/40 bg-control px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-control/80"
+                  >
+                    Clear Saved Reasoning ({bot.modelSelection.effort})
+                  </button>
+                )}
               </div>
             );
           })()}
