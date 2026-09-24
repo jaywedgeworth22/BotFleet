@@ -131,3 +131,52 @@ export function computerProviderBlocked(
   const destination: Destination = id === "localVm" ? "vm" : id === "localMac" ? "local" : "cloud";
   return allowed !== null && !allowed.includes(destination);
 }
+
+/** The providers a turn can actually hold under one set of settings: its
+ * resolved grant (`resolveGrants`), mapped through the cloud backend, then
+ * the per-provider filter — the same steps turn mounting takes.  Auto counts
+ * every destination the auto path may still look at. */
+export function heldComputerProviders(
+  turn: {
+    granted: readonly Destination[];
+    auto: boolean;
+    autoAllows: readonly Destination[];
+    cloudBackend: "box" | "vps";
+  },
+  providers: ProviderFlags,
+): ComputerProviderId[] {
+  const reaches = (destination: Destination) =>
+    turn.granted.includes(destination) || (turn.auto && turn.autoAllows.includes(destination));
+  const held: ComputerProviderId[] = [];
+  if (reaches("cloud")) held.push(turn.cloudBackend === "box" ? "asciiBox" : "selfHostedVps");
+  if (turn.granted.includes("vm")) held.push("localVm");
+  if (reaches("local")) held.push("localMac");
+  return PROVIDER_IDS.filter((id) => held.includes(id) && providerOn(providers, id));
+}
+
+/** What a save took away from one running turn: providers it held under the
+ * old settings and no longer holds under the new ones.  This covers every way
+ * `botDefaults` can revoke a mount, not just the provider toggles: the legacy
+ * allowlist, the workspace default an Auto bot inherits (say `local` to
+ * `cloud`), and the workspace cloud backend. */
+export function revokedTurnProviders(
+  before: readonly ComputerProviderId[],
+  after: readonly ComputerProviderId[],
+): ComputerProviderId[] {
+  return before.filter((id) => !after.includes(id));
+}
+
+/** A provider-settings save carries the flags its window saw, and the server
+ * refuses it when the stored flags have moved since: otherwise a stale second
+ * window, writing the whole four-flag object, silently turns back on a
+ * provider another window just turned off.  `current` is what the server
+ * resolves today (stored flags, or the legacy migration); `expected` is what
+ * the client showed. */
+export function computerProvidersStale(
+  expected: unknown,
+  current: Record<ComputerProviderId, boolean>,
+): boolean {
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) return true;
+  const shown = expected as Record<string, unknown>;
+  return PROVIDER_IDS.some((id) => shown[id] !== current[id]);
+}
