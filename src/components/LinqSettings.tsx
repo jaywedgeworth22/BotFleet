@@ -155,7 +155,7 @@ export function LinqSettings({ bots, config, onPatch }: LinqSettingsProps) {
             inputMode="tel"
             autoComplete="off"
             value={botNumber}
-            placeholder="+14158707772"
+            placeholder="+1NNNNNNNNNN"
             onChange={(e) => setBotNumber(e.target.value)}
             className="mt-1 block w-full rounded-md border border-stroke/60 bg-canvas px-2 py-1.5 text-[12px] placeholder:text-ink-tertiary focus:border-accent/70 focus:outline-none"
           />
