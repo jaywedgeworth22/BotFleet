@@ -691,7 +691,9 @@ async function resolveMounts<Lease>(
         if (wantsCloudFiltered) {
           throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
         }
-        autoVpsProblem = remote?.problem ?? "the VPS computer could not be reached";
+        // Keep the caught SSH/timeout error when the lookup threw; the
+        // generic text is only for a lookup that returned no usable box.
+        autoVpsProblem = remote?.problem ?? autoVpsProblem ?? "the VPS computer could not be reached";
       }
     }
   }
