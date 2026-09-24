@@ -31,7 +31,13 @@ import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { engineReachKnown, instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { ComputerImpactConfirmModal } from "./ComputerImpactConfirmModal";
 import { impactedBotsForProvider, revalidateImpact, type ImpactedBot } from "@/lib/computer-impact";
-import { applyDefaultsBody, providerControlsLocked, resolveWorkspaceProviders, staleProviderConfig } from "@/lib/workspace-providers";
+import {
+  applyDefaultsBody,
+  autoHostPlatform,
+  providerControlsLocked,
+  resolveWorkspaceProviders,
+  staleProviderConfig,
+} from "@/lib/workspace-providers";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   COMPUTER_PROVIDER_ORDER,
@@ -115,14 +121,20 @@ export function LocalComputerSection() {
   // fallback, so no leg of the grant is lost when the provider turns
   // off.  While the instance list is still hydrating the engine side
   // stays fail-open (`undefined`), matching the picker.
-  const hostPlatform = capabilities.host.platform;
+  // The server's platform, not this window's: a browser pointed at a macOS
+  // harness reports "other", which would hide every Auto bot's host grant
+  // and let a This Computer disable skip the affected-bots confirm.
+  const hostPlatform = autoHostPlatform(state.config, capabilities.host.platform);
   const instances = state.instances ?? [];
   const reachKnown = engineReachKnown({ instances, hydrationStatus: state.hydration.status });
   const autoLocalFor = useCallback(
-    (bot: Bot) => ({
-      hostPlatform,
-      engineSupportsLocal: reachKnown ? instanceSupportsLocalComputer(instances, bot) : undefined,
-    }),
+    (bot: Bot) =>
+      hostPlatform === undefined
+        ? undefined
+        : {
+            hostPlatform,
+            engineSupportsLocal: reachKnown ? instanceSupportsLocalComputer(instances, bot) : undefined,
+          },
     [hostPlatform, instances, reachKnown],
   );
   // A routine, webhook or resource trigger set to run in the cloud gets the
