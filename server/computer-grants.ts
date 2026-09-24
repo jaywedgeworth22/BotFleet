@@ -664,11 +664,16 @@ async function resolveMounts<Lease>(
   // computer is cloud, fails hard if cloud is unreachable — attended or not:
   // an unattended cloud-only turn must not quietly carry on with the local
   // shell instead.  A bot that also holds a usable host computer degrades
-  // gracefully so a network blip never kills the turn.  "Usable" is
-  // `hasHostComputer`, not the bare grant: an unattended Antigravity turn (or
-  // an engine with no host approval channel) never mounts the desktop, so
-  // for it cloud is the only computer and a failure must say so.
-  const shouldThrowOnCloudFailure = wantsCloudFiltered && (runOn === "cloud" || !hasHostComputer);
+  // gracefully so a network blip never kills the turn.  "Usable" means what
+  // actually resolved above, not the grant: a Local VM or desktop that
+  // mounted, or host tools a tool-loop engine really gets through
+  // `hasHostComputer` (host bash and files work without CUA).  An engine
+  // with no host approval channel, an unattended Antigravity turn, or an MCP
+  // engine whose CUA Driver is down mounts nothing on the host, so for it
+  // cloud is the only computer and a failure must say so.
+  const hasUsableFallback =
+    mounts.some((m) => m.kind === "vm" || m.kind === "local") || (hasHostComputer && engine.toolLoop === true);
+  const shouldThrowOnCloudFailure = wantsCloudFiltered && (runOn === "cloud" || !hasUsableFallback);
 
   if ((wantsCloudFiltered || autoCloud) && cloudBackend === "vps") {
     const unsupported = deps.vps.vpsDriverError(engine.driverKind, reach);
