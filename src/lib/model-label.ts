@@ -4,6 +4,7 @@
 // may be stored as `provider::model`; the provider prefix is dropped.  Only
 // GPT ids are reshaped, to match the catalog's own labels ("GPT-5.6 Sol");
 // any other id is shown as saved rather than guessed at.
+// Display-only: never used to validate, route, or rewrite a saved model id.
 const GPT_ID = /^gpt-(\d+(?:\.\d+)*)((?:-[a-z0-9]+)*)$/i;
 
 export function readableModelLabel(id: string): string {
