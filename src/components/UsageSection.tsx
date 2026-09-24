@@ -13,7 +13,7 @@ import type { MausColor } from "@/lib/mascot";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import { UsageMonitorQuotaGrid } from "./UsageMonitorQuotaGrid";
 import { UsageWhatIfProjection } from "./UsageWhatIfProjection";
-import { ENGINE_CAPABILITIES, engineIdFromDriverKind } from "@/lib/engine-capabilities";
+import { ENGINE_CAPABILITIES, engineIdFromDriverKind, uniqueModelToEngineId } from "@/lib/engine-capabilities";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, headlinesExhausted, headlinesNearCap, isEngineUnconfigured, localQuotaStatusLine, minimaxQuotaLine, providerIssueLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines, type LocalQuotaFreshnessView } from "@/lib/quota-display";
@@ -405,12 +405,10 @@ export function UsageSection() {
     instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
   const bucketEngine = (instanceId: string, engineId?: string) =>
     (engineId && (engineIdFromDriverKind(engineId) ?? instanceIdToEngineId.get(engineId) ?? engineId)) || engineFor(instanceId);
-  const modelToEngineId = new Map<string, string>();
-  for (const [engineId, engineEntry] of Object.entries(ENGINE_CAPABILITIES)) {
-    for (const m of engineEntry.defaultModels ?? []) {
-      if (!modelToEngineId.has(m.id)) modelToEngineId.set(m.id, engineId);
-    }
-  }
+  // Only model ids unique to one engine map at all — a shared id
+  // (claude-sonnet-4.5 is listed under Cursor AND Claude) used to
+  // first-win onto Cursor and steal legacy Claude usage.
+  const modelToEngineId = uniqueModelToEngineId();
   const legacyEngine = (instanceId: string | undefined, model?: string) => {
     if (instanceId) {
       const resolved = engineFor(instanceId);
@@ -441,11 +439,30 @@ export function UsageSection() {
     for (const bot of state.bots) {
       for (const task of bot.tasks ?? []) {
         if ((task.lastActivity ?? task.createdAt) < periodStartMs) continue;
-        for (const [bucketInstanceId, bucketUsage] of Object.entries(task.usageByInstance ?? {})) {
+        const buckets = Object.entries(task.usageByInstance ?? {});
+        let bucketedTurns = 0;
+        let bucketedInput = 0;
+        let bucketedOutput = 0;
+        for (const [bucketInstanceId, bucketUsage] of buckets) {
+          bucketedTurns += bucketUsage.turns ?? 0;
+          bucketedInput += bucketUsage.input;
+          bucketedOutput += bucketUsage.output;
           if ((bucketUsage.turns ?? 0) <= 0) continue;
           if (bucketUsage.engineId) continue;
           if (legacyBucketEngine(bucketInstanceId)) continue;
           unattributedTokens30d += bucketUsage.input + bucketUsage.output;
+        }
+        // Un-bucketed usage (a task with no buckets at all, or the
+        // pre-banking remainder) whose legacy resolution comes back null
+        // — a deleted custom connection with an unknown model — is
+        // counted nowhere in the engine rows; total it here too.
+        const legacy = task.usage;
+        if (!legacy || (legacy.turns ?? 0) <= 0) continue;
+        if (legacyEngine(task.modelSelection?.instanceId ?? bot.modelSelection?.instanceId, task.modelSelection?.model)) continue;
+        if (buckets.length === 0) {
+          unattributedTokens30d += legacy.input + legacy.output;
+        } else if ((legacy.turns ?? 0) - bucketedTurns > 0) {
+          unattributedTokens30d += Math.max(0, legacy.input - bucketedInput) + Math.max(0, legacy.output - bucketedOutput);
         }
       }
       for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
