@@ -80,6 +80,7 @@ import {
 import {
   AUTO_FALLBACK_PRIORITY,
   enableQuotaCooldownPersist,
+  inheritedUnattended,
   lastTurnStartIndex,
   parseQuotaResetTime,
   providerErrorCodeFromStopReason,
@@ -92,6 +93,7 @@ import {
   turnQuotaOrCapEvidence,
   BOOT_RECOVERY_NOTICE,
   turnProducedAssistantOutput,
+  unattendedModelDowngrade,
 } from "./model-fallback.ts";
 import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
@@ -2992,28 +2994,18 @@ async function startTurn(
   let selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
 
-  // Unattended turns run on the cheaper model: an explicit flag, a fresh
-  // webhook/resource delivery (marked unattended above), or the bot's marked
-  // state inherited by connector/secret-card continuations.
-  const unattendedTurn = opts?.unattended ?? isUnattended(bot.id);
-  if (unattendedTurn && !opts?.modelSelection) {
-    let downgradedModel = selection.model;
-    if (selection.instanceId === "gemini" || selection.instanceId === "antigravity") {
-      downgradedModel = downgradedModel.replace("-pro", "-flash");
-    } else if (selection.instanceId === "claude") {
-      if (downgradedModel.includes("sonnet") || downgradedModel.includes("opus")) {
-        downgradedModel = "claude-3-5-haiku-latest";
-      }
-    }
-    // Stamp "low" only when the engine advertises it — Antigravity declares
-    // no effortLevels and DSH offers none/high/max, and the turn-start check
-    // below 409s an unsupported level.  Otherwise keep the configured effort.
-    const offeredEffortLevels =
-      registry.get(selection.instanceId)?.adapter.capabilities.effortLevels;
-    selection = offeredEffortLevels?.includes("low")
-      ? { ...selection, model: downgradedModel, effort: "low" }
-      : { ...selection, model: downgradedModel };
-  }
+  // Unattended turns run on the cheaper catalog model: an explicit flag, a
+  // fresh webhook/resource delivery, or the bot's marked state inherited by
+  // connector/secret-card continuations.  Candidate ids are resolved through
+  // the static catalogs so stale aliases never reach the CLI.
+  selection = unattendedModelDowngrade(selection, {
+    unattended: inheritedUnattended(opts, () => isUnattended(bot.id)),
+    automationSource: opts?.automationSource,
+    driverKind: registry.get(selection.instanceId)?.driverKind,
+    hasExplicitSelection: Boolean(opts?.modelSelection),
+    effortLevels: registry.get(selection.instanceId)?.adapter.capabilities.effortLevels,
+    isCooling: (instanceId, model) => Boolean(quotaCooldowns.get(bot.id, instanceId, model)),
+  });
   if (turnExternalCredentialPending(bot, selection.instanceId, opts?.runOn)) {
     throw externalCredentialPendingError(selection.instanceId);
   }

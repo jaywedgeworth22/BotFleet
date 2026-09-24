@@ -31,6 +31,9 @@ import type {
   RuntimeEventListener,
   SendTurnInput,
 } from "../contracts.ts";
+
+import { STATIC_CLAUDE_MODELS } from "../claude-models.ts";
+export { STATIC_CLAUDE_MODELS };
 import { computerProxyEnv } from "../container-computer.ts";
 import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { newEventId, newId } from "../contracts.ts";
@@ -106,16 +109,6 @@ export interface ClaudeConfig {
 }
 
 // model catalog ported from upstream packages/contracts/src/model.ts
-export const STATIC_CLAUDE_MODELS: ModelCatalog = {
-  default: "claude-sonnet-5",
-  options: [
-    { id: "claude-fable-5-1", label: "Claude Fable 5.1", effortLevels: ["low", "medium", "high", "xhigh", "max"], supportsEffort: true },
-    { id: "claude-opus-5", label: "Claude Opus 5", effortLevels: ["low", "medium", "high", "xhigh", "max"], supportsEffort: true },
-    { id: "claude-sonnet-5", label: "Claude Sonnet 5", effortLevels: ["low", "medium", "high", "xhigh", "max"], supportsEffort: true },
-    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", effortLevels: [], supportsEffort: false },
-  ],
-};
-
 const CLAUDE_MODEL_ID = /^[a-z0-9][a-z0-9._:/-]*$/i;
 
 /** Rewrite a leftover API slug (`orcarouter/Qwen…`) to `host::model` when a

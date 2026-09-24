@@ -151,7 +151,10 @@ elif [ "$#" -gt 0 ]; then
   exit 2
 fi
 
-if health; then
+# --heal-only must prepare the checkout even when the currently running
+# harness is healthy (e.g. during an update while the old process still
+# serves).  Skip the healthy-exit shortcut in that mode.
+if [ "$HEAL_ONLY" != true ] && health; then
   log ":${PORT} already healthy; not starting a second harness"
   exit 0
 fi
@@ -161,6 +164,11 @@ maybe_heal_dependencies
 
 if [ "$HEAL_ONLY" = true ]; then
   log "self-heal complete; --heal-only set, not starting server"
+  exit 0
+fi
+
+if health; then
+  log ":${PORT} already healthy after self-heal; not starting a second harness"
   exit 0
 fi
 

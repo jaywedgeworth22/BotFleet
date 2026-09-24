@@ -754,12 +754,24 @@ function looksLikeUrl(value: string): boolean {
 export function isCoolifyWebhookPayload(payload: JsonValue): boolean {
   const root = asRecord(payload);
   if (!root) return false;
-  const event = pickStr(root, "event");
-  if (event && COOLIFY_DEPLOYMENT_EVENTS.has(event)) return true;
   const hasDeploymentUuid = Boolean(pickStr(root, "deployment_uuid"));
   const hasApplicationUuid = Boolean(pickStr(root, "application_uuid"));
   const deployment = asRecord(root.deployment);
   const application = asRecord(root.application) ?? asRecord(deployment?.application);
+  // Coolify-specific markers: UUIDs, named application, or nested deployment
+  // with Coolify shape.  A bare top-level `event` in COOLIFY_DEPLOYMENT_EVENTS
+  // (especially generic values like "test" / "status_changed") is not enough —
+  // those appear in other providers and would otherwise strip the payload to
+  // the Coolify allowlist.
+  const hasCoolifyMarker =
+    hasDeploymentUuid ||
+    hasApplicationUuid ||
+    Boolean(pickStr(root, "application_name")) ||
+    Boolean(pickStr(application, "name") || pickStr(application, "uuid")) ||
+    Boolean(deployment && (pickStr(deployment, "uuid") || pickStr(deployment, "status")));
+  if (!hasCoolifyMarker) return false;
+  const event = pickStr(root, "event");
+  if (event && COOLIFY_DEPLOYMENT_EVENTS.has(event)) return true;
   if (hasDeploymentUuid && (hasApplicationUuid || pickStr(root, "application_name") || pickStr(application, "name"))) {
     return true;
   }
@@ -941,12 +953,16 @@ function applyGenericPayloadBudget(value: JsonValue, depth = 0): JsonValue {
     if (typeof value === "string") return truncateGenericString(value);
     return value;
   }
+  // Depth guard runs before descending into arrays or objects so deeply
+  // nested authenticated webhooks cannot exhaust the call stack.
+  if (depth >= GENERIC_MAX_DEPTH) {
+    return Array.isArray(value) ? "[nested array omitted]" : "[nested object omitted]";
+  }
   if (Array.isArray(value)) {
     const capped = value.slice(0, GENERIC_MAX_ARRAY).map((entry) => applyGenericPayloadBudget(entry, depth + 1));
     if (value.length > GENERIC_MAX_ARRAY) capped.push(`…${value.length - GENERIC_MAX_ARRAY} more items omitted`);
     return capped;
   }
-  if (depth >= GENERIC_MAX_DEPTH) return "[nested object omitted]";
   const rec = value as Record<string, JsonValue>;
   const out: Record<string, JsonValue> = {};
   let kept = 0;

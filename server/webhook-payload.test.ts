@@ -214,6 +214,47 @@ describe("slimWebhookPayload", () => {
     expect(serializeWebhookPayload(payload)).not.toContain("<p><p>");
   });
 
+  it("applies the depth limit before descending into nested arrays", () => {
+    // Six levels of arrays would previously recurse past GENERIC_MAX_DEPTH
+    // because the depth guard ran only on objects.
+    let nested: JsonValue = "leaf";
+    for (let i = 0; i < 10; i++) nested = [nested];
+    const payload = { wrap: nested };
+    const slim = slimWebhookPayload(payload) as Record<string, JsonValue>;
+    const serialized = JSON.stringify(slim);
+    expect(serialized).toContain("nested array omitted");
+    expect(serialized).not.toContain('"leaf"');
+  });
+
+  it("does not classify bare generic events as Coolify without provider markers", () => {
+    for (const event of ["test", "status_changed", "deployment_success"]) {
+      const generic = { event, note: "important status details", status: "ok" };
+      expect(isCoolifyWebhookPayload(generic)).toBe(false);
+      const slim = slimWebhookPayload(generic) as Record<string, JsonValue>;
+      // Falls through to generic budget — retains status details, not Coolify allowlist-only.
+      expect(slim.note).toBe("important status details");
+      expect(slim.status).toBe("ok");
+      expect(serializeWebhookPayload(generic)).toContain("important status details");
+    }
+  });
+
+  it("still classifies Coolify when event is paired with Coolify markers", () => {
+    const payload = {
+      event: "status_changed",
+      application_uuid: "app-uuid-1",
+      application_name: "socratic-trade",
+      deployment_uuid: "deploy-uuid-1",
+      status: "running",
+      note: "should slim via Coolify path",
+      logs: "huge ".repeat(5_000),
+    };
+    expect(isCoolifyWebhookPayload(payload)).toBe(true);
+    const slim = slimWebhookPayload(payload) as Record<string, JsonValue>;
+    expect(slim.event).toBe("status_changed");
+    expect(slim.application_name).toBe("socratic-trade");
+    expect(JSON.stringify(slim)).not.toContain("huge ");
+  });
+
   it("slims a Coolify deployment webhook to actionable fields", () => {
     const fatCoolify = {
       success: true,

@@ -474,6 +474,40 @@ describe("failed turns become Issues", () => {
     expect(exceptions).toHaveLength(1);
     expect(spans[0].status).toEqual({ code: 2, message: "internal_error" });
   });
+
+  it("does not Issue a request_timeout completion after the timeout runtime.error breadcrumb", () => {
+    // The 180s model-request timeout breadcrumbs runtime.error ("the model
+    // did not answer within") as an expected condition, then the turn ends
+    // not-ok with stopReason "request_timeout".  The completion must not
+    // escalate to a Sentry Issue.
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "the model did not answer within 180s" }),
+      sink,
+    );
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "request_timeout" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
+  });
+
+  it("does not Issue an rpc_error completion after an ACP init-timeout breadcrumb", () => {
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "initialize timed out" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "rpc_error" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
+  });
+
+  it("still Issues an rpc_error completion with no preceding init timeout", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "rpc_error" }), sink);
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("bot turn failed: rpc_error");
+  });
+
 });
 
 describe("approval, retry, and session lifecycle", () => {
