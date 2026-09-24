@@ -663,9 +663,12 @@ async function resolveMounts<Lease>(
   // A turn requested with `runOn: "cloud"`, or one whose ONLY granted
   // computer is cloud, fails hard if cloud is unreachable — attended or not:
   // an unattended cloud-only turn must not quietly carry on with the local
-  // shell instead.  A bot that also holds the host computer degrades
-  // gracefully so a network blip never kills the turn.
-  const shouldThrowOnCloudFailure = wantsCloudFiltered && (runOn === "cloud" || !wantsLocal);
+  // shell instead.  A bot that also holds a usable host computer degrades
+  // gracefully so a network blip never kills the turn.  "Usable" is
+  // `hasHostComputer`, not the bare grant: an unattended Antigravity turn (or
+  // an engine with no host approval channel) never mounts the desktop, so
+  // for it cloud is the only computer and a failure must say so.
+  const shouldThrowOnCloudFailure = wantsCloudFiltered && (runOn === "cloud" || !hasHostComputer);
 
   if ((wantsCloudFiltered || autoCloud) && cloudBackend === "vps") {
     const unsupported = deps.vps.vpsDriverError(engine.driverKind, reach);
