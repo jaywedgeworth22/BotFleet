@@ -100,3 +100,17 @@ export function impactedBotsForProvider(provider: ComputerProviderId, input: Imp
   }
   return result;
 }
+
+/** Re-check a disable-impact list at confirm time against a fresh one.
+ * `changed` when the fresh list names a bot the shown list did not, or
+ * describes a listed bot's usage differently: the operator confirmed a list
+ * that is no longer the truth, so it has to be shown again.  A list that only
+ * shrank is still covered by what was confirmed. */
+export function revalidateImpact(
+  shown: readonly ImpactedBot[],
+  current: readonly ImpactedBot[],
+): { kind: "confirmed" } | { kind: "changed"; impacted: ImpactedBot[] } {
+  const seen = new Map(shown.map((bot) => [bot.id, bot.usage]));
+  const changed = current.some((bot) => seen.get(bot.id) !== bot.usage);
+  return changed ? { kind: "changed", impacted: [...current] } : { kind: "confirmed" };
+}
