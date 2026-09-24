@@ -121,8 +121,24 @@ export function foldPrompts(decision: GapDecision): string {
     const maxHeaderBudget = Math.floor(MAX_FOLD_CHARS / 2);
     let effectiveHeader = firstHeader;
     if (effectiveHeader.length > maxHeaderBudget) {
-      const truncationMarker = "\n[Instructions truncated for length]";
-      effectiveHeader = effectiveHeader.slice(0, maxHeaderBudget - truncationMarker.length) + truncationMarker;
+      const tagMatch = effectiveHeader.match(
+        /^(\[(USER-CONFIGURED WEBHOOK INSTRUCTIONS|DEFAULT WEBHOOK INSTRUCTIONS|AUTHENTICATED WEBHOOK TASK)\])([\s\S]*?)(\[\/\2\])$/,
+      );
+      if (tagMatch) {
+        const openTag = tagMatch[1]!;
+        const closeTag = tagMatch[4]!;
+        const truncationMarker = "\n[Instructions truncated for length]\n";
+        const contentBudget = Math.max(
+          0,
+          maxHeaderBudget - openTag.length - closeTag.length - truncationMarker.length,
+        );
+        const truncatedContent = tagMatch[3]!.slice(0, contentBudget);
+        effectiveHeader = `${openTag}${truncatedContent}${truncationMarker}${closeTag}`;
+      } else {
+        const truncationMarker = "\n[Instructions truncated for length]";
+        effectiveHeader =
+          effectiveHeader.slice(0, maxHeaderBudget - truncationMarker.length) + truncationMarker;
+      }
     }
 
     const full = [effectiveHeader, header, ...sections].join("\n\n");

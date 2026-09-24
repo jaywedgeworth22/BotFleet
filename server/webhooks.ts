@@ -375,7 +375,7 @@ export function shouldIgnoreWebhookEvent(
             if (positiveTargetsLevel.test(prompt)) return false;
 
             const carveOutPattern = new RegExp(
-              `\\b(?:except|and|also|but|along\\s+with|as\\s+well\\s+as|unless)\\b[^.;\\n]*?\\b${lvl}s?\\b`,
+              `\\b(?:except|and|also|or|but|along\\s+with|as\\s+well\\s+as|unless)\\b[^.;\\n]*?\\b${lvl}s?\\b`,
               "i",
             );
             if (carveOutPattern.test(prompt)) return false;

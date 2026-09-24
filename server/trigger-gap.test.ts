@@ -159,6 +159,10 @@ describe("foldPrompts", () => {
     });
     expect(folded.length).toBeLessThanOrEqual(64_000);
     expect(folded).toContain("[Instructions truncated for length]");
+    expect(folded).toContain("[/USER-CONFIGURED WEBHOOK INSTRUCTIONS]");
+    expect(folded.indexOf("[/USER-CONFIGURED WEBHOOK INSTRUCTIONS]")).toBeLessThan(
+      folded.indexOf("--- Delivery 1 ---"),
+    );
     expect(folded).toContain("--- Delivery 2 ---");
     expect(folded).toContain("failure 2");
   });

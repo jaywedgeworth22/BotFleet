@@ -924,6 +924,17 @@ describe("WebhookManager", () => {
     expect(exceptProdResult.runId).toBeDefined();
     expect(exceptProdResult.ignored).toBeUndefined();
 
+    // 37. "Only process errors or warnings" recognizes 'or' as an error-only scope carve-out
+    const { webhook: orHook, secret: orSecret } = h.manager.create({
+      name: "Errors or Warnings",
+      prompt: "Only process errors or warnings.",
+      botId: "maus-1",
+    });
+    const orWarningResult = h.manager.receive(orHook.endpointId, orSecret, exceptProdWarning);
+    expect(orWarningResult).toMatchObject({ duplicate: false });
+    expect(orWarningResult.runId).toBeDefined();
+    expect(orWarningResult.ignored).toBeUndefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
