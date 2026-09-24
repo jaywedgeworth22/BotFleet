@@ -239,7 +239,9 @@ final class Session: ObservableObject {
 
     /// Drop coalesced settings PATCHes when the paired computer changes so a
     /// queued mode, terminology, name, email, toggle, or timeout cannot land
-    /// on the next pairing.
+    /// on the next pairing.  Also detach `settingsUpdateTail` so the next
+    /// pairing does not await an in-flight request that still targets the
+    /// previous computer (and its request timeout).
     private func cancelPendingSettingsMutations() {
         pendingConversationMode = nil
         pendingConversationMergeThreads = false
@@ -256,6 +258,11 @@ final class Session: ObservableObject {
         pendingRoomTurnTimeoutMinutes = nil
         pendingRoomTurnTimeout = false
         settingsUpdateGeneration += 1
+        // Detach before cancel so a concurrent enqueue cannot re-chain onto
+        // this task after we bump the generation.
+        let abandoned = settingsUpdateTail
+        settingsUpdateTail = nil
+        abandoned?.cancel()
     }
 
     /// Rebuild the last connection at launch.
