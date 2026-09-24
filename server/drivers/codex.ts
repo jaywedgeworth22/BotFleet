@@ -150,6 +150,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     // decision in `sendTurn`: a sandbox is fixed at thread/start, so a later
     // host-control turn can only reuse a thread it knows was started brokered.
     const brokeredThreads = new Set<string>();
+    // codex thread ids whose model was rejected (unknown_model).  A thread
+    // keeps its start model, and the harness has already saved it as the
+    // resume cursor, so resuming it after the user picks another model would
+    // fail the same way.  A cursor in this set is never resumed; the next
+    // turn starts a fresh thread on the newly selected model.
+    const modelRejectedThreads = new Set<string>();
 
     const emit = (event: RuntimeEvent) => {
       for (const l of [...listeners]) l(event);
@@ -252,6 +258,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         sawStreamDelta: false,
         // this attempt continues a saved codex thread (thread/resume succeeded)
         resumed: false,
+        // the codex thread this attempt resumed or started, once known
+        codexThreadId: null as string | null,
         // codex reports token usage as a running THREAD total; the harness
         // wants this turn's figure, so the last report is banked on settle
         usage: undefined as { input: number; output: number; cachedInput?: number } | undefined,
@@ -498,6 +506,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const reason = t.error?.message ?? t.status ?? "failed";
             const unavailable = classifyError({ text: String(reason) }).reason === "unknown_model";
             const failureMessage = unavailable ? unknownModelMessage(turn.model, state.resumed, String(reason)) : reason;
+            if (t.status !== "completed" && unavailable && state.codexThreadId) modelRejectedThreads.add(state.codexThreadId);
             if (t.status !== "completed" && unavailable) {
               emit({ ...base(threadId, turnId), type: "runtime.error", message: failureMessage });
             }
@@ -590,7 +599,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         // otherwise starts a fresh one.  The cost is one lost codex-side
         // continuation per instance restart, for full-auto bots that also
         // hold this computer; the alternative is an unbrokered host turn.
-        const cursor = brokered && !(resumeCursor && brokeredThreads.has(resumeCursor)) ? null : resumeCursor;
+        const cursor =
+          (brokered && !(resumeCursor && brokeredThreads.has(resumeCursor))) ||
+          (resumeCursor !== null && modelRejectedThreads.has(resumeCursor))
+            ? null
+            : resumeCursor;
         let codexThreadId: string | null = null;
         let startedModel: string | null = null;
         if (cursor) {
@@ -620,6 +633,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // full-auto and replaced rather than trusted.
           if (brokered && codexThreadId) brokeredThreads.add(codexThreadId);
         }
+        state.codexThreadId = codexThreadId;
         emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
         await request("turn/start", {
           threadId: codexThreadId,
@@ -651,6 +665,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             : String(failure);
         const needsAuth = /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(failureMessage);
         const verdict = classifyError(failure);
+        if (verdict.reason === "unknown_model" && !resumeFailure && state.codexThreadId) {
+          modelRejectedThreads.add(state.codexThreadId);
+        }
         const message = resumeFailure
           ? failureMessage !== e.message ? `${e.message}  ${failureMessage}` : e.message
           : verdict.reason === "unknown_model"
