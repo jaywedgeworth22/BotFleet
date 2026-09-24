@@ -181,11 +181,16 @@ public struct QueuedSend: Hashable, Sendable {
     public var queueId: String
     public var text: String
     public var queued: Bool
+    /// Epoch milliseconds when the phone first showed this line.  Stamped
+    /// once at remember-time so `visibleTranscript` never remints "now" on
+    /// every re-render (which made stuck or slow-drain chips look newly sent).
+    public var at: Double
 
-    public init(queueId: String, text: String, queued: Bool = true) {
+    public init(queueId: String, text: String, queued: Bool = true, at: Double = Date().timeIntervalSince1970 * 1000) {
         self.queueId = queueId
         self.text = text
         self.queued = queued
+        self.at = at
     }
 }
 

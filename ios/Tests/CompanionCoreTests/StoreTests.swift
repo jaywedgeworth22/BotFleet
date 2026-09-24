@@ -205,6 +205,29 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(state.transcript(forThread: bot.threadId).contains { $0.id == "from-server" })
     }
 
+    func testPendingOptimisticAtStaysStableAcrossVisibleTranscript() {
+        var state = CompanionState()
+        let threadId = "t-pending-at"
+        state.rememberPendingSend(threadId: threadId, id: "local-1", text: "old ask", queued: false)
+        let first = state.pendingQueued[threadId]!.first!.at
+        let visibleA = state.visibleTranscript(forThread: threadId)
+        // Simulate time passing without reminting the stamp.
+        Thread.sleep(forTimeInterval: 0.05)
+        let visibleB = state.visibleTranscript(forThread: threadId)
+        XCTAssertEqual(visibleA.last?.at, first)
+        XCTAssertEqual(visibleB.last?.at, first)
+        XCTAssertEqual(visibleA.last?.text, "old ask")
+    }
+
+    func testConsumePendingMatchingTextRetiresBusyChip() {
+        var state = CompanionState()
+        let threadId = "t-pending-busy"
+        state.rememberPendingSend(threadId: threadId, id: "q-busy", text: "same text", queued: true)
+        state.consumePendingMatchingText(threadId: threadId, text: "same text")
+        XCTAssertNil(state.pendingQueued[threadId])
+    }
+
+
     // MARK: - Bots
 
     func testABotFrameMergesRatherThanWipingTheTranscript() throws {

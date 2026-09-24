@@ -96,9 +96,8 @@ public struct CompanionState: Sendable {
         }
         let pending = pendingQueued[threadId] ?? []
         guard !pending.isEmpty else { return branch }
-        let now = Date().timeIntervalSince1970 * 1000
         let queued = pending.map { entry -> Message in
-            var message = Message(id: entry.queueId, role: .user, kind: .text, at: now)
+            var message = Message(id: entry.queueId, role: .user, kind: .text, at: entry.at)
             message.text = entry.text
             message.queueId = entry.queueId
             message.queued = entry.queued ? true : nil
@@ -141,7 +140,12 @@ public struct CompanionState: Sendable {
 
     public mutating func consumePendingMatchingText(threadId: String, text: String) {
         let prev = pendingQueued[threadId] ?? []
-        guard let index = prev.firstIndex(where: { $0.text == text && !$0.queued }) else { return }
+        // Prefer an idle (non-202) chip; fall back to any same-text entry so a
+        // busy queue line still retires when the real user row lands without
+        // a queueId (or with a mismatched one).
+        let index = prev.firstIndex(where: { $0.text == text && !$0.queued })
+            ?? prev.firstIndex(where: { $0.text == text })
+        guard let index else { return }
         var rest = prev
         rest.remove(at: index)
         if rest.isEmpty { pendingQueued.removeValue(forKey: threadId) }
