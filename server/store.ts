@@ -1635,6 +1635,26 @@ export class Store {
     return changed;
   }
 
+  /** Drop a saved resume cursor, but only while it still equals `cursor` —
+   *  a newer session saved since must not be discarded. */
+  clearResumeCursor(botId: string, instanceId: string, cursor: unknown, threadId?: string) {
+    const bot = this.bot(botId);
+    if (!bot) return;
+    const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
+    let changed = false;
+    if (task && task.resumeCursors[instanceId] === cursor) {
+      delete task.resumeCursors[instanceId];
+      changed = true;
+    }
+    if ((!threadId || bot.threadId === threadId) && bot.resumeCursors[instanceId] === cursor) {
+      delete bot.resumeCursors[instanceId];
+      changed = true;
+    }
+    if (!changed) return;
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+  }
+
   setResumeCursor(botId: string, instanceId: string, cursor: unknown, threadId?: string) {
     const bot = this.bot(botId);
     if (!bot) return;
