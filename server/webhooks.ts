@@ -329,6 +329,13 @@ export function shouldIgnoreWebhookEvent(
   const rawName = trigger.name ?? "";
   const name = rawName.replace(/[\u2018\u2019\u201B\u2032`]/g, "'");
 
+  // Positive overrides ("... investigate warning events") read the prompt, or
+  // the name when the prompt is empty -- the name is then the instruction, so
+  // "Ignore warnings; investigate warning events" keeps warnings.  A title
+  // next to a real prompt ("Error Monitor Warning Ignorer") is not read for
+  // overrides.
+  const overrideText = prompt.trim() ? prompt : name;
+
   // 1. Sentry Ingress Pre-Filter (only applies to verified Sentry payloads)
   if (isSentryWebhookPayload(payload)) {
     const root = asRecord(payload);
@@ -459,13 +466,13 @@ export function shouldIgnoreWebhookEvent(
                 `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
               "i",
             );
-            if (positiveTargetsLevel.test(prompt)) return false;
+            if (positiveTargetsLevel.test(overrideText)) return false;
 
             const carveOutPattern = new RegExp(
               `\\b(?:except|and|also|or|but|along\\s+with|as\\s+well\\s+as|unless)\\b(?:(?!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\b)[^.;\\n])*?\\b${lvl}s?\\b`,
               "i",
             );
-            if (carveOutPattern.test(prompt)) return false;
+            if (carveOutPattern.test(overrideText)) return false;
 
             const exceptClause = `(?:except(?:\\s+for)?(?!\\s+${otherLevelsPattern}\\b))`;
             const conditional = `(?:unless|${exceptClause}|only\\s+(?:if|when|in|from|for|on)|if|when)`;
@@ -484,18 +491,19 @@ export function shouldIgnoreWebhookEvent(
       }
 
       // Positive investigation verbs or in-scope assertions override exclusion only when they specifically target this level
+      // (read from `overrideText`: the name when the prompt is empty)
       const positiveTargetsLevel = new RegExp(
         `${contrastingVerb}(?:(?!(?:${exclusionVerb}|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b))[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+)\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
         "i",
       );
-      if (positiveTargetsLevel.test(prompt)) return false;
+      if (positiveTargetsLevel.test(overrideText)) return false;
 
       const interveningPattern = new RegExp(
         `${exclusionVerb}[^.;\\n]*?${contrastingVerb}[^.;\\n]*?\\b${lvl}s?\\b`,
         "i",
       );
-      if (interveningPattern.test(prompt)) return false;
+      if (interveningPattern.test(overrideText)) return false;
 
       // "Don't just ignore", "do not ever ignore": up to two adverbs may sit
       // between the negation and the exclusion verb.  Closed list, so an
@@ -582,13 +590,13 @@ export function shouldIgnoreWebhookEvent(
             `|${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
           "i",
         );
-        if (positiveTargetsAssignment.test(prompt)) return false;
+        if (positiveTargetsAssignment.test(overrideText)) return false;
 
         const interveningPattern = new RegExp(
           `${exclusionVerb}[^.;\\n]*?${contrastingVerb}[^.;\\n]*?${assignmentTarget}`,
           "i",
         );
-        if (interveningPattern.test(prompt)) return false;
+        if (interveningPattern.test(overrideText)) return false;
 
         // A conditional carve-out ("ignore assignment updates unless assigned to
         // the on-call engineer", "except in production", "only for primary") qualifies the
