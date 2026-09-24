@@ -1334,11 +1334,12 @@ public struct CompanionClient: Sendable {
     /// `screens` defaults off, and should stay off unless something is
     /// actually showing them: the harness pushes a base64 desktop capture
     /// every few seconds to every client that asks, which is a poor thing to
-    /// send a phone on cellular. The computer panel turns it on for exactly
-    /// as long as it is open, which costs a reconnect — cheap, because the
-    /// stream resumes from its cursor and loses nothing.
-    public func events(since cursor: String?, screens: Bool = false) throws -> AsyncThrowingStream<StreamFrame, Error> {
+    /// send a phone on cellular.  The computer panel turns it on for exactly
+    /// as long as it is open and names the watched bot.  The stream resumes
+    /// from its cursor after the reconnect, so nothing is missed.
+    public func events(since cursor: String?, screens: Bool = false, screenBotIds: [String] = []) throws -> AsyncThrowingStream<StreamFrame, Error> {
         var query = [URLQueryItem(name: "screens", value: screens ? "on" : "off")]
+        if screens { query += screenBotIds.map { URLQueryItem(name: "botId", value: $0) } }
         if let cursor { query.append(URLQueryItem(name: "since", value: cursor)) }
         var streamRequest = try makeRequest("GET", "/api/events", query: query)
         streamRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")

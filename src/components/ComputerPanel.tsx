@@ -5,6 +5,7 @@
 // separate preview remains explicitly user-initiated. Auto never selects a
 // Linux user's desktop.
 import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 import {
   CalendarDays,
   CalendarClock,
@@ -82,6 +83,13 @@ interface LocalVmStatus {
   problem: string | null;
   viewer_url: string;
 }
+
+const liveScreenFrame = z.object({
+  kind: z.literal("screen"),
+  botId: z.string(),
+  png: z.string(),
+  mime: z.string().optional(),
+});
 
 export function ComputerPanel({
   bot,
@@ -402,9 +410,25 @@ export function ComputerPanel({
   const pageVisible = usePageVisible();
   const live = state.screens[bot.id];
   const sseFlowing = Boolean(bot.busy && live);
+  useEffect(() => {
+    if (phase !== "ready" || viewerOpen || !pageVisible) return;
+    const stream = new EventSource(`/api/events?screens=on&botId=${encodeURIComponent(bot.id)}`);
+    stream.onmessage = (event) => {
+      try {
+        const parsed = liveScreenFrame.safeParse(JSON.parse(event.data));
+        if (parsed.success && parsed.data.botId === bot.id) {
+          const frame = parsed.data;
+          dispatch({ type: "screenFrame", botId: bot.id, png: frame.png, mime: frame.mime ?? "image/png" });
+        }
+      } catch {
+        // Ignore malformed frames; EventSource reconnects after a broken stream.
+      }
+    };
+    return () => stream.close();
+  }, [phase, viewerOpen, pageVisible, bot.id, dispatch]);
   const inFlight = useRef(false);
   useEffect(() => {
-    if (phase !== "ready" || sseFlowing || viewerOpen || !pageVisible) return;
+    if (phase !== "ready" || bot.busy || sseFlowing || viewerOpen || !pageVisible) return;
     let alive = true;
     const shoot = async () => {
       if (inFlight.current) return;
