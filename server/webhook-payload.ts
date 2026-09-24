@@ -490,6 +490,15 @@ function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefi
   assignDefined(out, "urgency", pickStr(rec, "urgency"));
   assignDefined(out, "html_url", pickStr(rec, "html_url"));
   assignDefined(out, "created_at", pickStr(rec, "created_at"));
+  const priorityRec = asRecord(rec.priority);
+  if (priorityRec) {
+    const pOut: Record<string, JsonValue> = {};
+    assignDefined(pOut, "id", pickStr(priorityRec, "id"));
+    assignDefined(pOut, "summary", pickStr(priorityRec, "summary") ?? pickStr(priorityRec, "name"));
+    if (Object.keys(pOut).length) out.priority = pOut;
+  } else if (typeof rec.priority === "string" && rec.priority.trim()) {
+    out.priority = { summary: rec.priority.trim() };
+  }
   const service = asRecord(rec.service);
   if (service) {
     const sOut: Record<string, JsonValue> = {};

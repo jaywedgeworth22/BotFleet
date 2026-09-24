@@ -755,9 +755,42 @@ describe("WebhookManager", () => {
     expect(failedJobResult).toMatchObject({ duplicate: false });
     expect(failedJobResult.runId).toBeDefined();
 
+    // 29. "Only process errors" should ignore warning events but process error events
+    const { webhook: errorOnlyHook, secret: errorOnlySecret } = h.manager.create({
+      name: "Error Only Trigger",
+      prompt: "Only process errors. Fix production outages immediately.",
+      botId: "maus-1",
+    });
+    const errorOnlyWarningResult = h.manager.receive(errorOnlyHook.endpointId, errorOnlySecret, clauseWarning);
+    expect(errorOnlyWarningResult).toMatchObject({ ignored: true });
+
+    const clauseError = {
+      payload: {
+        action: "created",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          issue: { id: "100", title: "Crash", level: "error", permalink: "https://sentry.io/issues/100" },
+        },
+      },
+    };
+    const errorOnlyErrorResult = h.manager.receive(errorOnlyHook.endpointId, errorOnlySecret, clauseError);
+    expect(errorOnlyErrorResult).toMatchObject({ duplicate: false });
+    expect(errorOnlyErrorResult.runId).toBeDefined();
+
+    // Error-only scope with a carve-out: "Only process errors, but warning events are also tracked"
+    const { webhook: errorCarveOutHook, secret: errorCarveOutSecret } = h.manager.create({
+      name: "Error Only With Carve-out",
+      prompt: "Only process errors, but warning events are also tracked.",
+      botId: "maus-1",
+    });
+    const errorCarveOutWarningResult = h.manager.receive(errorCarveOutHook.endpointId, errorCarveOutSecret, clauseWarning);
+    expect(errorCarveOutWarningResult).toMatchObject({ duplicate: false });
+    expect(errorCarveOutWarningResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
+
 
 
 

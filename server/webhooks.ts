@@ -352,7 +352,30 @@ export function shouldIgnoreWebhookEvent(
         `\\b${lvl}s?\\b(?:(?!${exceptionBoundary})[^.;\\n])*?${exclusionVerb}`,
         "i",
       );
-      if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
+      if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) {
+        if (lvl !== "error") {
+          const errorOnlyPattern = new RegExp(
+            `\\b(?:(?:only|exclusively)\\s+(?:(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)\\s+)?errors?(?:\\s+events?)?|errors?(?:\\s+events?)?\\s+(?:only|exclusively)|only\\s+errors?\\s+are\\s+in\\s+scope)\\b`,
+            "i",
+          );
+          if (errorOnlyPattern.test(prompt) || errorOnlyPattern.test(name)) {
+            const negationErrorOnly = new RegExp(
+              `\\b(?:do\\s+not|don't|never|not)\\s+(?:only|exclusively)\\b`,
+              "i",
+            );
+            if (negationErrorOnly.test(prompt)) return false;
+
+            const carveOutPattern = new RegExp(
+              `\\b(?:except|and|also|but|along\\s+with|as\\s+well\\s+as)\\b[^.;\\n]*?\\b${lvl}s?\\b`,
+              "i",
+            );
+            if (!carveOutPattern.test(prompt)) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
 
       // Positive investigation verbs override exclusion only when they specifically target this level
       const positiveTargetsLevel = new RegExp(

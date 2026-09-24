@@ -552,5 +552,33 @@ describe("slimWebhookPayload", () => {
     expect(slim.messages).toHaveLength(10);
     expect(slim.omitted_messages).toBe(5);
   });
+
+  it("preserves bounded PagerDuty incident priority representation", () => {
+    const pdPriority = {
+      event: {
+        event_type: "incident.trigger",
+        data: {
+          id: "INC-PRIORITY",
+          title: "Major outage",
+          status: "triggered",
+          urgency: "high",
+          priority: {
+            id: "P1",
+            name: "P1",
+            summary: "P1 - Critical Outage",
+            description: "Highest level incident",
+          },
+        },
+      },
+    };
+    const slim = slimWebhookPayload(pdPriority) as Record<string, JsonValue>;
+    const incident = slim.incident as Record<string, JsonValue>;
+    expect(incident.priority).toEqual({
+      id: "P1",
+      summary: "P1 - Critical Outage",
+    });
+    expect(JSON.stringify(incident)).not.toContain("Highest level incident");
+  });
 });
+
 
