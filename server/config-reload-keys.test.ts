@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD, providerReloadKeys } from "./config-reload-keys.ts";
+import {
+  CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD,
+  disabledComputerProviders,
+  providerReloadKeys,
+  turnUsesComputerProvider,
+} from "./config-reload-keys.ts";
 
 describe("providerReloadKeys", () => {
   it("does not rebuild the fleet for a Computer settings save", () => {
@@ -30,5 +35,53 @@ describe("providerReloadKeys", () => {
   it("is the filter PUT /api/config uses", () => {
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
     expect(source).toContain("const reloadKeys = providerReloadKeys(patch);");
+  });
+});
+
+describe("disabledComputerProviders", () => {
+  const all = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+  it("names only the providers a save turned from on to off", () => {
+    expect(disabledComputerProviders(all, { ...all, localMac: false })).toEqual(["localMac"]);
+    expect(disabledComputerProviders({ ...all, localVm: false }, all)).toEqual([]);
+    expect(disabledComputerProviders(all, all)).toEqual([]);
+  });
+
+  it("treats an install with no provider object yet as every provider on", () => {
+    expect(disabledComputerProviders(undefined, { ...all, asciiBox: false })).toEqual(["asciiBox"]);
+    expect(disabledComputerProviders(undefined, undefined)).toEqual([]);
+  });
+});
+
+describe("turnUsesComputerProvider", () => {
+  const base = { granted: [] as ("cloud" | "vm" | "local")[], auto: false, autoAllows: [] as ("cloud" | "vm" | "local")[], cloudBackend: "box" as const };
+  it("interrupts only turns that hold the disabled provider", () => {
+    expect(turnUsesComputerProvider({ ...base, granted: ["local"] }, ["localMac"])).toBe(true);
+    expect(turnUsesComputerProvider({ ...base, granted: ["vm"] }, ["localMac"])).toBe(false);
+    expect(turnUsesComputerProvider({ ...base, granted: ["vm"] }, ["localVm"])).toBe(true);
+  });
+
+  it("maps the cloud destination through the resolved backend", () => {
+    expect(turnUsesComputerProvider({ ...base, granted: ["cloud"] }, ["asciiBox"])).toBe(true);
+    expect(turnUsesComputerProvider({ ...base, granted: ["cloud"] }, ["selfHostedVps"])).toBe(false);
+    expect(turnUsesComputerProvider({ ...base, granted: ["cloud"], cloudBackend: "vps" }, ["selfHostedVps"])).toBe(true);
+  });
+
+  it("counts every destination an Auto turn could still reach", () => {
+    const auto = { ...base, auto: true, autoAllows: ["cloud", "local"] as ("cloud" | "vm" | "local")[] };
+    expect(turnUsesComputerProvider(auto, ["localMac"])).toBe(true);
+    expect(turnUsesComputerProvider(auto, ["asciiBox"])).toBe(true);
+    expect(turnUsesComputerProvider(auto, ["localVm"])).toBe(false);
+    expect(turnUsesComputerProvider({ ...auto, autoAllows: ["cloud"] }, ["localMac"])).toBe(false);
+  });
+
+  it("leaves an Off bot alone", () => {
+    expect(turnUsesComputerProvider(base, ["asciiBox", "selfHostedVps", "localVm", "localMac"])).toBe(false);
+  });
+});
+
+describe("PUT /api/config provider disable", () => {
+  it("interrupts only the affected turns when no rebuild runs", () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    expect(source).toContain("await interruptTurnsUsingDisabledProviders(configBeforeSave, cfg);");
   });
 });
