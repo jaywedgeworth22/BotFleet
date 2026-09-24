@@ -380,7 +380,10 @@ export function shouldIgnoreWebhookEvent(
             );
             if (carveOutPattern.test(prompt)) return false;
 
-            const conditional = `(?:unless|only\\s+(?:if|when|in|from|for|on)|if|when)`;
+            const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
+            const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
+            const exceptClause = `(?:except(?:\\s+for)?(?!\\s+${otherLevelsPattern}\\b))`;
+            const conditional = `(?:unless|${exceptClause}|only\\s+(?:if|when|in|from|for|on)|if|when)`;
             const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
             const conditionalPattern = new RegExp(
               `\\b${conditional}\\b${conditionalGap}\\b${lvl}s?\\b` +
@@ -418,13 +421,16 @@ export function shouldIgnoreWebhookEvent(
       if (negationPattern.test(prompt)) return false;
 
       // A conditional carve-out ("ignore warning events unless they occur
-      // in production", "only in staging", "only if from staging") qualifies
+      // in production", "except in production", "only in staging", "only if from staging") qualifies
       // the exclusion, and the payload carries nothing to evaluate the condition with.
       // Conservative: keep the event rather than drop one the condition
       // would have kept.  The scan must not cross another instruction
       // verb — "ignore warnings, notify when resolved" conditions the
       // notify, not the ignore.
-      const conditional = `(?:unless|only\\s+(?:if|when|in|from|for|on)|if|when)`;
+      const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
+      const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
+      const exceptClause = `(?:except(?:\\s+for)?(?!\\s+${otherLevelsPattern}\\b))`;
+      const conditional = `(?:unless|${exceptClause}|only\\s+(?:if|when|in|from|for|on)|if|when)`;
       const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
       const conditionalPattern = new RegExp(
         `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b${conditionalGap}\\b${conditional}\\b` +
@@ -483,10 +489,10 @@ export function shouldIgnoreWebhookEvent(
         if (negationPattern.test(prompt)) return false;
 
         // A conditional carve-out ("ignore assignment updates unless assigned to
-        // the on-call engineer", "only for primary") qualifies the
+        // the on-call engineer", "except in production", "only for primary") qualifies the
         // exclusion, and the payload carries nothing to evaluate the condition with.
         // Conservative: keep the event rather than drop one the condition would have kept.
-        const conditional = `(?:unless|only\\s+(?:if|when|in|from|for|on)|if|when)`;
+        const conditional = `(?:unless|except(?:\\s+for)?|only\\s+(?:if|when|in|from|for|on)|if|when)`;
         const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
         const conditionalPattern = new RegExp(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}${conditionalGap}\\b${conditional}\\b` +

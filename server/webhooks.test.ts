@@ -904,6 +904,26 @@ describe("WebhookManager", () => {
     expect(queuedFleetInfra).toMatchObject({ botId: "maus-plumber" });
     expect(queuedFleetInfra?.prompt).not.toContain("Only process errors");
 
+    // 36. "Ignore warning events except in production" preserves warning deliveries
+    const { webhook: exceptProdHook, secret: exceptProdSecret } = h.manager.create({
+      name: "Sentry Warnings",
+      prompt: "Ignore warning events except in production.",
+      botId: "maus-1",
+    });
+    const exceptProdWarning = {
+      payload: {
+        action: "created",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          issue: { id: "1001", title: "Disk warning", level: "warning", permalink: "https://sentry.io/issues/1001" },
+        },
+      },
+    };
+    const exceptProdResult = h.manager.receive(exceptProdHook.endpointId, exceptProdSecret, exceptProdWarning);
+    expect(exceptProdResult).toMatchObject({ duplicate: false });
+    expect(exceptProdResult.runId).toBeDefined();
+    expect(exceptProdResult.ignored).toBeUndefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
