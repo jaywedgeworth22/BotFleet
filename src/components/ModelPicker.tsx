@@ -410,7 +410,7 @@ export function ModelPicker({
                     </div>
                   )}
                   {["minimax", "claude", "grok", "codex", "antigravity", "cursorAgent", "deepseekAgent", "dshAgent", "antigravityAgent", "grokAgent", "claudeAgent"].includes(railInstance.driverKind) && (
-                    <EngineCallout driverKind={railInstance.driverKind} />
+                    <EngineCallout driverKind={railInstance.driverKind} instanceId={railInstance.instanceId} />
                   )}
                   {railInstance.driverKind === "boxAgent" && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">

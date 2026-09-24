@@ -6,25 +6,38 @@
 // `src/lib/engine-capabilities.tsx` so the prose and the matrix table
 // stay in sync.
 //
+// Compact by default (collapsed) so ModelPicker's header + callout do
+// not crowd out the scrollable model list.  Summary shows
+// "Why this engine?" + the short headline; expand reveals full prose
+// and pricing.  The capability matrix keeps using `<EngineCalloutBody>`
+// directly for the always-expanded hover panel.
+//
 // Props:
 //   - `engineId`  — registry key (e.g. "minimax", "claude", "grok").
 //   - `driverKind`— optional runtime driver-kind id.  When the driver
 //                   layer reports a name like "grokAgent" the registry
 //                   id is "grok"; the helper handles the mapping.
+//   - `instanceId`— optional instance id so aria-controls stays unique
+//                   when EnginesSettings renders several callouts.
+//   - `defaultOpen` — start expanded (default false).
 //   - `className` — optional override; default matches the legacy
 //                   MiniMax callout's box style.
 import * as React from "react";
+import { useId, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import {
-  EngineCalloutBody,
   engineCapability,
   engineIdFromDriverKind,
   pricingModeLabel,
   type EngineCapabilityEntry,
 } from "@/lib/engine-capabilities";
+import { cn } from "@/lib/cn";
 
 export interface EngineCalloutProps {
   engineId?: string;
   driverKind?: string;
+  instanceId?: string;
+  defaultOpen?: boolean;
   className?: string;
 }
 
@@ -32,7 +45,66 @@ export function EngineCallout(props: EngineCalloutProps): React.ReactElement | n
   const id = props.engineId ?? engineIdFromDriverKind(props.driverKind);
   if (!id) return null;
   const entry = engineCapability(id);
-  return <EngineCalloutBody entry={entry} className={props.className} />;
+  return (
+    <EngineCalloutDisclosure
+      entry={entry}
+      instanceId={props.instanceId ?? id}
+      defaultOpen={props.defaultOpen ?? false}
+      className={props.className}
+    />
+  );
+}
+
+function EngineCalloutDisclosure(props: {
+  entry: EngineCapabilityEntry;
+  instanceId: string;
+  defaultOpen: boolean;
+  className?: string;
+}): React.ReactElement {
+  const { entry, instanceId, defaultOpen, className } = props;
+  const [open, setOpen] = useState(defaultOpen);
+  const reactId = useId();
+  // Prefer the instance id so EnginesSettings rows never collide; fall
+  // back to React's useId when somehow blank.
+  const detailId = `engine-callout-detail-${instanceId || reactId}`;
+
+  return (
+    <div
+      className={
+        className ??
+        "mt-2 rounded-xl border border-hairline/30 bg-inset/30 px-3 py-2 text-[12.5px] leading-relaxed text-ink-secondary"
+      }
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-controls={detailId}
+        className="flex w-full items-start gap-1.5 rounded text-left text-ink hover:text-ink"
+      >
+        <span className="min-w-0 flex-1">
+          <strong>Why this engine?</strong> {entry.whyThisEngine.headline}
+        </span>
+        <ChevronDown
+          size={13}
+          className={cn("mt-0.5 shrink-0 text-ink-secondary transition-transform", open && "rotate-180")}
+          aria-hidden
+        />
+      </button>
+      {open && (
+        <div id={detailId} className="mt-1.5">
+          {entry.whyThisEngine.prose.map((line, index) => (
+            <p key={index} className="mb-1 last:mb-0">
+              {line}
+            </p>
+          ))}
+          <p className="mt-1.5 text-[11px] text-ink-secondary/80">
+            Pricing: {pricingModeLabel(entry.pricing)}.
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Header chip used by `<EngineCapabilitiesMatrix>` — exposes the same
