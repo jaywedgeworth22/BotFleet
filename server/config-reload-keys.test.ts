@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD,
+  computerProviderBlocked,
   disabledComputerProviders,
   legacyAllowlistRevokedProviders,
   providerReloadKeys,
@@ -144,5 +145,37 @@ describe("PUT /api/config provider disable", () => {
     expect(interrupt).toBeGreaterThan(latch);
     // Nothing awaited between the latch and the interrupt call.
     expect(helper.slice(latch, interrupt)).not.toContain("await ");
+  });
+});
+
+describe("computerProviderBlocked (lifecycle gates)", () => {
+  const all = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+  it("blocks a provider whose toggle is off", () => {
+    expect(computerProviderBlocked({ ...all, asciiBox: false }, null, "asciiBox")).toBe(true);
+    expect(computerProviderBlocked({ ...all, asciiBox: false }, null, "selfHostedVps")).toBe(false);
+  });
+
+  it("blocks a destination a legacy-only save removed from allowedComputers", () => {
+    // Toggles untouched (or never written), allowlist narrowed by an older client.
+    expect(computerProviderBlocked(all, ["vm", "local"], "asciiBox")).toBe(true);
+    expect(computerProviderBlocked(all, ["vm", "local"], "selfHostedVps")).toBe(true);
+    expect(computerProviderBlocked(undefined, ["cloud"], "localVm")).toBe(true);
+    expect(computerProviderBlocked(undefined, ["cloud"], "asciiBox")).toBe(false);
+  });
+
+  it("allows everything when neither spelling narrows", () => {
+    for (const id of ["asciiBox", "selfHostedVps", "localVm", "localMac"] as const) {
+      expect(computerProviderBlocked(undefined, null, id)).toBe(false);
+      expect(computerProviderBlocked(all, null, id)).toBe(false);
+    }
+  });
+
+  it("is what the cloud and Local VM lifecycle routes check", () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    expect(source).toContain("computerProviderBlocked(config.botDefaults?.computerProviders, allowedBotComputers(config), id)");
+    expect(source).toContain("if (computerProviderOff(cfg, providerId)) {");
+    expect(source).toContain('return computerProviderOff(config, "localVm");');
+    // The old toggle-only check is gone from the cloud route.
+    expect(source).not.toContain("if (providers && providers[providerId] !== true) {");
   });
 });
