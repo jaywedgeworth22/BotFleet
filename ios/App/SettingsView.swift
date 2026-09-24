@@ -196,7 +196,7 @@ struct SettingsView: View {
                 Section {
                     HStack {
                         Label {
-                            Text("Channel Turn Timeout")
+                            Text("\(roomTerm) Turn Timeout")
                         } icon: {
                             SettingsIcon(symbol: "timer", color: .orange)
                         }
@@ -220,9 +220,9 @@ struct SettingsView: View {
                             .foregroundStyle(.red)
                     }
                 } header: {
-                    Text("Channels")
+                    Text(roomTermPlural)
                 } footer: {
-                    Text("How long a channel turn can run before it stops.")
+                    Text("How long a \(roomTerm.lowercased()) turn can run before it stops.")
                 }
 
                 Section {
@@ -273,7 +273,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Engines")
                 } footer: {
-                    Text("Tap an engine to see how to finish setup.  Keys and CLI paths stay on the Mac.")
+                    Text("Tap an engine to finish setup on Mac.")
                 }
             }
         }
@@ -436,6 +436,9 @@ struct SettingsView: View {
         loadingEngines = false
     }
 
+    private var roomTerm: String { session.config?.roomTerminologyLabel ?? "Channel" }
+    private var roomTermPlural: String { session.config?.roomTerminologyPlural ?? "Channels" }
+
     private var normalizedProfileName: String {
         profileName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -475,7 +478,7 @@ struct SettingsView: View {
         roomTimeoutError = ""
         savingRoomTimeout = true
         if await session.updateRoomTurnTimeout(minutes: minutes) == nil {
-            roomTimeoutError = "Could not save the channel turn limit."
+            roomTimeoutError = "Could not save the \(roomTerm.lowercased()) turn limit."
         } else {
             roomTimeoutText = String(minutes)
             savedRoomTimeout = minutes
@@ -872,7 +875,7 @@ private struct EngineChip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(instance.displayName ?? instance.instanceId)
+            Text(instance.settingsDisplayName)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
@@ -909,7 +912,7 @@ private struct EngineSetupSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
-                Text(instance.displayName ?? instance.instanceId)
+                Text(instance.settingsDisplayName)
                     .font(.title2.weight(.semibold))
                 Text(instance.snapshot.engineStatusLabel)
                     .font(.subheadline)
@@ -930,5 +933,16 @@ private struct EngineSetupSheet: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+private extension Instance {
+    /// A user-facing engine name: the Mac-side display name when set,
+    /// otherwise the provider name for its driver — never the raw instance id.
+    var settingsDisplayName: String {
+        if let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        return ProviderMarkView.displayName(for: driverKind)
     }
 }
