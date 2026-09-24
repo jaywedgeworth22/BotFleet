@@ -672,6 +672,60 @@ describe("slimWebhookPayload", () => {
     expect(slimWebhookPayload(customPayload)).toEqual(customPayload);
     expect(serializeWebhookPayload(customPayload)).toContain("important-payload-data");
   });
+
+  it("preserves canonical investigation URLs in slimmed Sentry event payloads", () => {
+    const sentryEvent = {
+      event: {
+        id: "evt-12345",
+        title: "Unhandled exception in worker",
+        level: "error",
+        web_url: "https://sentry.io/organizations/acme/issues/101/events/evt-12345/",
+        project: { slug: "core-api" },
+      },
+    };
+    expect(isSentryWebhookPayload(sentryEvent)).toBe(true);
+    const slim = slimWebhookPayload(sentryEvent) as Record<string, JsonValue>;
+    const event = slim.event as Record<string, JsonValue>;
+    expect(event.permalink).toBe("https://sentry.io/organizations/acme/issues/101/events/evt-12345/");
+  });
+
+  it("retains and maps legacy PagerDuty assigned_to_user in incident payloads", () => {
+    const legacyAssign = {
+      messages: [
+        {
+          id: "msg-assign-1",
+          event: "incident.assign",
+          incident: {
+            id: "INC-ASSIGN",
+            number: 202,
+            status: "triggered",
+            html_url: "https://my-team.pagerduty.com/incidents/INC-ASSIGN",
+            assigned_to_user: {
+              id: "PUSER123",
+              name: "OnCall Hero",
+              email: "hero@example.com",
+              summary: "OnCall Hero",
+            },
+          },
+        },
+      ],
+    };
+    expect(isPagerDutyWebhookPayload(legacyAssign)).toBe(true);
+    const slim = slimWebhookPayload(legacyAssign) as Record<string, JsonValue>;
+    const msgs = slim.messages as Record<string, JsonValue>[];
+    expect(msgs).toHaveLength(1);
+    const inc = msgs[0].incident as Record<string, JsonValue>;
+    expect(inc.assigned_to_user).toEqual({
+      id: "PUSER123",
+      summary: "OnCall Hero",
+      name: "OnCall Hero",
+    });
+    expect(inc.assignee).toEqual({
+      id: "PUSER123",
+      summary: "OnCall Hero",
+      name: "OnCall Hero",
+    });
+  });
 });
 
 

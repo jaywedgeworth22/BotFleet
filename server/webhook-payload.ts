@@ -375,6 +375,7 @@ function slimSentryEvent(value: JsonValue | undefined): JsonValue | undefined {
   assignDefined(out, "environment", pickStr(rec, "environment"));
   assignDefined(out, "timestamp", pickStr(rec, "timestamp") ?? pickStr(rec, "datetime"));
   assignDefined(out, "project", slimSentryProject(rec.project));
+  assignDefined(out, "permalink", pickStr(rec, "permalink") ?? pickStr(rec, "web_url") ?? pickStr(rec, "url"));
 
   const exc = asRecord(rec.exception) ?? (Array.isArray(rec.entries) ? asRecord(asRecord(rec.entries.find((e) => asRecord(e)?.type === "exception"))?.data) : undefined);
   if (exc) {
@@ -544,6 +545,13 @@ function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefi
   if (rec.assignee) {
     const user = slimPagerDutyUser(rec.assignee);
     if (user) out.assignee = user;
+  }
+  if (rec.assigned_to_user) {
+    const user = slimPagerDutyUser(rec.assigned_to_user);
+    if (user) {
+      out.assigned_to_user = user;
+      if (!out.assignee) out.assignee = user;
+    }
   }
   return Object.keys(out).length ? out : undefined;
 }
