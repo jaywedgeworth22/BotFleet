@@ -1322,6 +1322,28 @@ describe("WebhookManager", () => {
     const exceptFirstWarningResult = h.manager.receive(exceptFirstHook.endpointId, exceptFirstSecret, clauseWarning);
     expect(exceptFirstWarningResult).toMatchObject({ ignored: true });
 
+    // 63. "Process only errors" and "Handle only error events" recognize error-only scope
+    // and ignore warning deliveries.
+    const { webhook: processOnlyHook, secret: processOnlySecret } = h.manager.create({
+      name: "Process Only Errors Handler",
+      prompt: "Process only errors.",
+      botId: "maus-1",
+    });
+    const processOnlyWarningResult = h.manager.receive(processOnlyHook.endpointId, processOnlySecret, clauseWarning);
+    expect(processOnlyWarningResult).toMatchObject({ ignored: true });
+
+    const processOnlyErrorResult = h.manager.receive(processOnlyHook.endpointId, processOnlySecret, clauseError);
+    expect(processOnlyErrorResult).toMatchObject({ duplicate: false });
+    expect(processOnlyErrorResult.runId).toBeDefined();
+
+    const { webhook: handleOnlyHook, secret: handleOnlySecret } = h.manager.create({
+      name: "Handle Only Errors Handler",
+      prompt: "Handle only error events.",
+      botId: "maus-1",
+    });
+    const handleOnlyWarningResult = h.manager.receive(handleOnlyHook.endpointId, handleOnlySecret, clauseWarning);
+    expect(handleOnlyWarningResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

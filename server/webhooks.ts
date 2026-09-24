@@ -392,16 +392,16 @@ export function shouldIgnoreWebhookEvent(
               `|${negativeWord}\\s+[^.;\\n]*?${nonErrorTarget}[^.;\\n]*?${exclusionVerb})`,
             "i",
           );
+          const positiveHandling = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)`;
           const negationErrorOnly = new RegExp(
-            `\\b(?:do\\s+not|don't|never|not)\\s+(?:only|exclusively)\\b`,
+            `\\b(?:do\\s+not|don't|never|not)(?:\\s+${positiveHandling})?\\s+(?:only|exclusively)\\b`,
             "i",
           );
-
-          const positiveHandling = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)`;
           const inclusionPhrase = `(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed|investigated|triaged|resolved)`;
           const errorOnlyPattern = new RegExp(
             `(?:` +
               `\\b(?:only|exclusively)\\s+${positiveHandling}\\s+errors?(?:\\s+events?)?\\b` +
+              `|\\b${positiveHandling}\\s+(?:only|exclusively)\\s+errors?(?:\\s+events?)?\\b` +
               `|\\b${positiveHandling}\\s+errors?(?:\\s+events?)?\\s+(?:only|exclusively)\\b` +
               `|\\b(?:only|exclusively)\\s+errors?(?:\\s+events?)?\\s+(?:are\\s+)?${inclusionPhrase}\\b` +
               `|\\berrors?(?:\\s+events?)?\\s+(?:only|exclusively)\\s+(?:are\\s+)?${inclusionPhrase}\\b` +
