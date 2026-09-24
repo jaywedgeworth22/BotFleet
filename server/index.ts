@@ -3147,6 +3147,12 @@ async function startTurn(
     const dispatchStillCurrent = (): boolean => {
       const owner = activeTurnOwners.forEvent(threadId, instanceId);
       if (owner?.dispatchId !== dispatchOwner.dispatchId) return false;
+      // A provider this turn holds was turned off before it reached the
+      // engine.  The interrupt had no session to reach, so stop here; the
+      // catch below unwinds the turn, since no turn.completed will follow.
+      if (owner.revoked) {
+        throw new Error("computer settings changed during turn setup");
+      }
       if (providerReloadInProgress) {
         throw new Error("provider settings changed during turn setup");
       }
@@ -4767,7 +4773,7 @@ async function runGroupMemberTurn(
         }),
         async () => {
           if (providerReloadInProgress) await waitForProviderReloads();
-          return !isCancelled?.();
+          return !isCancelled?.() && !activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId);
         },
       ),
     });
@@ -4816,6 +4822,29 @@ async function runGroupMemberTurn(
     return false;
   }
   activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers.mounts));
+  // A provider this member holds was turned off during setup.  Same fence as
+  // the 1:1 lane's dispatchStillCurrent: the interrupt found no session, so
+  // unwind here instead of starting the turn with the revoked mount.  Nothing
+  // below awaits before sendTurn, so this is the last point it can land.
+  if (activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId)) {
+    const message = "computer settings changed during turn setup";
+    releaseRoomComputerLease(threadId, bot.id);
+    releaseLocalVmThread(threadId, bot.id);
+    activeTurnOwners.settle(threadId, instance.instanceId);
+    store.appendMessage(threadId, {
+      role: "bot",
+      kind: "activity",
+      from: { botId: bot.id, name: bot.name, color: bot.color },
+      tool: { name: `error: ${message}`, ok: false },
+    });
+    onDispatchError?.(message);
+    releaseRoomSpeaker();
+    drainQueuedSends();
+    drainRoomQueue();
+    drainConnectorResumes();
+    drainSecretResumes();
+    return false;
+  }
   // One function for both lanes, so the room cannot set `computers` without
   // also setting the legacy `computer` / `localComputer` fields several
   // drivers still read exclusively — Antigravity's own MCP builder matches
@@ -6027,6 +6056,10 @@ async function interruptTurnsUsingDisabledProviders(
     // killed; without the latch an exit_before_result cancellation reads as
     // an engine failure and model fallback replays the prompt elsewhere.
     latchInterruptedTurns([turn]);
+    // A turn still in setup has no provider session, so the interrupt below
+    // is a no-op for it.  Fence the exact dispatch so its own pre-dispatch
+    // check fails instead of starting the turn with the revoked mount.
+    if (turn.dispatchId !== undefined) activeTurnOwners.revoke(turn.threadId, turn.dispatchId);
     const instance = registry.get(turn.instanceId ?? bot.modelSelection.instanceId);
     await instance?.adapter.interruptTurn(turn.threadId).catch((error: unknown) => {
       console.error(`interrupt after computer settings change failed for thread ${turn.threadId}:`, error);
