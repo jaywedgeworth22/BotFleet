@@ -379,10 +379,9 @@ export function isSentryWebhookPayload(payload: JsonValue): boolean {
   if (
     issue &&
     (pickStr(issue, "shortId") ||
-      issue.project !== undefined ||
+      (issue.project !== undefined && typeof issue.project === "object") ||
       pickStr(issue, "culprit") !== undefined ||
       pickStr(issue, "platform") !== undefined ||
-      (pickStr(issue, "title") !== undefined && issue.level !== undefined) ||
       (pickStr(issue, "id") !== undefined && (issue.level !== undefined || issue.metadata !== undefined)))
   ) {
     return true;
@@ -390,10 +389,7 @@ export function isSentryWebhookPayload(payload: JsonValue): boolean {
   if (
     event &&
     (pickStr(event, "event_id") ||
-      (pickStr(event, "id") && event.project !== undefined) ||
-      pickStr(event, "culprit") !== undefined ||
-      event.tags !== undefined ||
-      event.breadcrumbs !== undefined)
+      (pickStr(event, "id") && event.project !== undefined && typeof event.project === "object"))
   ) {
     return true;
   }

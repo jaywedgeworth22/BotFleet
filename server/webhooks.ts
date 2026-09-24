@@ -334,13 +334,16 @@ export function shouldIgnoreWebhookEvent(
     const level = pickStr(issue, "level") ?? pickStr(ev, "level") ?? pickStr(root, "level");
     const action = pickStr(root, "action");
 
-    const outOfScopeWarnings =
-      /\b(?:out of scope|stay silent)\b[^.]*?\b(?:warning|info|debug)\b/i.test(prompt) ||
-      (/\bignore\b[^.]*?\b(?:warning|info|debug)\b/i.test(prompt) &&
-        !/\b(?:do\s+not|don't|never)\s+ignore\b[^.]*?\bwarning\b/i.test(prompt));
+    const isLevelExcluded = (lvl: string): boolean => {
+      const filterPattern = new RegExp(`(?:out of scope|stay silent|ignore|drop)[^.]*?\\b${lvl}\\b`, "i");
+      if (!filterPattern.test(prompt)) return false;
+      const negationPattern = new RegExp(`(?:do\\s+not|don't|never|not)\\s+(?:out of scope|stay silent|ignore|drop)[^.]*?\\b${lvl}\\b`, "i");
+      if (negationPattern.test(prompt)) return false;
+      return true;
+    };
 
-    if (outOfScopeWarnings) {
-      if (level === "warning" || level === "info" || level === "debug") {
+    if (level === "warning" || level === "info" || level === "debug") {
+      if (isLevelExcluded(level)) {
         return {
           ignore: true,
           reason: `Sentry level '${level}' is marked out of scope by trigger instructions`,
@@ -369,11 +372,34 @@ export function shouldIgnoreWebhookEvent(
     const root = asRecord(payload);
     const action = pickStr(root, "action");
 
-    if (eventName === "workflow_run" || eventName === "check_run") {
-      if (action === "requested" || action === "in_progress") {
+    if (eventName === "workflow_run") {
+      const workflowRun = asRecord(root?.workflow_run);
+      const runStatus = pickStr(workflowRun, "status");
+      if (
+        action === "requested" ||
+        action === "in_progress" ||
+        runStatus === "queued" ||
+        runStatus === "in_progress"
+      ) {
         return {
           ignore: true,
-          reason: `GitHub ${eventName} action '${action}' ignored: compile gates wait for concluded failure or merged PR`,
+          reason: `GitHub workflow_run action '${action}' ignored: compile gates wait for concluded failure or merged PR`,
+        };
+      }
+    } else if (eventName === "check_run") {
+      const checkRun = asRecord(root?.check_run);
+      const checkStatus = pickStr(checkRun, "status");
+      const checkConclusion = pickStr(checkRun, "conclusion");
+      if (
+        action === "created" ||
+        action === "rerequested" ||
+        checkStatus === "queued" ||
+        checkStatus === "in_progress" ||
+        (action !== "completed" && !checkConclusion)
+      ) {
+        return {
+          ignore: true,
+          reason: `GitHub check_run status '${checkStatus ?? action}' ignored: compile gates wait for concluded failure or merged PR`,
         };
       }
     }
