@@ -11,6 +11,7 @@ import {
   capabilityCellLabel,
   engineIdFromDriverKind,
   pricingModeLabel,
+  uniqueModelToEngineId,
   type CapabilityKey,
   type PricingMode,
 } from "./engine-capabilities.tsx";
@@ -26,6 +27,23 @@ const KNOWN_ENGINE_IDS = [
 ];
 
 describe("ENGINE_CAPABILITIES registry", () => {
+  it("keeps Grok API pricing on the API block and reflects Grok 4.7", () => {
+    const grok = ENGINE_CAPABILITIES.grok;
+    expect(grok.defaultModels[0]).toEqual({ id: "grok-4.7", display: "Grok 4.7", ctxTokens: 500_000 });
+    expect(grok.pricing.kind).toBe("subscription+api");
+    if (grok.pricing.kind !== "subscription+api") throw new Error("Grok must retain separate subscription and API pricing");
+    expect(grok.pricing.subscription.costPerMonth).toBe(99);
+    expect(grok.pricing.api).toMatchObject({ inputPer1k: 0.002, cachedInputPer1k: 0.0005, outputPer1k: 0.006 });
+  });
+
+  it("still attributes legacy grok-4 tasks to Grok alongside the 4.7 catalog", () => {
+    const map = uniqueModelToEngineId();
+    expect(map.get("grok-4")).toBe("grok");
+    expect(map.get("grok-4.7")).toBe("grok");
+    expect(map.get("grok-4.6")).toBe("grok");
+    expect(map.get("grok-4.7-build-fast")).toBe("grok");
+  });
+
   it("exposes one entry for every known engine id", () => {
     for (const id of KNOWN_ENGINE_IDS) {
       expect(ENGINE_CAPABILITIES[id], `missing registry entry for ${id}`).toBeDefined();

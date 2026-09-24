@@ -68,6 +68,12 @@ export function apiEquivalentCost(
   usage: EngineUsageAggregate,
   pricing: Extract<PricingMode, { kind: "subscription+api" | "api" }>,
 ): number {
+  // A long-context tier (Grok: prompts of 200k+ tokens) is decided per
+  // request, but this card only has period totals — a sum of many small
+  // prompts would wrongly cross the threshold.  No per-request prompt size
+  // is recorded, so the projection stays on the base rates and the card
+  // shows the tier as a note instead (see `longContextNotes`).
+  const tier = pricing.api.longContext;
   const apiRates = pricing.api;
   // Use the real input/output split when the parent supplied it
   // (`inputTokens` / `outputTokens`); fall back to a 70/30 heuristic
@@ -88,10 +94,31 @@ export function apiEquivalentCost(
   // known; the legacy 70/30 fallback cannot trigger the tier because
   // we cannot tell whether the workload actually exceeded 512K
   // tokens of input.
+  // An engine with its own long-context tier never also takes this 2x.
   const longContextMultiplier =
-    usage.inputTokens !== undefined && usage.inputTokens > 512_000 ? 2 : 1;
+    tier === undefined && usage.inputTokens !== undefined && usage.inputTokens > 512_000 ? 2 : 1;
   const outputCost = (outputTokens * apiRates.outputPer1k) / 1000;
   return (inputCost + outputCost) * longContextMultiplier;
+}
+
+/** Notes for engines whose API has a long-context tier the projection
+ *  cannot apply (it needs per-request prompt sizes, which are not
+ *  recorded).  One line per engine, built from the registry rates. */
+export function longContextNotes(rows: Array<{ entry: EngineCapabilityEntry }>): string[] {
+  const perMillion = (per1k: number) => `$${Number((per1k * 1000).toFixed(4))}`;
+  const notes: string[] = [];
+  for (const { entry } of rows) {
+    if (entry.pricing.kind !== "subscription+api" && entry.pricing.kind !== "api") continue;
+    const tier = entry.pricing.api.longContext;
+    if (!tier) continue;
+    const cached = tier.cachedInputPer1k !== undefined ? ` / ${perMillion(tier.cachedInputPer1k)} cached` : "";
+    notes.push(
+      `${entry.displayName}: API requests with prompts of ${tier.minPromptTokens.toLocaleString("en-US")}+ tokens bill every token at ` +
+        `${perMillion(tier.inputPer1k)} input${cached} / ${perMillion(tier.outputPer1k)} output per million.  ` +
+        `Per-request prompt sizes are not recorded, so the API-equivalent above uses the base rates and may run low if long prompts were common.`,
+    );
+  }
+  return notes;
 }
 
 /** Pick the rows the projection shows.  Engines with no API rate are
@@ -231,6 +258,11 @@ export function UsageWhatIfProjection(props: UsageWhatIfProjectionProps): React.
           </div>
         </div>
       )}
+      {longContextNotes(rows).map((note) => (
+        <div key={note} className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
+          {note}
+        </div>
+      ))}
       {unattributedTokens > 0 && (
         <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
           {unattributedTokens.toLocaleString()} tokens ran on connections deleted before

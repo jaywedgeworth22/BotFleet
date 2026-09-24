@@ -42,6 +42,15 @@ export interface ApiRates {
   outputPer1k: number;
   /** USD per 1k cached-input tokens when the provider bills them separately. */
   cachedInputPer1k?: number;
+  /** Long-context tier: a request whose prompt reaches `minPromptTokens` is
+   *  billed at these rates for all of its tokens (xAI's "≥ 200k prompt
+   *  tokens" rows). */
+  longContext?: {
+    minPromptTokens: number;
+    inputPer1k: number;
+    outputPer1k: number;
+    cachedInputPer1k?: number;
+  };
   notes?: string;
 }
 
@@ -135,13 +144,23 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
         notes: GROK_SUPER_NOTE,
       },
       api: {
-        inputPer1k: 0.005,
-        outputPer1k: 0.015,
-        // xAI does not publish a separate cache-read rate for the
-        // grok-api endpoints — do NOT add `cachedInputPer1k` here.
-        // Codex flagged the previous 0.0005 value as invented; the
-        // projection math now treats cached tokens as fresh input.
-        notes: "xAI PAYG API rates from the public x.ai pricing page.",
+        inputPer1k: 0.002,
+        cachedInputPer1k: 0.0005,
+        outputPer1k: 0.006,
+        // Grok 4.7 API rates: $2 input / $0.50 cached / $6 output per million tokens
+        // under 200k prompt tokens; $4 / $1 / $12 at or above 200k (xAI's
+        // long-context tier, billed on every token of that request).  xAI's
+        // pricing page lists the grok-4.6 card; 4.7 uses the same rates.
+        // Keep these API projections separate from Grok Build subscription billing.
+        longContext: {
+          minPromptTokens: 200_000,
+          inputPer1k: 0.004,
+          cachedInputPer1k: 0.001,
+          outputPer1k: 0.012,
+        },
+        notes:
+          "Grok 4.7 xAI API rates from https://docs.x.ai/developers/models/grok-4.7; " +
+          "prompts at or above 200k tokens use the long-context rates per https://docs.x.ai/developers/pricing.",
       },
       notes: "Subscription is the primary path; API rates exist only for the 'what-if API' projection.",
     },
@@ -156,16 +175,22 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       crossBotCoordination: "limited",
     },
     whyThisEngine: {
-      headline: "Long context + live research in one subscription.",
+      headline: "Grok 4.7 + live research in one subscription.",
       prose: [
-        "xAI's Grok ships a 1M+ token context window on the SuperGrok Heavy tier, which is the longest window BotFleet has on a subscription today.",
+        "Grok 4.7 brings long-context work and live research to the SuperGrok Heavy subscription.",
         "Live web research is a first-class tool — when a bot needs the latest docs, the news, or a fresh pricing page, Grok is the engine that fetches and answers without a separate tool chain.",
         "On this seat, Grok quota is bundled with Cursor Ultra and Grok Bot under SuperGrok Heavy, so the same subscription covers three of the seven engines.",
       ],
     },
     defaultModels: [
-      { id: "grok-4", display: "Grok 4", ctxTokens: 1_000_000 },
+      { id: "grok-4.7", display: "Grok 4.7", ctxTokens: 500_000 },
+      { id: "grok-4.6", display: "Grok 4.6" },
+      // The Grok Build (ACP) catalog id — see server/drivers/acp/grok.ts.
+      { id: "grok-4.7-build-fast", display: "Grok 4.7 Build Fast" },
       { id: "grok-3-mini", display: "Grok 3 mini", ctxTokens: 131_072 },
+      // Retired id kept so legacy tasks banked as model "grok-4" (no engine
+      // metadata) still attribute to Grok via uniqueModelToEngineId.
+      { id: "grok-4", display: "Grok 4", ctxTokens: 1_000_000 },
     ],
   },
 

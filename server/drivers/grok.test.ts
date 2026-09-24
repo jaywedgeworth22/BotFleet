@@ -61,6 +61,27 @@ describe("GrokDriver turns (fake fetch)", () => {
     await instance?.dispose();
   });
 
+  it("exposes the xAI API lineup independently of Grok Build-only variants", async () => {
+    await create();
+
+    expect(instance.models.default).toBe("grok-4.7");
+    expect(instance.models.options.map((model) => model.id)).toEqual([
+      "grok-4.7",
+      "grok-4.6",
+      "grok-4.5",
+    ]);
+    expect(instance.models.options.some((model) => model.id === "grok-4.7-build-fast")).toBe(false);
+  });
+
+  it("sends the selected Grok 4.7 API model id unchanged", async () => {
+    script = [];
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-grok-47-model", text: "hi", model: "grok-4.7" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(requestBodies[0].model).toBe("grok-4.7");
+  });
+
   it("normalizes a full turn into the canonical event sequence", async () => {
     script = [];
     await create();
