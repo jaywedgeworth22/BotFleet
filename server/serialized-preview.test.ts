@@ -73,6 +73,16 @@ describe("fitListToBudget", () => {
     expect(fitted.routines[99]).toMatchObject({ instructionsPreview: "", instructionsPreviewTruncated: true });
   });
 
+  it("counts rows the caller already cut, even when everything else fits", () => {
+    const rows = [row(0, "Daily digest", "Summarize")];
+    expect(fitListToBudget(envelope, rows, 48_000, 7)).toEqual({ routines: rows, routinesOmitted: 7 });
+    expect(fitListToBudget(envelope, rows, 48_000, 0)).toEqual({ routines: rows });
+    const many = Array.from({ length: 100 }, (_, index) => row(index, "n".repeat(400), ""));
+    const fitted = fitListToBudget(envelope, many, 20_000, 5);
+    expect(fitted.routinesOmitted).toBe(5 + 100 - fitted.routines.length);
+    expect(size({ ...envelope, ...fitted })).toBeLessThanOrEqual(20_000);
+  });
+
   it("drops trailing rows and reports the count when clearing previews is not enough", () => {
     const rows = Array.from({ length: 100 }, (_, index) => row(index, "n".repeat(400), ""));
     const fitted = fitListToBudget(envelope, rows, 20_000);
