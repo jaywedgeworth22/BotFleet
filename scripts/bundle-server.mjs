@@ -68,6 +68,10 @@ await build({
   platform: "node",
   target: "node20",
   format: "esm",
+  // Some bundled CommonJS dependencies (including @sentry/node) still call
+  // require() for Node built-ins.  esbuild's ESM shim needs a real require in
+  // scope; the packaged app has no node_modules to externalize them instead.
+  banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
   outbase: server,
   outdir: join(root, "dist-server"),
   // Written after tsc, replacing its output for these entry points.
