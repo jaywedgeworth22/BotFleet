@@ -462,9 +462,17 @@ struct SettingsView: View {
         guard settingsLoaded else { return }
         let name = normalizedProfileName
         let email = normalizedProfileEmail
-        if await session.updateProfile(name: name, email: email) != nil {
-            savedProfileName = name
-            savedProfileEmail = email
+        let nameChanged = name != savedProfileName
+        let emailChanged = email != savedProfileEmail.lowercased()
+        guard nameChanged || emailChanged else { return }
+        // PATCH only dirty fields so a concurrent Mac edit of the sibling
+        // is not overwritten with a stale value from initial load.
+        if await session.updateProfile(
+            name: nameChanged ? name : nil,
+            email: emailChanged ? email : nil
+        ) != nil {
+            if nameChanged { savedProfileName = name }
+            if emailChanged { savedProfileEmail = email }
         }
     }
 

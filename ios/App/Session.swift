@@ -1620,7 +1620,7 @@ final class Session: ObservableObject {
     }
 
     @MainActor
-    func updateProfile(name: String, email: String) async -> ConfigStatus? {
+    func updateProfile(name: String? = nil, email: String? = nil) async -> ConfigStatus? {
         guard let client else { return nil }
         do {
             let updated = try await client.updateProfile(name: name, email: email)

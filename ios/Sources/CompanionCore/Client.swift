@@ -800,10 +800,20 @@ public struct CompanionClient: Sendable {
     }
 
     /// Profile name + email only.  Skins and avatars stay on the Mac.
-    public func updateProfile(name: String, email: String) async throws -> ConfigStatus {
+    /// Pass only the field(s) that changed; omitted keys leave the sibling
+    /// alone so a concurrent Mac edit of the other field is not overwritten.
+    public func updateProfile(name: String? = nil, email: String? = nil) async throws -> ConfigStatus {
         struct Body: Encodable {
-            let name: String
-            let email: String
+            let name: String?
+            let email: String?
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encodeIfPresent(name, forKey: .name)
+                try container.encodeIfPresent(email, forKey: .email)
+            }
+
+            enum CodingKeys: String, CodingKey { case name, email }
         }
         return try await send(
             try makeRequest(

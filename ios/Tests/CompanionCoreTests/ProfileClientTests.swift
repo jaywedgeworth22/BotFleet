@@ -138,6 +138,32 @@ final class ProfileClientTests: XCTestCase {
         XCTAssertEqual(roundTrip, selection)
     }
 
+    func testUserProfilePatchOmitsUnchangedSiblingFields() async throws {
+        ProfileRequestStub.responseBody = Self.configResponse
+
+        _ = try await client.updateProfile(name: "Ada")
+
+        let nameOnly = try XCTUnwrap(ProfileRequestStub.capturedBody)
+        let nameBody = try XCTUnwrap(JSONSerialization.jsonObject(with: nameOnly) as? [String: Any])
+        XCTAssertEqual(nameBody.keys.sorted(), ["name"])
+        XCTAssertEqual(nameBody["name"] as? String, "Ada")
+
+        ProfileRequestStub.capturedBody = nil
+        _ = try await client.updateProfile(email: "ada@example.com")
+
+        let emailOnly = try XCTUnwrap(ProfileRequestStub.capturedBody)
+        let emailBody = try XCTUnwrap(JSONSerialization.jsonObject(with: emailOnly) as? [String: Any])
+        XCTAssertEqual(emailBody.keys.sorted(), ["email"])
+        XCTAssertEqual(emailBody["email"] as? String, "ada@example.com")
+
+        ProfileRequestStub.capturedBody = nil
+        _ = try await client.updateProfile(name: "Ada", email: "ada@example.com")
+
+        let both = try XCTUnwrap(ProfileRequestStub.capturedBody)
+        let bothBody = try XCTUnwrap(JSONSerialization.jsonObject(with: both) as? [String: Any])
+        XCTAssertEqual(bothBody.keys.sorted(), ["email", "name"])
+    }
+
     func testAvatarGenerationRequestOutlivesTheServersImageTimeout() async throws {
         ProfileRequestStub.responseBody = Self.generatedAvatarResponse
 
@@ -161,4 +187,7 @@ final class ProfileClientTests: XCTestCase {
     private static let generatedAvatarResponse = Data(
         "{\"avatarUrl\":\"/api/attachments/123e4567-e89b-12d3-a456-426614174000.webp\",\"bot\":\(botJSON)}".utf8
     )
+    private static let configResponse = Data("""
+    {"profile":{"name":"Ada","email":"ada@example.com"},"conversationMode":"simple"}
+    """.utf8)
 }
