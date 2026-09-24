@@ -490,7 +490,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - **2026-09-24 - CODEX - PLANNED - Warn or reject oversized current API prompts without silent truncation.** <!-- wb-agent-report:9303476903b945418379b49c917dd5f6 -->
 - **2026-09-24 - CODEX - PLANNED - Update Mac BotFleet checkout and installed app after active work drains.** <!-- wb-agent-report:6661ceeacdb14de7a2992ab739e74664 -->
 - **2026-09-24 - CODEX - PLANNED - Complete ACP usage dimensions and fallback attribution.** <!-- wb-agent-report:2c6611a1067843c99b39a9de5228dbb8 -->
-- **2026-09-24 - CODEX - PLANNED - Classify and reduce BotFleet telemetry delivery retry failures.** <!-- wb-agent-report:0e195d95f52b49f5b5d9c75d1d560891 -->
+- **2026-09-24 - CODEX - IN PROGRESS - Classify terminal Usage Monitor telemetry responses, durably quarantine bounded failed batches, and release the queue head (#551; board 0e195d95; ~/apps/botfleet-codex-telemetry-poison-head @ codex/telemetry-poison-head).**  Focused tests and hosted full CI; no live harness restart.  <!-- wb-agent-report:0e195d95f52b49f5b5d9c75d1d560891 -->
 - **2026-09-24 - CODEX - PLANNED - Reduce sidebar resort and streaming Markdown work.** <!-- wb-agent-report:4185949867cc4804971d3b690894f2d0 -->
 - **2026-09-24 - CODEX - PLANNED - Page BotFleet messages in SQLite and bound server thread cache.** <!-- wb-agent-report:c524b2b1daa240a0937ff141cac70a6c -->
 - **2026-09-22 - BF-Director - PLANNED - [Director] Per-engine execution wisdom registry: how each engine handles its task classes best.** <!-- wb-agent-report:4a042037a1ee4c4f960844a9c6c1f541 -->
