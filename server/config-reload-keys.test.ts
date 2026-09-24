@@ -140,10 +140,8 @@ describe("PUT /api/config provider disable", () => {
   });
 
   it("compares each turn's providers before and after the whole botDefaults save", () => {
-    expect(helper).toContain(`revokedTurnProviders(
-      heldProvidersFor(before, inputs, runOn, { autoHost }),
-      heldProvidersFor(after, inputs, runOn, { autoHost }),
-    )`);
+    expect(helper).toContain("const holds = inputs.mounted ?? heldProvidersFor(before, inputs, runOn, { autoHost });");
+    expect(helper).toContain("revokedTurnProviders(holds, heldProvidersFor(after, inputs, runOn, { autoHost }))");
     // Every input turn mounting reads, from the settings being compared.
     const held = source.slice(source.indexOf("function heldProvidersFor("), source.indexOf("function botsLosingProviders("));
     expect(held).toContain("allowedBotComputers(settings)");
@@ -300,15 +298,27 @@ describe("provider disable impact is judged by the running turn and the server's
     expect(unacknowledgedImpact([1, null, "a"], impacted)).toEqual([{ id: "b", name: "B" }]);
   });
 
-  it("recomputes the impact on PUT /api/config before anything is saved", () => {
+  it("recomputes the impact on PUT /api/config before anything is written, and again right before the save", () => {
     const route = source.slice(source.indexOf('path === "/api/config") {'));
-    const check = route.indexOf("botsLosingProviders(cfg,");
-    expect(check).toBeGreaterThan(route.indexOf("computerProvidersStale(body.expectedComputerProviders, current)"));
-    expect(route.indexOf("providerConfigBusy = true;")).toBeGreaterThan(check);
-    expect(route).toContain("unacknowledgedImpact(\n          body.acknowledgedImpact,");
-    expect(route).toContain('code: "computer_impact_changed"');
-    // Nothing is awaited between the check and the write it guards.
-    expect(route.slice(check, route.indexOf("providerConfigBusy = true;"))).not.toContain("await ");
+    const helper = route.slice(route.indexOf("const unseenProviderImpact = () => {"), route.indexOf("// Compare-and-swap for the provider toggles."));
+    expect(helper).toContain("unacknowledgedImpact(\n          body.acknowledgedImpact,");
+    expect(helper).toContain("botsLosingProviders(cfg,");
+    expect(helper).toContain('code: "computer_impact_changed"');
+    // First check: after the stale-toggle check, before anything is written.
+    const first = route.indexOf("const refusal = unseenProviderImpact();");
+    expect(first).toBeGreaterThan(route.indexOf("computerProvidersStale(body.expectedComputerProviders, current)"));
+    expect(route.indexOf("providerConfigBusy = true;")).toBeGreaterThan(first);
+    expect(route.slice(first, route.indexOf("providerConfigBusy = true;"))).not.toContain("await ");
+    // Second check: after every credential check has awaited, with nothing
+    // awaited between it and the save.  Bot and automation routes are not
+    // fenced by providerConfigBusy, so a grant added meanwhile must be seen.
+    const late = route.indexOf("const lateImpact = unseenProviderImpact();");
+    expect(late).toBeGreaterThan(route.indexOf("await box.verifyToken") > 0 ? route.indexOf("await box.verifyToken") : first);
+    expect(late).toBeGreaterThan(route.lastIndexOf("await ", route.indexOf("const changedConsent = configConsentRequired();")));
+    const save = route.indexOf("saveConfig(persisted, { externalCredentialSections });");
+    expect(save).toBeGreaterThan(late);
+    expect(route.slice(late, save)).not.toContain("await ");
+    expect(route.slice(late, route.indexOf("\n", late + 60) + 80)).toContain("if (lateImpact) return json(res, 409, lateImpact);");
     // The server's list counts cloud automations, as the window's does.
     const fn = source.slice(source.indexOf("function botsLosingProviders("), source.indexOf("/** A `botDefaults` save does not rebuild"));
     expect(fn).toContain("routines?.listRoutines()");
@@ -316,6 +326,7 @@ describe("provider disable impact is judged by the running turn and the server's
     expect(fn).toContain("resourceTriggers.list()");
     expect(fn).toContain('item.enabled && item.runOn === "cloud"');
   });
+
 });
 
 describe("targeted interrupts see what the turn could really mount", () => {
@@ -359,5 +370,28 @@ describe("targeted interrupts see what the turn could really mount", () => {
     expect(impact).not.toContain("process.platform");
     // No caller can leave it out and fall back to "the host is reachable".
     expect(source).toContain("options: { autoHost: boolean },");
+  });
+});
+
+describe("an Auto turn is judged by what it actually mounted", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const all = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+
+  it("leaves a host-only Auto turn alone when a cloud provider turns off", () => {
+    // Box unconfigured, so Auto fell back to This Computer: the grant still
+    // reaches the cloud, but the turn mounted only the host.
+    const auto = (providers: typeof all) =>
+      heldComputerProviders({ granted: [], auto: true, autoAllows: ["cloud", "local"], cloudBackend: "box" }, providers);
+    expect(revokedTurnProviders(auto(all), auto({ ...all, asciiBox: false }))).toEqual(["asciiBox"]);
+    expect(revokedTurnProviders(["localMac"], auto({ ...all, asciiBox: false }))).toEqual([]);
+    // It still loses the host when This Computer turns off.
+    expect(revokedTurnProviders(["localMac"], auto({ ...all, localMac: false }))).toEqual(["localMac"]);
+  });
+
+  it("records the resolved mounts on both dispatch paths", () => {
+    expect(source).toContain("activeTurnOwners.recordMounted(threadId, dispatchOwner.dispatchId, mountedProviders(turnComputers.mounts));");
+    expect(source).toContain("activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers.mounts));");
+    const map = source.slice(source.indexOf("function mountedProviders("), source.indexOf("function autoHostMounts("));
+    expect(map).toContain('{ box: "asciiBox", vps: "selfHostedVps", vm: "localVm", local: "localMac" }');
   });
 });
