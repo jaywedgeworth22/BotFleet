@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { STATIC_ANTIGRAVITY_MODELS } from "./antigravity-models.ts";
+import { STATIC_CLAUDE_MODELS } from "./claude-models.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import type { ModelSelection, ProviderErrorCode } from "./contracts.ts";
 
@@ -32,6 +33,30 @@ function antigravityFlashModel(model: string): string {
   }
   const tier = /-(high|medium|low)$/.exec(model)?.[1];
   return (tier && ANTIGRAVITY_FLASH_BY_TIER[tier]) || STATIC_ANTIGRAVITY_MODELS.default;
+}
+
+const OFFICIAL_CLAUDE_SONNET_OPUS_ID = /^claude-(sonnet|opus)-\d+(-\d+)?(-\d{8})?$/;
+
+function isBuiltInClaudeSonnetOrOpus(model: string): boolean {
+  if (!/^claude-(sonnet|opus)-/.test(model)) return false;
+  return (
+    STATIC_CLAUDE_MODELS.options.some((option) => option.id === model) ||
+    OFFICIAL_CLAUDE_SONNET_OPUS_ID.test(model)
+  );
+}
+
+/** A turn inherits the bot's unattended mark only when it continues work that
+ *  mark covers: a card continuation or delegated (commsDepth > 0) work.  A
+ *  scheduled or manual run, or a typed turn, is decided by its own automation
+ *  source, so a webhook's leftover mark (30 min TTL) cannot silently drop it
+ *  to the unattended model.  An explicit caller flag always wins. */
+export function inheritedUnattended(
+  opts: { unattended?: boolean; cardContinuation?: boolean; commsDepth?: number } | undefined,
+  isMarked: () => boolean,
+): boolean {
+  if (opts?.unattended !== undefined) return opts.unattended;
+  const continues = Boolean(opts?.cardContinuation) || (opts?.commsDepth ?? 0) > 0;
+  return continues && isMarked();
 }
 
 /** Downgrade the model for an unattended turn: explicit unattended turns
@@ -79,11 +104,13 @@ export function unattendedModelDowngrade(
   } else if (family === "antigravity") {
     model = antigravityFlashModel(model);
   } else if (family === "claude") {
-    // Only built-in Claude routes (claude-sonnet-*, claude-opus-*) are
-    // swapped.  Local-inject ids (host::model, e.g. ollama::my-sonnet-model)
-    // and other custom ids are the operator's chosen route; rewriting them
-    // would break applyClaudeInject host routing.
-    if (/^claude-(sonnet|opus)(-|$)/.test(model)) {
+    // Only built-in Claude Sonnet/Opus routes are swapped: ids in the static
+    // catalog, plus older official version ids (claude-sonnet-4-5,
+    // claude-opus-4-1-20250805) no longer listed there.  Local-inject ids
+    // (ollama::my-sonnet-model) and custom ids (claude-sonnet-5-custom) are
+    // the operator's chosen route; rewriting them would break
+    // applyClaudeInject host routing.
+    if (isBuiltInClaudeSonnetOrOpus(model)) {
       // The driver's own current Haiku — claude-3-5-haiku-latest was a
       // stale alias pinned before Haiku 4.5 shipped.
       model = "claude-haiku-4-5";
