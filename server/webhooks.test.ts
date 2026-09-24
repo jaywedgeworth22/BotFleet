@@ -152,6 +152,10 @@ describe("WebhookManager", () => {
       { name: "Ignore assignment updates", action: "assigned", level: "error", ignored: true },
       { name: "Assignments should be skipped", action: "unassigned", level: "error", ignored: true },
       { name: "Ignore assignment updates unless reassigned to on-call", action: "assigned", level: "error", ignored: false },
+      { name: "Ignore warnings; investigate warning events", action: "unresolved", level: "warning", ignored: false },
+      { name: "Ignore debug events, but investigate warnings", action: "unresolved", level: "warning", ignored: false },
+      { name: "Ignore assignments; track reassignments", action: "assigned", level: "error", ignored: false },
+      { name: "Ignore non-error events; investigate warning events", action: "unresolved", level: "warning", ignored: false },
     ];
     cases.forEach((tc, i) => {
       const { webhook, secret } = h.manager.create({ name: tc.name, prompt: "", botId: "maus-1" });
