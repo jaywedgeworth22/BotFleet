@@ -327,15 +327,24 @@ function mergeTaskUsage(
 /** A custom connection can be deleted and recreated under the same slug
  *  with a DIFFERENT driver.  Banking the new turns into the same bucket
  *  would re-attribute the old usage to the new engine, so an engine change
- *  on an already-banked instance forks the bucket onto a suffixed key. */
+ *  on an already-banked instance forks the bucket onto a suffixed key.
+ *  The same holds for a pre-upgrade bucket with turns but no engineId:
+ *  stamping it with whatever engine banks next would re-attribute history
+ *  that may belong to a different (possibly deleted) driver, so it forks
+ *  too — the legacy bucket keeps its honest "unknown engine" shape. */
 function forkKey(
   byInstance: Record<string, InstanceUsage>,
   instanceId: string,
   meta?: { engineId?: string; model?: string },
 ): string {
   const prev = byInstance[instanceId];
-  if (meta?.engineId && prev?.engineId && prev.engineId !== meta.engineId) {
-    return `${instanceId}~${meta.engineId}`;
+  if (meta?.engineId) {
+    if (prev?.engineId && prev.engineId !== meta.engineId) {
+      return `${instanceId}~${meta.engineId}`;
+    }
+    if (!prev?.engineId && (prev?.turns ?? 0) > 0) {
+      return `${instanceId}~${meta.engineId}`;
+    }
   }
   return instanceId;
 }
