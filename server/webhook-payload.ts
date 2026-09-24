@@ -389,10 +389,11 @@ export function isSentryWebhookPayload(payload: JsonValue): boolean {
   const data = asRecord(root.data) ?? root;
   const issue = asRecord(data.issue);
   const event = asRecord(data.event);
+  // culprit is not Sentry-exclusive — generic issue trackers carry one —
+  // so only markers no other provider emits mark the payload as Sentry.
   if (
     issue &&
     (pickStr(issue, "shortId") !== undefined ||
-      pickStr(issue, "culprit") !== undefined ||
       (typeof issue.permalink === "string" && issue.permalink.includes("sentry.io")))
   ) {
     return true;
