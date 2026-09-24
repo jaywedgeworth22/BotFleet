@@ -25,9 +25,20 @@ function providersFromAllowedComputers(allowed: Array<"cloud" | "vm" | "local"> 
  * has hydrated, `resolveWorkspaceProviders` has nothing to read and falls
  * back to the every-provider-on default; a toggle saved from that state
  * would re-enable providers that are off on disk, and skip the impact
- * confirm because the bots look like they use nothing it would remove. */
-export function providerControlsLocked(config: ConfigStatus | null | undefined, saving: boolean): boolean {
-  return saving || config === null || config === undefined;
+ * confirm because the bots look like they use nothing it would remove.
+ *
+ * The config is not the only input to that confirm.  Bots, routines,
+ * webhooks and resource triggers arrive on their own requests, and the
+ * impact list reads all of them (a Off bot with a cloud automation still
+ * uses the cloud backend).  So the lock also holds until the whole
+ * hydration pass has finished: a disable clicked while the automations are
+ * still in flight would find no affected bot and save without asking. */
+export function providerControlsLocked(
+  config: ConfigStatus | null | undefined,
+  saving: boolean,
+  hydrationStatus: "idle" | "loading" | "ready" | "failed" = "ready",
+): boolean {
+  return saving || config === null || config === undefined || hydrationStatus !== "ready";
 }
 
 /** Resolve the workspace's effective providers, applying the migration
