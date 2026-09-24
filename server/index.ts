@@ -380,8 +380,8 @@ telemetry.configure(() => ({
   projects: usageProjectRules(cfg),
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
-registry.setDiskCachePath(join(DATA_DIR, "engine-cache.json"));
 await registry.load(instanceConfigs(cfg));
+registry.setDiskCachePath(join(DATA_DIR, "engine-cache.json"));
 // The credential fingerprint the provider fleet was actually BUILT with, kept
 // in step with every `registry.load` from here on.  `applyResolvedSecrets`
 // compares against this rather than against `cfg` at the top of its own call:

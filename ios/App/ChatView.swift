@@ -82,7 +82,6 @@ struct ChatView: View {
         let currentTask = bot.tasks?.first(where: { $0.threadId == bot.threadId })
         return currentTask?.activeModelSelection
             ?? currentTask?.modelSelection
-            ?? bot.activeModelSelection
             ?? bot.modelSelection
     }
 
