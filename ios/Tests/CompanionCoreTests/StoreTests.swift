@@ -205,6 +205,33 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(state.transcript(forThread: bot.threadId).contains { $0.id == "from-server" })
     }
 
+    func testHydrateKeepsBusyPendingWhenOnlySameTextLanded() throws {
+        var state = try hydrated()
+        let bot = try XCTUnwrap(state.bots.first)
+        state.rememberPendingSend(threadId: bot.threadId, id: "q-busy-h", text: "same text", queued: true)
+        var snapshot = try fleet()
+        var hydratedBot = try XCTUnwrap(snapshot.bots.first { $0.id == bot.id })
+        // A different same-text user row (no queueId) landed while offline.
+        hydratedBot.messages = (hydratedBot.messages ?? []) + [message("other-send", text: "same text")]
+        snapshot = Fleet(
+            bots: snapshot.bots.map { $0.id == bot.id ? hydratedBot : $0 },
+            groups: snapshot.groups
+        )
+        state.hydrate(snapshot)
+        XCTAssertTrue((state.pendingQueued[bot.threadId] ?? []).contains { $0.queueId == "q-busy-h" })
+
+        // Its own drained row (stamped with the queueId) retires it.
+        var drained = message("drained", text: "same text")
+        drained.queueId = "q-busy-h"
+        hydratedBot.messages = (hydratedBot.messages ?? []) + [drained]
+        snapshot = Fleet(
+            bots: snapshot.bots.map { $0.id == bot.id ? hydratedBot : $0 },
+            groups: snapshot.groups
+        )
+        state.hydrate(snapshot)
+        XCTAssertFalse((state.pendingQueued[bot.threadId] ?? []).contains { $0.queueId == "q-busy-h" })
+    }
+
     func testPendingOptimisticAtStaysStableAcrossVisibleTranscript() {
         var state = CompanionState()
         let threadId = "t-pending-at"
