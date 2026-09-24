@@ -4843,6 +4843,9 @@ async function runGroupMemberTurn(
       },
       threadId,
       dispatchId: roomDispatch.dispatchId,
+      // Same unattended signal as the 1:1 lane: a room member running a
+      // routine/webhook chain gets the same computer policy it would alone.
+      unattended: isUnattended(bot.id),
       allowed: allowedBotComputers(cfg),
       deps: turnComputerDeps(
         bot.id,
