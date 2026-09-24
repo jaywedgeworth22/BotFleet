@@ -396,6 +396,60 @@ export function UsageSection() {
     return map;
   }, [state.instances]);
 
+  // Attribution helpers shared by the what-if projection rows and the
+  // unattributed scan below.  A bucket banked with engine metadata wins;
+  // a legacy bucket (no engineId) resolves only through a live instance
+  // id — history from a deleted connection goes to the unattributed
+  // total rather than being guessed onto the task's configured engine.
+  const engineFor = (instanceId: string) =>
+    instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
+  const bucketEngine = (instanceId: string, engineId?: string) =>
+    (engineId && (engineIdFromDriverKind(engineId) ?? instanceIdToEngineId.get(engineId) ?? engineId)) || engineFor(instanceId);
+  const modelToEngineId = new Map<string, string>();
+  for (const [engineId, engineEntry] of Object.entries(ENGINE_CAPABILITIES)) {
+    for (const m of engineEntry.defaultModels ?? []) {
+      if (!modelToEngineId.has(m.id)) modelToEngineId.set(m.id, engineId);
+    }
+  }
+  const legacyEngine = (instanceId: string | undefined, model?: string) => {
+    if (instanceId) {
+      const resolved = engineFor(instanceId);
+      if (ENGINE_CAPABILITIES[resolved]) return resolved;
+    }
+    if (model) {
+      const byModelId = modelToEngineId.get(model);
+      if (byModelId) return byModelId;
+    }
+    return null;
+  };
+  // One pass over the same records the projection walks: metadata-free
+  // buckets whose instance id no longer resolves to a registry engine
+  // (deleted connections) cannot be honestly credited to any engine row,
+  // so they total into an unattributed figure the projection footnote
+  // shows instead of dropping the history.
+  let unattributedTokens30d = 0;
+  {
+    const periodStartMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    for (const bot of state.bots) {
+      for (const task of bot.tasks ?? []) {
+        if ((task.lastActivity ?? task.createdAt) < periodStartMs) continue;
+        for (const [bucketInstanceId, bucketUsage] of Object.entries(task.usageByInstance ?? {})) {
+          if ((bucketUsage.turns ?? 0) <= 0) continue;
+          if (bucketUsage.engineId) continue;
+          if (legacyEngine(bucketInstanceId, undefined)) continue;
+          unattributedTokens30d += bucketUsage.input + bucketUsage.output;
+        }
+      }
+      for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
+        if (roomUsage.lastAt < periodStartMs) continue;
+        if ((roomUsage.turns ?? 0) <= 0) continue;
+        if (roomUsage.engineId) continue;
+        if (legacyEngine(roomInstanceId, undefined)) continue;
+        unattributedTokens30d += roomUsage.input + roomUsage.output;
+      }
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <Card
@@ -959,6 +1013,7 @@ export function UsageSection() {
 
       <UsageWhatIfProjection
         periodLabel="Last 30 days"
+        unattributedTokens={unattributedTokens30d}
         byEngine={[
           // Populated from the same rows we render above: each engine that
           // has a registered api or subscription+api pricing block gets a
@@ -993,34 +1048,8 @@ export function UsageSection() {
             // aggregates into the canonical row; engineIdFromDriverKind
             // covers instances deleted since the turn ran, including the
             // legacy deepseek/dshAgent aliases.
-            const engineFor = (instanceId: string) =>
-              instanceIdToEngineId.get(instanceId) ?? engineIdFromDriverKind(instanceId) ?? instanceId;
-            // A bucket banked with engine metadata carries the registry
-            // engine resolved at bank time — attribution survives the
-            // connection being deleted (a deleted "custom-*" id used to
-            // drop the usage out of every engine row).
-            const bucketEngine = (instanceId: string, engineId?: string) =>
-              (engineId && (engineIdFromDriverKind(engineId) ?? instanceIdToEngineId.get(engineId) ?? engineId)) || engineFor(instanceId);
-            // Legacy records banked before engine metadata existed fall
-            // back to the model id: a deleted connection's model usually
-            // still names its engine via the registry defaultModels list.
-            const modelToEngineId = new Map<string, string>();
-            for (const [engineId, engineEntry] of Object.entries(ENGINE_CAPABILITIES)) {
-              for (const m of engineEntry.defaultModels ?? []) {
-                if (!modelToEngineId.has(m.id)) modelToEngineId.set(m.id, engineId);
-              }
-            }
-            const legacyEngine = (instanceId: string | undefined, model?: string) => {
-              if (instanceId) {
-                const resolved = engineFor(instanceId);
-                if (ENGINE_CAPABILITIES[resolved]) return resolved;
-              }
-              if (model) {
-                const byModelId = modelToEngineId.get(model);
-                if (byModelId) return byModelId;
-              }
-              return null;
-            };
+            // (engineFor/bucketEngine/legacyEngine are hoisted above the
+            // component's return so the unattributed scan shares them.)
             let tokensForEngine = 0;
             let cachedForEngine = 0;
             let inputForEngine = 0;
@@ -1056,9 +1085,16 @@ export function UsageSection() {
                     // resolves to nothing, so fall back to the model map —
                     // otherwise the usage is skipped here yet still
                     // subtracted from the legacy remainder and vanishes.
+                    // A metadata-free bucket whose instance id no longer
+                    // resolves came from a deleted connection.  Guessing
+                    // the engine from the task's CONFIGURED model would
+                    // credit the task's primary engine with a deleted
+                    // fallback connection's usage (review flagged it) —
+                    // those tokens surface in the unattributed total
+                    // instead of any engine row.
                     const resolvedBucketEngine = bucketUsage.engineId
                       ? bucketEngine(bucketInstanceId, bucketUsage.engineId)
-                      : legacyEngine(bucketInstanceId, task.modelSelection?.model);
+                      : legacyEngine(bucketInstanceId, undefined);
                     if (resolvedBucketEngine !== id) continue;
                     tokensForEngine += bucketUsage.input + bucketUsage.output;
                     cachedForEngine += cachedInput(bucketUsage);
@@ -1419,15 +1455,20 @@ function UsageRow({
           0,
         );
     const configuredModel = task.modelSelection?.model ?? bot.modelSelection.model;
+    // Whenever the banked per-model turns do not cover the task total the
+    // label is incomplete — even when the configured model is already in
+    // the list (many legacy Opus turns + one banked Haiku turn with Haiku
+    // configured must not read as plain "Haiku") — so mark it.
+    const historyIncomplete = ranModels.length > 0 && bankedTurns < (task.usage?.turns ?? 0);
     const labelModels = ranModels.length > 0
-      ? bankedTurns < (task.usage?.turns ?? 0) && configuredModel && !ranModels.includes(configuredModel)
+      ? historyIncomplete && configuredModel && !ranModels.includes(configuredModel)
         ? [...ranModels, configuredModel]
         : ranModels
       : [];
     const model = isRoomRow
       ? task.modelSelection?.model || task.modelSelection?.instanceId || "room"
       : labelModels.length > 0
-        ? labelModels.join(", ")
+        ? labelModels.join(", ") + (historyIncomplete ? " + earlier usage" : "")
         : configuredModel;
     if (!isRoomRow && labelModels.length > 0) {
       for (const m of labelModels) modelSet.add(m);
