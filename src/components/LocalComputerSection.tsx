@@ -30,8 +30,8 @@ import { BotComputerMatrix } from "./BotComputerMatrix";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { engineReachKnown, instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { ComputerImpactConfirmModal } from "./ComputerImpactConfirmModal";
-import { impactedBotsForProvider, type ImpactedBot } from "@/lib/computer-impact";
-import { providerControlsLocked, resolveWorkspaceProviders } from "@/lib/workspace-providers";
+import { impactedBotsForProvider, revalidateImpact, type ImpactedBot } from "@/lib/computer-impact";
+import { applyDefaultsBody, providerControlsLocked, resolveWorkspaceProviders } from "@/lib/workspace-providers";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   COMPUTER_PROVIDER_ORDER,
@@ -283,13 +283,7 @@ export function LocalComputerSection() {
       {
         path: "/api/bots/apply-defaults",
         method: "POST",
-        body: {
-          botDefaults: {
-            computerProviders: providers,
-            vpsMode,
-            allowedComputers: allowedComputersFromProviders(providers),
-          },
-        },
+        body: applyDefaultsBody(state.config?.botDefaults),
       },
       undefined,
       "apply",
@@ -356,6 +350,20 @@ export function LocalComputerSection() {
         onCancel={() => setImpact(null)}
         onConfirm={() => {
           if (!impact) return;
+          // The list was computed when the modal opened.  Bots, grants and
+          // automations can change while it is open, so recompute it now: a
+          // bot the operator never saw listed must not lose the provider on
+          // this click.  If the list grew, show the new one and ask again.
+          const decision = revalidateImpact(impact.impacted, botsUsingProvider(impact.provider));
+          if (decision.kind === "changed") {
+            setImpact({ provider: impact.provider, impacted: decision.impacted });
+            return;
+          }
+          if (locked || providers[impact.provider] !== true) {
+            // Already off (another window saved it) or a save is in flight.
+            setImpact(null);
+            return;
+          }
           const nextProviders = { ...providers, [impact.provider]: false };
           setImpact(null);
           persist(nextProviders, impact.provider === "selfHostedVps" ? null : vpsMode);
