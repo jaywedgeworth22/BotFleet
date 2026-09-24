@@ -443,13 +443,18 @@ export function createAgentTools(deps: AgentToolDeps): AgentTools {
       }
       const routines = Array.isArray(result.body.routines) ? result.body.routines : [];
       const routine = result.body.routine;
+      // A budget-trimmed list must say so, or it reads as complete.
+      const omitted = typeof result.body.routinesOmitted === "number" && result.body.routinesOmitted > 0
+        ? result.body.routinesOmitted
+        : 0;
+      const listed = routines.length === 1 ? "1 routine" : `${routines.length} routines`;
       return ok(
         JSON.stringify({
           now: result.body.now,
           timeZone: result.body.timeZone,
-          ...(routine ? { routine } : { routines }),
+          ...(routine ? { routine } : { routines, ...(omitted ? { routinesOmitted: omitted } : {}) }),
         }),
-        routine ? "routine instructions" : routines.length === 1 ? "1 routine" : `${routines.length} routines`,
+        routine ? "routine instructions" : omitted ? `${listed} (+${omitted} omitted)` : listed,
       );
     },
 
