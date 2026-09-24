@@ -777,15 +777,78 @@ describe("WebhookManager", () => {
     expect(errorOnlyErrorResult).toMatchObject({ duplicate: false });
     expect(errorOnlyErrorResult.runId).toBeDefined();
 
-    // Error-only scope with a carve-out: "Only process errors, but warning events are also tracked"
-    const { webhook: errorCarveOutHook, secret: errorCarveOutSecret } = h.manager.create({
-      name: "Error Only With Carve-out",
-      prompt: "Only process errors, but warning events are also tracked.",
+    // 30. GitHub commit status deliveries: pending and success are ignored, error and failure are processed
+    const pendingStatusEvent = {
+      eventName: "status",
+      payload: {
+        state: "pending",
+        sha: "abc1234",
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const pendingStatusResult = h.manager.receive(compileHook.endpointId, compileSecret, pendingStatusEvent);
+    expect(pendingStatusResult).toMatchObject({ ignored: true });
+
+    const successStatusEvent = {
+      eventName: "status",
+      payload: {
+        state: "success",
+        sha: "abc1234",
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const successStatusResult = h.manager.receive(compileHook.endpointId, compileSecret, successStatusEvent);
+    expect(successStatusResult).toMatchObject({ ignored: true });
+
+    const failureStatusEvent = {
+      eventName: "status",
+      payload: {
+        state: "failure",
+        sha: "abc1234",
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const failureStatusResult = h.manager.receive(compileHook.endpointId, compileSecret, failureStatusEvent);
+    expect(failureStatusResult).toMatchObject({ duplicate: false });
+    expect(failureStatusResult.runId).toBeDefined();
+
+    // 31. Honor positive prompts over error-only trigger names
+    const { webhook: nameOnlyHook, secret: nameOnlySecret } = h.manager.create({
+      name: "Only Process Errors",
+      prompt: "Process warning events immediately.",
       botId: "maus-1",
     });
-    const errorCarveOutWarningResult = h.manager.receive(errorCarveOutHook.endpointId, errorCarveOutSecret, clauseWarning);
-    expect(errorCarveOutWarningResult).toMatchObject({ duplicate: false });
-    expect(errorCarveOutWarningResult.runId).toBeDefined();
+    const nameOnlyWarningResult = h.manager.receive(nameOnlyHook.endpointId, nameOnlySecret, clauseWarning);
+    expect(nameOnlyWarningResult).toMatchObject({ duplicate: false });
+    expect(nameOnlyWarningResult.runId).toBeDefined();
+
+    const { webhook: inScopeHook, secret: inScopeSecret } = h.manager.create({
+      name: "Error Triage",
+      prompt: "Warnings are in scope for this team.",
+      botId: "maus-1",
+    });
+    const inScopeWarningResult = h.manager.receive(inScopeHook.endpointId, inScopeSecret, clauseWarning);
+    expect(inScopeWarningResult).toMatchObject({ duplicate: false });
+    expect(inScopeWarningResult.runId).toBeDefined();
+
+    // 32. Recognize explicit unassignment handling
+    const { webhook: unassignHook, secret: unassignSecret } = h.manager.create({
+      name: "Incident Alert Triage",
+      prompt: "Handle unassigned issues and route them to on-call.",
+      botId: "maus-1",
+    });
+    const unassignedEvent = {
+      payload: {
+        action: "unassigned",
+        actor: { id: "sentry", name: "Sentry" },
+        data: {
+          issue: { id: "101", title: "Unassigned bug", level: "error", permalink: "https://sentry.io/issues/101" },
+        },
+      },
+    };
+    const unassignedResult = h.manager.receive(unassignHook.endpointId, unassignSecret, unassignedEvent);
+    expect(unassignedResult).toMatchObject({ duplicate: false });
+    expect(unassignedResult.runId).toBeDefined();
 
     expect(dropNounResult.runId).toBeDefined();
   });

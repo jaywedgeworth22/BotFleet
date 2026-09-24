@@ -365,6 +365,13 @@ export function shouldIgnoreWebhookEvent(
             );
             if (negationErrorOnly.test(prompt)) return false;
 
+            const positiveTargetsLevel = new RegExp(
+              `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b` +
+                `|\\b${lvl}s?\\b(?:(?!${exclusionVerb})[^.;\\n])*?\\b(?:are\\s+)?(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
+              "i",
+            );
+            if (positiveTargetsLevel.test(prompt)) return false;
+
             const carveOutPattern = new RegExp(
               `\\b(?:except|and|also|but|along\\s+with|as\\s+well\\s+as)\\b[^.;\\n]*?\\b${lvl}s?\\b`,
               "i",
@@ -431,7 +438,7 @@ export function shouldIgnoreWebhookEvent(
       const isAssignmentExcluded = (): boolean => {
         const exclusionVerb = `(?:\\bout of scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b))`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
-        const assignmentTarget = `\\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
+        const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}`;
         const verbFirstPattern = new RegExp(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}`,
@@ -487,10 +494,11 @@ export function shouldIgnoreWebhookEvent(
         };
       }
 
+      const assignmentMatcher = /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i;
       const handlesAssignments =
-        (trigger.eventTypes ?? []).some((e) => /\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i.test(e)) ||
-        /\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership|router|triage)\b/i.test(prompt) ||
-        /\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i.test(name);
+        (trigger.eventTypes ?? []).some((e) => assignmentMatcher.test(e)) ||
+        /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership|router|triage)\b/i.test(prompt) ||
+        assignmentMatcher.test(name);
 
       if (
         !handlesAssignments &&
@@ -589,6 +597,16 @@ export function shouldIgnoreWebhookEvent(
         return {
           ignore: true,
           reason: `GitHub pull_request ${desc} ignored: compile gates wait for concluded failure or merged PR`,
+        };
+      }
+    } else if (eventName === "status") {
+      const state = pickStr(root, "state");
+      const isTerminalFailure = state === "failure" || state === "error";
+      if (!isTerminalFailure) {
+        const desc = state ? `state '${state}'` : "pending";
+        return {
+          ignore: true,
+          reason: `GitHub status ${desc} ignored: compile gates wait for concluded failure or merged PR`,
         };
       }
     }
