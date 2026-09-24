@@ -329,11 +329,10 @@ export function shouldIgnoreWebhookEvent(
   const rawName = trigger.name ?? "";
   const name = rawName.replace(/[\u2018\u2019\u201B\u2032`]/g, "'");
 
-  // Positive overrides ("... investigate warning events") read the prompt, or
-  // the name when the prompt is empty -- the name is then the instruction, so
-  // "Ignore warnings; investigate warning events" keeps warnings.  A title
-  // next to a real prompt ("Error Monitor Warning Ignorer") is not read for
-  // overrides.
+  // The error-only scope reads the prompt, or the name when the prompt is
+  // empty; its overrides read that same field.  (Level and assignment
+  // overrides also read the name when the name states the exclusion -- see
+  // levelSources.)
   const overrideText = prompt.trim() ? prompt : name;
 
   // 1. Sentry Ingress Pre-Filter (only applies to verified Sentry payloads)
@@ -388,15 +387,18 @@ export function shouldIgnoreWebhookEvent(
       const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
       // The trigger name is an instruction too: "Ignore warning events" with an
       // empty prompt must be honored, same as the name checks below.
-      const hasLevelExclusion =
-        verbFirstPattern.test(prompt) ||
-        verbFirstPattern.test(name) ||
-        targetFirstPattern.test(prompt) ||
-        targetFirstPattern.test(name) ||
-        positiveScopeException.test(prompt) ||
-        positiveScopeException.test(name) ||
-        bareNegativePattern.test(prompt) ||
-        bareNegativePattern.test(name);
+      const excludes = (text: string) =>
+        verbFirstPattern.test(text) ||
+        targetFirstPattern.test(text) ||
+        positiveScopeException.test(text) ||
+        bareNegativePattern.test(text);
+      const hasLevelExclusion = excludes(prompt) || excludes(name);
+      // Overrides below read the prompt, plus the name when the name itself
+      // states the exclusion: a name "Ignore warnings; investigate warning
+      // events" keeps warnings even next to an unrelated prompt, while a
+      // title that states no exclusion ("Error Monitor Warning Ignorer") is
+      // never read for an override.
+      const levelSources = [prompt, ...(excludes(name) ? [name] : [])].filter((text) => text.trim());
       if (!hasLevelExclusion) {
         if (lvl !== "error") {
           const nonErrorTarget = `\\bnon-?errors?(?:\\s+events?)?\\b`;
@@ -491,19 +493,19 @@ export function shouldIgnoreWebhookEvent(
       }
 
       // Positive investigation verbs or in-scope assertions override exclusion only when they specifically target this level
-      // (read from `overrideText`: the name when the prompt is empty)
+      // (read from `levelSources`: the prompt, plus the name when it states the exclusion)
       const positiveTargetsLevel = new RegExp(
         `${contrastingVerb}(?:(?!(?:${exclusionVerb}|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b))[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without|except(?:\\s+for)?|aside\\s+from|other\\s+than)\\s+)\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
         "i",
       );
-      if (positiveTargetsLevel.test(overrideText)) return false;
+      if (levelSources.some((text) => positiveTargetsLevel.test(text))) return false;
 
       const interveningPattern = new RegExp(
         `${exclusionVerb}[^.;\\n]*?${contrastingVerb}[^.;\\n]*?\\b${lvl}s?\\b`,
         "i",
       );
-      if (interveningPattern.test(overrideText)) return false;
+      if (levelSources.some((text) => interveningPattern.test(text))) return false;
 
       // "Don't just ignore", "do not ever ignore": up to two adverbs may sit
       // between the negation and the exclusion verb.  Closed list, so an
@@ -578,25 +580,23 @@ export function shouldIgnoreWebhookEvent(
         );
         if (negatedTargetPattern.test(prompt) || negatedTargetPattern.test(name)) return true;
 
-        if (
-          !verbFirstPattern.test(prompt) &&
-          !targetFirstPattern.test(prompt) &&
-          !verbFirstPattern.test(name) &&
-          !targetFirstPattern.test(name)
-        ) return false;
+        const assignmentExcludes = (text: string) => verbFirstPattern.test(text) || targetFirstPattern.test(text);
+        if (!assignmentExcludes(prompt) && !assignmentExcludes(name)) return false;
+        // Overrides read the prompt, plus the name when it states the exclusion.
+        const assignmentSources = [prompt, ...(assignmentExcludes(name) ? [name] : [])].filter((text) => text.trim());
 
         const positiveTargetsAssignment = new RegExp(
           `${contrastingVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+(?:any\\s+)?)${assignmentTarget}` +
             `|${assignmentTarget}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
           "i",
         );
-        if (positiveTargetsAssignment.test(overrideText)) return false;
+        if (assignmentSources.some((text) => positiveTargetsAssignment.test(text))) return false;
 
         const interveningPattern = new RegExp(
           `${exclusionVerb}[^.;\\n]*?${contrastingVerb}[^.;\\n]*?${assignmentTarget}`,
           "i",
         );
-        if (interveningPattern.test(overrideText)) return false;
+        if (assignmentSources.some((text) => interveningPattern.test(text))) return false;
 
         // A conditional carve-out ("ignore assignment updates unless assigned to
         // the on-call engineer", "except in production", "only for primary") qualifies the
