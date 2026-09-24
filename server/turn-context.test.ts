@@ -52,6 +52,15 @@ describe("boundRoomContextLines", () => {
     const current = "User: " + "z".repeat(200 * 1024);
     expect(boundRoomContextLines(["Bot: older", current])).toBe(`[Earlier conversation omitted for length]\n${current}`);
   });
+
+  it("clips the newest stored line when a card continuation is the current prompt", () => {
+    const prior = "Bot: " + "é".repeat(100 * 1024);
+    const bounded = boundRoomContextLines(["User: older", prior], false);
+    expect(bounded).toContain("[Earlier conversation omitted for length]");
+    expect(bounded).not.toContain("User: older");
+    expect(bounded).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(128 * 1024);
+  });
 });
 
 describe("buildTurnContext", () => {

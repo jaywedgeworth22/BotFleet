@@ -76,16 +76,22 @@ export function boundNativeTranscript(
   return kept;
 }
 
-/** Room turns send recent messages as one prompt, including the newest message
- * that triggered the turn.  Bound older room history without silently cutting
- * that current message; an oversized current message needs a separate explicit
- * size error rather than truncation (board 93034769). */
-export function boundRoomContextLines(lines: string[]): string {
+/** Room turns send recent messages as one prompt.  Keep the newest message
+ * intact when it triggered the turn; a card continuation instead makes all
+ * stored messages prior history.  An oversized current message needs a
+ * separate explicit size error rather than truncation (board 93034769). */
+export function boundRoomContextLines(lines: string[], preserveNewest = true): string {
   if (lines.length === 0) return "";
   const newest = lines[lines.length - 1];
+  const noticeBytes = Buffer.byteLength(OMITTED_HISTORY, "utf8") + 1;
+  // A card/secret continuation is the current prompt, so even the newest
+  // stored room line is prior history and may be clipped when oversized.
+  if (!preserveNewest && Buffer.byteLength(newest, "utf8") > MAX_REPLAY_BYTES - noticeBytes) {
+    return `${OMITTED_HISTORY}\n${clipUtf8(newest, MAX_REPLAY_BYTES - noticeBytes)}`;
+  }
   const earlierBudget = Math.max(
     0,
-    MAX_REPLAY_BYTES - Buffer.byteLength(OMITTED_HISTORY, "utf8") - 1 - Buffer.byteLength(newest, "utf8"),
+    MAX_REPLAY_BYTES - noticeBytes - Buffer.byteLength(newest, "utf8"),
   );
   const kept = [newest];
   let bytes = 0;
