@@ -548,7 +548,7 @@ describe("routine failure resiliency and unattended safety", () => {
         vpsComputerScreenshot: async () => ({ png: "", format: "png" }),
       },
       box: {
-        boxConfigured: () => false,
+        boxConfigured: (): boolean => false,
         findBox: async () => null,
         provisionBox: async () => ({ boxId: "b1" }),
         readyBox: async () => null,
@@ -569,7 +569,7 @@ describe("routine failure resiliency and unattended safety", () => {
     const result = await resolveTurnComputerMounts({
       bot: { id: "b1", name: "Plumber", computers: ["local"] },
       cfg: {} as AppConfig,
-      engine: { driverKind: "antigravity", computerMcp: true, localComputerMcp: true, toolLoop: false },
+      engine: { driverKind: "antigravityAgent", computerMcp: true, localComputerMcp: true, toolLoop: false },
       threadId: "t1",
       dispatchId: 1,
       unattended: true,
@@ -589,7 +589,7 @@ describe("routine failure resiliency and unattended safety", () => {
     const result = await resolveTurnComputerMounts({
       bot: { id: "b1", name: "Plumber", computers: ["local"] },
       cfg: {} as AppConfig,
-      engine: { driverKind: "antigravity", computerMcp: true, localComputerMcp: true, toolLoop: false },
+      engine: { driverKind: "antigravityAgent", computerMcp: true, localComputerMcp: true, toolLoop: false },
       threadId: "t1",
       dispatchId: 1,
       unattended: false,
@@ -750,7 +750,7 @@ describe("routine failure resiliency and unattended safety", () => {
         resolveTurnComputerMounts({
           bot: { id: "b1", name: "Agy", computers: ["cloud", "local"], cloudBackend },
           cfg: { box: { token: "t" } } as unknown as AppConfig,
-          engine: { driverKind: "antigravity", computerMcp: true, localComputerMcp: true, toolLoop: false },
+          engine: { driverKind: "antigravityAgent", computerMcp: true, localComputerMcp: true, toolLoop: false },
           threadId: "t1",
           dispatchId: 1,
           runOn: undefined,
