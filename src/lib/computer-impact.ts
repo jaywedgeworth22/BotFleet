@@ -16,7 +16,14 @@
 // backend even when `providersForBot` says it has no computer at all,
 // and turning that backend off breaks the automation.
 import type { Bot } from "@/state/store";
-import { providersForBot, type AutoLocalFallback } from "@/components/BotComputerMatrix";
+import {
+  cloudAutomationKindsFor,
+  effectiveProvidersForBot,
+  providersForBot,
+  type AutoLocalFallback,
+  type CloudAutomationKind,
+  type CloudAutomations,
+} from "@/components/BotComputerMatrix";
 import {
   COMPUTER_PROVIDER_LABEL,
   COMPUTER_PROVIDER_ORDER,
@@ -24,23 +31,9 @@ import {
   type ComputerProviders,
 } from "../../shared/local-auto-consent";
 
-/** The minimum a routine, webhook or resource trigger needs to say for the
- * impact list: whose it is, where it runs, and whether it can fire. */
-export type CloudAutomationSource = {
-  botId: string;
-  runOn: "maus" | "cloud";
-  enabled: boolean;
-};
+export type { CloudAutomationSource, CloudAutomations } from "@/components/BotComputerMatrix";
 
-export type CloudAutomations = {
-  routines?: readonly CloudAutomationSource[];
-  webhooks?: readonly CloudAutomationSource[];
-  resourceTriggers?: readonly CloudAutomationSource[];
-};
-
-type AutomationKind = "routine" | "webhook" | "resourceTrigger";
-
-const AUTOMATION_LABEL: Record<AutomationKind, string> = {
+const AUTOMATION_LABEL: Record<CloudAutomationKind, string> = {
   routine: "Cloud Routine",
   webhook: "Cloud Webhook",
   resourceTrigger: "Cloud Resource Trigger",
@@ -65,17 +58,6 @@ export type ImpactInput = {
   automations?: CloudAutomations;
 };
 
-function cloudKindsFor(botId: string, automations: CloudAutomations | undefined): AutomationKind[] {
-  if (!automations) return [];
-  const kinds: AutomationKind[] = [];
-  const has = (list: readonly CloudAutomationSource[] | undefined) =>
-    (list ?? []).some((item) => item.botId === botId && item.enabled && item.runOn === "cloud");
-  if (has(automations.routines)) kinds.push("routine");
-  if (has(automations.webhooks)) kinds.push("webhook");
-  if (has(automations.resourceTriggers)) kinds.push("resourceTrigger");
-  return kinds;
-}
-
 /** Every bot with the provider in its effective grant, with a product-name
  * description of what it uses.  Mirrors `resolveGrants` and the
  * per-provider filter; see the file header. */
@@ -90,14 +72,18 @@ export function impactedBotsForProvider(provider: ComputerProviderId, input: Imp
       input.workspaceDefaultComputers,
       input.autoLocalFor?.(bot),
     );
-    const providers: ComputerProviders = { ...granted };
-    const kinds = cloudKindsFor(bot.id, input.automations);
+    // Same derivation the matrix renders, so the two never disagree.
+    const providers: ComputerProviders = effectiveProvidersForBot(bot, {
+      workspaceProviders: input.workspaceProviders,
+      workspaceCloudBackend: input.workspaceCloudBackend,
+      workspaceDefaultComputers: input.workspaceDefaultComputers,
+      autoLocal: input.autoLocalFor?.(bot),
+      automations: input.automations,
+    });
+    const kinds = cloudAutomationKindsFor(bot.id, input.automations);
     const cloudProvider: ComputerProviderId =
       (bot.cloudBackend ?? input.workspaceCloudBackend ?? "box") === "box" ? "asciiBox" : "selfHostedVps";
-    // `runOn: "cloud"` bypasses the allowlist in resolveGrants but not the
-    // per-provider filter, so it only counts while that backend is on.
     const cloudBackendOn = input.workspaceProviders ? input.workspaceProviders[cloudProvider] === true : true;
-    if (kinds.length > 0 && cloudBackendOn) providers[cloudProvider] = true;
     if (providers[provider] !== true) continue;
 
     const parts: string[] = [];
