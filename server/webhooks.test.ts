@@ -144,7 +144,7 @@ describe("WebhookManager", () => {
         data: { issue: { id, shortId: `ST-${id}`, title: "Name-only filter", level, permalink: `https://sentry.io/issues/${id}` } },
       },
     });
-    const cases: Array<{ name: string; action: string; level: string; ignored: boolean }> = [
+    const cases: Array<{ name: string; prompt?: string; action: string; level: string; ignored: boolean }> = [
       { name: "Ignore warning events", action: "unresolved", level: "warning", ignored: true },
       { name: "Warning events should be skipped", action: "unresolved", level: "warning", ignored: true },
       { name: "Ignore warning events", action: "unresolved", level: "error", ignored: false },
@@ -156,9 +156,17 @@ describe("WebhookManager", () => {
       { name: "Ignore debug events, but investigate warnings", action: "unresolved", level: "warning", ignored: false },
       { name: "Ignore assignments; track reassignments", action: "assigned", level: "error", ignored: false },
       { name: "Ignore non-error events; investigate warning events", action: "unresolved", level: "warning", ignored: false },
+      // A name that states the exclusion keeps its own overrides next to an unrelated prompt.
+      { name: "Ignore warnings; investigate warning events", prompt: "Triage new Sentry issues.", action: "unresolved", level: "warning", ignored: false },
+      { name: "Ignore assignments; track reassignments", prompt: "Triage new Sentry issues.", action: "assigned", level: "error", ignored: false },
+      { name: "Ignore warning events", prompt: "Triage new Sentry issues.", action: "unresolved", level: "warning", ignored: true },
+      { name: "Ignore assignment updates", prompt: "Triage new Sentry issues.", action: "assigned", level: "error", ignored: true },
+      // The prompt's own positive override still wins over a name exclusion.
+      { name: "Ignore warning events", prompt: "Investigate warning events.", action: "unresolved", level: "warning", ignored: false },
+      { name: "Ignore assignment updates", prompt: "Track reassignments.", action: "assigned", level: "error", ignored: false },
     ];
     cases.forEach((tc, i) => {
-      const { webhook, secret } = h.manager.create({ name: tc.name, prompt: "", botId: "maus-1" });
+      const { webhook, secret } = h.manager.create({ name: tc.name, prompt: tc.prompt ?? "", botId: "maus-1" });
       const result = h.manager.receive(webhook.endpointId, secret, sentryEvent(tc.action, tc.level, String(900 + i)));
       if (tc.ignored) {
         expect(result, tc.name).toMatchObject({ ignored: true });
