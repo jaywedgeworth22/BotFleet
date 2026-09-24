@@ -388,18 +388,17 @@ function Bubble({
             is a logo only; the model name still lives in its tooltip. */}
         <div className="flex items-center gap-1.5">
           {message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
-          {bot && (bot.activeModelSelection ?? bot.modelSelection) && (() => {
-            const currentSelection = bot.activeModelSelection ?? bot.modelSelection;
-            const instance = state.instances.find((i: any) => i.instanceId === currentSelection.instanceId);
-            const modelOption = instance?.models?.options?.find((o: any) => o.id === currentSelection.model);
-            const modelName = modelOption?.label || currentSelection.model;
-            const title = instance ? `${modelName} (${instance.displayName || instance.driverKind})` : currentSelection.model;
+          {bot && bot.modelSelection && (() => {
+            const instance = state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId);
+            const modelOption = instance?.models?.options?.find((o: any) => o.id === bot.modelSelection.model);
+            const modelName = modelOption?.label || bot.modelSelection.model;
+            const title = instance ? `${modelName} (${instance.displayName || instance.driverKind})` : bot.modelSelection.model;
             return (
               <span
                 className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 title={title}
               >
-                <ProviderMark driverKind={instance?.driverKind ?? "openai"} model={currentSelection.model} size={16} />
+                <ProviderMark driverKind={instance?.driverKind ?? "openai"} model={bot.modelSelection.model} size={16} />
               </span>
             );
           })()}

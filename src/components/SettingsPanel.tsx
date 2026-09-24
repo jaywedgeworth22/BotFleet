@@ -487,11 +487,11 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <div className="mt-3 text-[13px] leading-relaxed text-ink-secondary">
               {bot.chiefOfStaff && !canCoordinate
-                ? "This bot still holds the role, but its current engine cannot contact teammates. Choose a Claude or ACP engine to restore coordination."
+                ? "This bot still holds the role, but its current engine cannot contact teammates.  Choose a coordination-capable engine to restore coordination."
                 : bot.chiefOfStaff
                   ? `This is the primary contact for ${sectionName}. It can create and coordinate specialists in this section, then combine their work into one answer.`
                 : !canCoordinate
-                  ? "Choose a Claude or ACP engine to let this bot coordinate teammates."
+                  ? "Choose an engine that supports bot coordination to let this bot coordinate teammates."
                   : currentChief
                     ? `Make this bot the ${sectionName} Chief and hand the role over from ${currentChief.name}.`
                     : `Make this bot the primary contact for the ${sectionName} section.`}
@@ -622,7 +622,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 }}
                 className="mt-2 text-left text-[13px] text-blue-500 hover:underline"
               >
-                + Add Fallback Model
+                Add Fallback Model
               </button>
             )}
           </div>
@@ -633,14 +633,14 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             if (!effortLevels.length) return null;
             return (
               <div className="rounded-xl bg-card p-4">
-                <div className="text-[15px] font-medium text-ink">Effort</div>
+                <div className="text-[15px] font-medium text-ink">Reasoning</div>
                 {/* Says what the app does, not what the engine ends up at:
                     Codex applies a level to the whole thread and has no way to
                     take one back, so "currently: engine default" was a promise
                     we could not keep for a thread that had already been sent
                     one. Sending nothing is true on every engine. */}
                 <div className="mt-0.5 text-[13px] text-ink-secondary">
-                  How hard this bot thinks{bot.modelSelection.effort ? "" : " (Default: no level is sent)"}
+                  How hard this bot thinks.
                 </div>
                 <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
                   {([undefined, ...effortLevels] as const).map((level, i) => (
@@ -683,7 +683,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 // exactly that for every bot inheriting a "vps" default.
                 ["cloud", cloudDestinationLabel(cloudBackend)],
                 ["vm", "Local VM"],
-                ["local", "This Computer"],
+                ["local", typeof window !== "undefined" && (window.ogb?.platform === "darwin" || (typeof navigator !== "undefined" && navigator.userAgent.includes("Mac"))) ? "This Mac" : "This Computer"],
                 ["off", "Off"],
               ] as const).map(([mode, label], i) => {
                 const blocked = destinationDisabled(mode);

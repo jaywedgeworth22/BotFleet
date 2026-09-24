@@ -1562,7 +1562,7 @@ function BotContextMenu({
           () => dispatch({ type: "updateBot", botId: bot.id, patch: { chiefOfStaff: !bot.chiefOfStaff } }),
           {
             disabled: !bot.chiefOfStaff && !canCoordinate,
-            hint: !bot.chiefOfStaff && !canCoordinate ? "Choose a Claude or ACP engine first" : undefined,
+            hint: !bot.chiefOfStaff && !canCoordinate ? "Choose an engine with coordination first" : undefined,
           },
         ),
         item(<FolderPlus size={16} className="text-ink-secondary" />, "Move to Section", () => {

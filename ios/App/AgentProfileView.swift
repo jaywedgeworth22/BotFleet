@@ -423,7 +423,7 @@ struct AgentProfileView: View {
                 get: { selection.wrappedValue.flatMap { levels.contains($0) ? $0 : nil } },
                 set: { selection.wrappedValue = $0 }
             )) {
-                Text("Engine default").tag(String?.none)
+                Text("Default").tag(String?.none)
                 ForEach(levels, id: \.self) { level in
                     Text(effortLabel(level)).tag(Optional(level))
                 }
@@ -431,12 +431,12 @@ struct AgentProfileView: View {
             .pickerStyle(.navigationLink)
 
             if let saved, !levels.contains(saved) {
-                Text("Saved reasoning “\(saved)” is kept until you choose a supported level.")
+                Text("Saved reasoning “\(effortLabel(saved))” is kept until you choose a supported level.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         } else if let saved {
-            LabeledContent("Reasoning", value: "Saved: \(saved)")
+            LabeledContent("Reasoning", value: "Saved: \(effortLabel(saved))")
         }
     }
 
@@ -446,7 +446,7 @@ struct AgentProfileView: View {
         case "low": return "Low"
         case "medium": return "Medium"
         case "high": return "High"
-        case "xhigh": return "Extra High"
+        case "xhigh": return "X-High"
         case "max": return "Maximum"
         default: return effort
         }

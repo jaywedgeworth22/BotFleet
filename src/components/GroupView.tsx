@@ -244,7 +244,7 @@ function GroupTextRow({
               {formatHoverTime(m.at)}
               {m.from?.botId && (() => {
                 const bot = members.find((b) => b.id === m.from?.botId);
-                const currentSelection = bot?.activeModelSelection ?? bot?.modelSelection;
+                const currentSelection = bot?.modelSelection;
                 if (!currentSelection) return null;
                 const instance = state.instances.find((i) => i.instanceId === currentSelection.instanceId);
                 const modelOption = instance?.models.options.find((o) => o.id === currentSelection.model);
