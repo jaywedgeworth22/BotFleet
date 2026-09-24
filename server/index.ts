@@ -5616,6 +5616,12 @@ function configStatus() {
     // What an unconfigured bot is given.  The client needs this to label a
     // bot's destination honestly: without it the panel shows "ASCII.dev Box"
     // for a bot the workspace default sends to a VPS.
+    // The platform of the machine this server runs on.  The Auto host
+    // fallback mounts only on macOS (server/local-routing.ts), and a client
+    // in a plain browser cannot tell what the harness runs on: without this
+    // the Computer settings matrix and the disable-impact list guessed
+    // "other" and dropped every Auto bot's This Computer grant.
+    host: { platform: process.platform },
     botDefaults: {
       computers: cfg.botDefaults?.computers ?? [],
       cloudBackend: cfg.botDefaults?.cloudBackend ?? "box",
