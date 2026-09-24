@@ -134,6 +134,37 @@ describe("WebhookManager", () => {
     expect(h.queued[0]?.prompt).toContain("[UNTRUSTED WEBHOOK EVENT DATA]");
   });
 
+  it("honors a Sentry exclusion stated only in the trigger name", () => {
+    const h = harness();
+    const sentryEvent = (action: string, level: string, id: string) => ({
+      payload: {
+        action,
+        installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+        actor: { type: "application", id: "sentry", name: "Sentry" },
+        data: { issue: { id, shortId: `ST-${id}`, title: "Name-only filter", level, permalink: `https://sentry.io/issues/${id}` } },
+      },
+    });
+    const cases: Array<{ name: string; action: string; level: string; ignored: boolean }> = [
+      { name: "Ignore warning events", action: "unresolved", level: "warning", ignored: true },
+      { name: "Warning events should be skipped", action: "unresolved", level: "warning", ignored: true },
+      { name: "Ignore warning events", action: "unresolved", level: "error", ignored: false },
+      { name: "Ignore warning events unless in production", action: "unresolved", level: "warning", ignored: false },
+      { name: "Ignore assignment updates", action: "assigned", level: "error", ignored: true },
+      { name: "Assignments should be skipped", action: "unassigned", level: "error", ignored: true },
+      { name: "Ignore assignment updates unless reassigned to on-call", action: "assigned", level: "error", ignored: false },
+    ];
+    cases.forEach((tc, i) => {
+      const { webhook, secret } = h.manager.create({ name: tc.name, prompt: "", botId: "maus-1" });
+      const result = h.manager.receive(webhook.endpointId, secret, sentryEvent(tc.action, tc.level, String(900 + i)));
+      if (tc.ignored) {
+        expect(result, tc.name).toMatchObject({ ignored: true });
+      } else {
+        expect(result.ignored, tc.name).toBeUndefined();
+        expect(result.runId, tc.name).toBeDefined();
+      }
+    });
+  });
+
   it("sends fleet-infra Sentry issues to Plumber and keeps other projects on the assigned bot", () => {
     const h = harness();
     h.options.findBotIdByName = (name) => (name === "Plumber" ? "maus-plumber" : undefined);
