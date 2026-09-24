@@ -941,6 +941,37 @@ describe("unattendedModelDowngrade", () => {
     ).toEqual(gemini);
   });
 
+  it("maps Antigravity Pro ids to Flash ids the catalog actually offers", () => {
+    // gemini-3.1-flash-high/low do not exist on Antigravity — the rewrite
+    // must land on an offered id or the unattended turn fails at turn start.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "gemini-3.1-pro-high" },
+        { unattended: true },
+      ).model,
+    ).toBe("gemini-3.8-flash-high");
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "gemini-3.1-pro-low" },
+        { unattended: true },
+      ).model,
+    ).toBe("gemini-3.8-flash-low");
+    // Same-family Flash exists for 2.5, so keep it.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "gemini-2.5-pro" },
+        { unattended: true },
+      ).model,
+    ).toBe("gemini-2.5-flash");
+    // Non-Pro Antigravity models are left alone.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "antigravity", model: "claude-sonnet-4-6" },
+        { unattended: true },
+      ).model,
+    ).toBe("claude-sonnet-4-6");
+  });
+
   it("pins Claude downgrades to the driver's current Haiku", () => {
     expect(
       unattendedModelDowngrade(claude, { unattended: true, effortLevels: ["low"] }),
