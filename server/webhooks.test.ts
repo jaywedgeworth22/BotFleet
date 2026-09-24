@@ -1140,6 +1140,45 @@ describe("WebhookManager", () => {
       expect(eeDebugResult.ignored).toBeUndefined();
     }
 
+    // 49. Reject negated levels as error-only carve-outs ("Only process errors and not warnings")
+    const { webhook: negatedCarveHook, secret: negatedCarveSecret } = h.manager.create({
+      name: "Errors And Not Warnings",
+      prompt: "Only process errors and not warnings.",
+      botId: "maus-1",
+    });
+    const negatedCarveResult = h.manager.receive(negatedCarveHook.endpointId, negatedCarveSecret, clauseWarning);
+    expect(negatedCarveResult).toMatchObject({ ignored: true });
+
+    // 50. Explicit assignment scope overrides general level suppression ("Ignore warning events; handle assignments")
+    const warningAssignEvent = {
+      payload: {
+        action: "assigned",
+        installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+        actor: { type: "user", id: "sentry", name: "Jay" },
+        data: {
+          issue: {
+            id: "105",
+            shortId: "ST-5",
+            title: "Assigned warning for triage",
+            level: "warning",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    };
+    const { webhook: assignScopeHook, secret: assignScopeSecret } = h.manager.create({
+      name: "Assignment Scope Overrides Level",
+      prompt: "Ignore warning events; handle assignments.",
+      botId: "maus-1",
+    });
+    const warningAssignResult = h.manager.receive(assignScopeHook.endpointId, assignScopeSecret, warningAssignEvent);
+    expect(warningAssignResult).toMatchObject({ duplicate: false });
+    expect(warningAssignResult.runId).toBeDefined();
+    expect(warningAssignResult.ignored).toBeUndefined();
+
+    const normalWarningResult = h.manager.receive(assignScopeHook.endpointId, assignScopeSecret, clauseWarning);
+    expect(normalWarningResult).toMatchObject({ ignored: true });
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

@@ -389,14 +389,14 @@ export function shouldIgnoreWebhookEvent(
             if (negationErrorOnly.test(prompt)) return false;
 
             const positiveTargetsLevel = new RegExp(
-              `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b` +
+              `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+)\\b${lvl}s?\\b` +
                 `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
               "i",
             );
             if (positiveTargetsLevel.test(prompt)) return false;
 
             const carveOutPattern = new RegExp(
-              `\\b(?:except|and|also|or|but|along\\s+with|as\\s+well\\s+as|unless)\\b[^.;\\n]*?\\b${lvl}s?\\b`,
+              `\\b(?:except|and|also|or|but|along\\s+with|as\\s+well\\s+as|unless)\\b(?:(?!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\b)[^.;\\n])*?\\b${lvl}s?\\b`,
               "i",
             );
             if (carveOutPattern.test(prompt)) return false;
@@ -419,7 +419,7 @@ export function shouldIgnoreWebhookEvent(
 
       // Positive investigation verbs or in-scope assertions override exclusion only when they specifically target this level
       const positiveTargetsLevel = new RegExp(
-        `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?\\b${lvl}s?\\b` +
+        `${contrastingVerb}(?:(?!${exclusionVerb})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+)\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b(?:(?!(?:${exclusionVerb}|${otherLevelsPattern}\\b))[^.;\\n])*?\\b(?:are|is\\s+)?(?<!\\bnot\\s+)(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed)\\b`,
         "i",
       );
@@ -462,16 +462,10 @@ export function shouldIgnoreWebhookEvent(
       return true;
     };
 
-    if (level === "warning" || level === "info" || level === "debug") {
-      if (isLevelExcluded(level)) {
-        return {
-          ignore: true,
-          reason: `Sentry level '${level}' is marked out of scope by trigger instructions`,
-        };
-      }
-    }
+    const isAssignmentAction = action === "assigned" || action === "unassigned";
+    let isAssignmentHandled = false;
 
-    if (action === "assigned" || action === "unassigned") {
+    if (isAssignmentAction) {
       const isAssignmentExcluded = (): boolean => {
         const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
         const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
@@ -546,14 +540,24 @@ export function shouldIgnoreWebhookEvent(
         /\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership|router|triage)\b/i.test(prompt) ||
         assignmentMatcher.test(name);
 
-      if (
-        !handlesAssignments &&
-        (/\b(?:incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
-          /\b(?:incident|fatal|broken|crash)\b/i.test(prompt))
+      if (handlesAssignments) {
+        isAssignmentHandled = true;
+      } else if (
+        /\b(?:incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
+        /\b(?:incident|fatal|broken|crash)\b/i.test(prompt)
       ) {
         return {
           ignore: true,
           reason: `Sentry action '${action}' is an issue assignment update, not a runtime incident`,
+        };
+      }
+    }
+
+    if (!isAssignmentHandled && (level === "warning" || level === "info" || level === "debug")) {
+      if (isLevelExcluded(level)) {
+        return {
+          ignore: true,
+          reason: `Sentry level '${level}' is marked out of scope by trigger instructions`,
         };
       }
     }
