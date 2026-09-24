@@ -70,4 +70,17 @@ describe("screen capture demand", () => {
     await expect(final).resolves.toEqual({ png: "settled", mime: "image/png" });
     expect(capture).toHaveBeenCalledTimes(2);
   });
+
+  it("shares one in-flight viewer capture across concurrent refresh requests", async () => {
+    let finish: ((value: { png: string; format: string }) => void) | undefined;
+    const capture = vi.fn(() => new Promise<{ png: string; format: string }>((resolve) => { finish = resolve; }));
+    const pollers = new ScreenPollers(() => true, vi.fn());
+    pollers.start("bot-a", capture);
+    pollers.poke("bot-a");
+    pollers.poke("bot-a");
+    finish?.({ png: "one", format: "png" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(capture).toHaveBeenCalledTimes(1);
+    pollers.stop("bot-a");
+  });
 });

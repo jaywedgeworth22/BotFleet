@@ -11,13 +11,22 @@ type Entry = {
  * settled screen message, but idle turns spend no box commands on previews. */
 export class ScreenPollers {
   private readonly entries = new Map<string, Entry>();
+  private readonly hasViewer: (botId: string) => boolean;
+  private readonly publish: (botId: string, frame: ScreenFrame) => void;
+  private readonly intervalMs: number;
+  private readonly minGapMs: number;
 
   constructor(
-    private readonly hasViewer: (botId: string) => boolean,
-    private readonly publish: (botId: string, frame: ScreenFrame) => void,
-    private readonly intervalMs = 6000,
-    private readonly minGapMs = 3000,
-  ) {}
+    hasViewer: (botId: string) => boolean,
+    publish: (botId: string, frame: ScreenFrame) => void,
+    intervalMs = 6000,
+    minGapMs = 3000,
+  ) {
+    this.hasViewer = hasViewer;
+    this.publish = publish;
+    this.intervalMs = intervalMs;
+    this.minGapMs = minGapMs;
+  }
 
   has(botId: string): boolean {
     return this.entries.has(botId);
@@ -32,7 +41,10 @@ export class ScreenPollers {
       last: null,
       touched: screenIsTheWork,
       capture: async (force = false) => {
-        if (current) await current;
+        if (current) {
+          await current;
+          if (!force) return;
+        }
         if (!force && Date.now() - lastAt < this.minGapMs) return;
         const pending = (async () => {
           try {
