@@ -24,6 +24,9 @@ struct SettingsView: View {
     @State private var savedProfileName = ""
     @State private var savedProfileEmail = ""
     @State private var savedRoomTimeout = 5
+    @FocusState private var focusedProfileField: ProfileField?
+
+    private enum ProfileField: Hashable { case name, email }
     private let onConnect: (() -> Void)?
 
     init(onConnect: (() -> Void)? = nil) {
@@ -226,13 +229,15 @@ struct SettingsView: View {
                     TextField("Name", text: $profileName)
                         .textContentType(.name)
                         .autocorrectionDisabled()
-                        .onSubmit { Task { await saveProfile() } }
+                        .focused($focusedProfileField, equals: .name)
+                        .onSubmit { focusedProfileField = nil }
                     TextField("Email", text: $profileEmail)
                         .textContentType(.emailAddress)
                         .keyboardType(.emailAddress)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onSubmit { Task { await saveProfile() } }
+                        .focused($focusedProfileField, equals: .email)
+                        .onSubmit { focusedProfileField = nil }
                 } header: {
                     Text("You")
                 } footer: {
@@ -288,6 +293,13 @@ struct SettingsView: View {
         }
         .onChange(of: session.connection?.id) { _, _ in
             Task { await loadSettingsExtras() }
+        }
+        .onChange(of: focusedProfileField) { previous, next in
+            // Save when a profile field loses focus (return key, tapping
+            // elsewhere, keyboard dismissal, or moving to the other field)
+            // so the edit is not held until the view disappears.
+            guard previous != nil, previous != next, profileIsDirty else { return }
+            Task { await saveProfile() }
         }
         .onChange(of: session.config?.profile?.name) { _, name in
             savedProfileName = name ?? ""
