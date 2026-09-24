@@ -466,6 +466,26 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(recorder.events.filter((event) => event.type === "runtime.error")).toHaveLength(1);
   });
 
+  it("never resumes a thread whose model was rejected, so a new model choice takes effect", async () => {
+    await create({ mode: "async-unknown-model" });
+
+    await instance.adapter.sendTurn({ threadId: "t-rejected-1", text: "go", model: "gpt-6-luna" });
+    const started = await recorder.until((event) => event.type === "session.started" && event.threadId === "t-rejected-1");
+    await recorder.until((event) => event.type === "turn.completed" && event.threadId === "t-rejected-1");
+    const cursor = (started as { sessionId: string | null }).sessionId;
+    expect(cursor).toBe("codex-thread-1");
+
+    // The harness saved that cursor; the next dispatch (the user picked
+    // another model) must start a fresh thread instead of resuming it.  This
+    // fake answers thread/resume with "no such thread", so a resume attempt
+    // would surface as resume_failed.
+    await instance.adapter.sendTurn({ threadId: "t-rejected-2", text: "go again", model: "gpt-5.6", resumeCursor: cursor });
+    const second = await recorder.until((event) => event.type === "session.started" && event.threadId === "t-rejected-2");
+    const done = await recorder.until((event) => event.type === "turn.completed" && event.threadId === "t-rejected-2");
+    expect(second).toMatchObject({ sessionId: "codex-thread-1", model: "fake-codex-model" });
+    expect(done).not.toMatchObject({ stopReason: "resume_failed" });
+  });
+
   it("keeps fresh-session guidance when a resumed session's model is rejected asynchronously", async () => {
     await create({ mode: "resume-async-unknown-model" });
 
