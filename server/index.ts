@@ -18,6 +18,7 @@ import { isIP } from "node:net";
 import { extname, join } from "node:path";
 
 import { z } from "zod";
+import { ScreenPollers } from "./screen-poller.ts";
 import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import { DEFAULT_ROOM_TERMINOLOGY, resolveRoomLabels } from "../shared/terminology.ts";
 import {
@@ -1188,6 +1189,7 @@ interface SseClient {
    * while a bot works. A client that isn't showing the computer panel —
    * a phone on cellular, most of all — should not pay for them. */
   screens: boolean;
+  screenBotIds: Set<string> | null;
 }
 const sseClients = new Set<SseClient>();
 
@@ -1231,10 +1233,12 @@ function broadcast(payload: Record<string, unknown>) {
   if (replayBuffer.length > REPLAY_MAX) replayBuffer.shift();
   for (const client of [...sseClients]) {
     if (!wants(client, kind)) continue;
+    if (kind === "screen" && client.screenBotIds && !client.screenBotIds.has(String(payload.botId))) continue;
     try {
       client.res.write(frame);
     } catch {
       sseClients.delete(client);
+      screenPollers.viewerChanged();
     }
   }
 }
@@ -1591,7 +1595,7 @@ function releaseStalledTurnIfUnowned(
   }
   const bot = store.bot(turn.botId);
   if (!bot?.busy || (bot.inflightThreadId && bot.inflightThreadId !== turn.threadId)) return "release";
-  stopScreenPoller(bot.id);
+  screenPollers.stop(bot.id);
   const vpsLease = activeVpsThreads.forBot(bot.id);
   if (vpsLease?.threadId === turn.threadId && vpsLease.dispatchId === stalledDispatchId) {
     activeVpsThreads.release(vpsLease);
@@ -2035,7 +2039,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // with the agent for the box's command endpoint, so a bot grinding
         // through file edits must not trigger one per tool.
         if (bot && /computer|screenshot|click|type_text|press_key|scroll|open_url/i.test(toolName)) {
-          pokeScreenPoller(bot.id);
+          screenPollers.poke(bot.id);
         }
       }
       break;
@@ -2590,7 +2594,7 @@ bus.subscribe((event: RuntimeEvent) => {
           // the screenshot-in-chat moment. One fresh capture first, so the
           // frame shows the turn's END state (the final tool's poke may
           // still be in flight).
-          void finalScreenFrame(bot.id).then((frame) => {
+          void screenPollers.final(bot.id).then((frame) => {
             // the bot may have been deleted while the capture ran
             if (frame && store.bot(bot.id)) {
               pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
@@ -2896,110 +2900,12 @@ function drainQueuedSends() {
   );
 }
 
-// ── live screen: poll the bot's computer while it works ───────────────
-// Frames stream to clients as SSE {kind:'screen'} (the "Bot's screen"
-// panel); the final frame is folded into the transcript on turn end.
-type Frame = { png: string; mime: string };
-const screenPollers = new Map<
-  string,
-  {
-    timer: ReturnType<typeof setInterval> | null;
-    capture: () => Promise<void>;
-    last: Frame | null;
-    /** Did this turn actually reach for the screen? A bot that merely HAS
-     * a computer would otherwise end every reply — a one-word "yes"
-     * included — with the same picture of an idle desktop. The flag lives
-     * on the poller entry, which is created and dropped per turn, so it
-     * cannot leak into a later one. */
-    touched: boolean;
-  }
->();
-
-/** The preview shares the box's single command endpoint with the agent's
- * own actions, so every frame we take is latency stolen from the work the
- * user is waiting on. Hence: a slow interval, a floor between captures,
- * and never two in flight. */
-const SCREEN_POLL_MS = 6000;
-const SCREEN_MIN_GAP_MS = 3000;
-
-/** `screenIsTheWork` starts the turn already counting as screen usage: a
- * boxAgent's whole session runs ON the box, so every tool it calls acts on
- * that screen even though none of them is named like a computer tool. */
-function startScreenPoller(
-  botId: string,
-  capture: () => Promise<{ png: string; format: string }>,
-  { screenIsTheWork = false } = {},
-) {
-  if (screenPollers.has(botId)) return;
-  // One capture at a time, shared by the interval, the pokes, and the
-  // turn-end grab: awaiting the in-flight promise (rather than dropping the
-  // call) is what lets the final frame be the settled one. The min-gap keeps
-  // a tool-heavy turn from spending the box's single command endpoint on
-  // previews the user isn't waiting for.
-  let current: Promise<void> | null = null;
-  let lastAt = 0;
-  const entry = {
-    timer: null as ReturnType<typeof setInterval> | null,
-    capture: (): Promise<void> => {
-      if (!current && Date.now() - lastAt < SCREEN_MIN_GAP_MS) return Promise.resolve();
-      current ??= (async () => {
-        try {
-          const { png, format } = await capture();
-          const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
-          entry.last = frame;
-          broadcast({ kind: "screen", botId, ...frame });
-        } catch {
-          /* box asleep or mid-command — try again next tick */
-        } finally {
-          lastAt = Date.now();
-          current = null;
-        }
-      })();
-      return current;
-    },
-    last: null as Frame | null,
-    touched: screenIsTheWork,
-  };
-  entry.timer = setInterval(() => void entry.capture(), SCREEN_POLL_MS);
-  screenPollers.set(botId, entry);
-}
-
-/** Event-driven refresh: capture NOW (the bot just acted on its screen)
- * instead of waiting for the next interval tick. Rate-limited inside
- * capture() — a tool-heavy turn used to fire one full REST chain per
- * completed tool, competing with the agent for the same endpoint. */
-function pokeScreenPoller(botId: string) {
-  const entry = screenPollers.get(botId);
-  if (!entry) return;
-  // the same signal, read twice: a completed computer tool is both the
-  // reason to refresh the preview NOW and the proof that this turn's
-  // final frame is worth settling into the transcript
-  entry.touched = true;
-  void entry.capture();
-}
-
-function stopScreenPoller(botId: string) {
-  const entry = screenPollers.get(botId);
-  if (!entry) return;
-  if (entry.timer) clearInterval(entry.timer);
-  screenPollers.delete(botId);
-}
-
-/** Turn end: stop polling, then take ONE last fresh frame (awaiting any
- * in-flight poke first) so the settled screenshot shows the screen's actual
- * end state, not the previous action's. A turn that never touched the
- * screen settles nothing — and skips the capture, which is one less
- * command on the box's single endpoint. Either way the poller is torn down
- * here, so no per-turn state survives the turn. */
-async function finalScreenFrame(botId: string): Promise<Frame | null> {
-  const entry = screenPollers.get(botId);
-  if (!entry) return null;
-  if (entry.timer) clearInterval(entry.timer);
-  screenPollers.delete(botId);
-  if (!entry.touched) return null;
-  await entry.capture();
-  return entry.last;
-}
+// ── live screen: capture only while a viewer watches ───────────────────
+const screenPollers = new ScreenPollers(
+  (botId) => [...sseClients].some((client) =>
+    !client.res.destroyed && client.screens && (!client.screenBotIds || client.screenBotIds.has(botId))),
+  (botId, frame) => broadcast({ kind: "screen", botId, ...frame }),
+);
 
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
 async function startTurn(
@@ -3649,7 +3555,7 @@ async function startTurn(
         activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId === dispatchOwner.dispatchId &&
         store.bot(bot.id)?.busy
       ) {
-        startScreenPoller(bot.id, previewCapture, { screenIsTheWork: instance.driverKind === "boxAgent" });
+        screenPollers.start(bot.id, previewCapture, instance.driverKind === "boxAgent");
       }
     } catch (e) {
       if (activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId !== dispatchOwner.dispatchId) return;
@@ -6042,7 +5948,7 @@ function settleInterruptedBots(
     // lookup used to perform, one step earlier and one map less.
     const vmClaim = localVmThreadTargets.findByBot(b.id);
     if (vmClaim) releaseLocalVmThread(vmClaim.threadId, vmClaim.botId);
-    stopScreenPoller(b.id);
+    screenPollers.stop(b.id);
     activeVpsThreads.clearBot(b.id);
     finalizeDelegationWatch(
       inflight,
@@ -7198,7 +7104,11 @@ const server = createServer(async (req, res) => {
 
     // ── events stream ──
     if (method === "GET" && path === "/api/events") {
-      const client: SseClient = { res, screens: url.searchParams.get("screens") !== "off" };
+      const client: SseClient = {
+        res,
+        screens: url.searchParams.get("screens") === "on",
+        screenBotIds: url.searchParams.has("botId") ? new Set(url.searchParams.getAll("botId")) : null,
+      };
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
@@ -7233,6 +7143,7 @@ const server = createServer(async (req, res) => {
       }
 
       sseClients.add(client);
+      screenPollers.viewerChanged();
       const keepalive = setInterval(() => {
         try {
           res.write(": keepalive\n\n");
@@ -7241,6 +7152,7 @@ const server = createServer(async (req, res) => {
       req.on("close", () => {
         clearInterval(keepalive);
         sseClients.delete(client);
+        screenPollers.viewerChanged();
       });
       return;
     }
@@ -8691,7 +8603,7 @@ const server = createServer(async (req, res) => {
       try {
         // a running turn dies with its bot
         await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
-        stopScreenPoller(bot.id);
+        screenPollers.stop(bot.id);
         activeVpsThreads.clearBot(bot.id);
         routines!.disableForBot(bot.id);
         webhooks.disableForBot(bot.id);
