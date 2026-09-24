@@ -483,6 +483,10 @@ describe("CodexDriver turns (fake app-server)", () => {
     const second = await recorder.until((event) => event.type === "session.started" && event.threadId === "t-rejected-2");
     const done = await recorder.until((event) => event.type === "turn.completed" && event.threadId === "t-rejected-2");
     expect(second).toMatchObject({ sessionId: "codex-thread-1", model: "fake-codex-model" });
+    // The rejection is also announced so the harness drops the saved cursor
+    // (survives a restart, unlike the in-memory set).
+    expect(recorder.events.find((event) => event.type === "session.invalidated" && event.threadId === "t-rejected-1"))
+      .toMatchObject({ sessionId: "codex-thread-1", reason: "unknown_model" });
     expect(done).not.toMatchObject({ stopReason: "resume_failed" });
   });
 
