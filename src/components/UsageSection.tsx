@@ -422,6 +422,14 @@ export function UsageSection() {
     }
     return null;
   };
+  // A metadata-free bucket keyed by a custom connection slug must NOT
+  // resolve through the live instance map: the slug can be deleted and
+  // recreated with a different driver, and the live id would then credit
+  // the new driver with the old bucket's history (forkKey kept the
+  // buckets apart — the lookup must not rejoin them).  Only built-in,
+  // driver-kind instance ids are stable enough to resolve.
+  const legacyBucketEngine = (instanceId: string) =>
+    instanceId.startsWith("custom-") ? null : legacyEngine(instanceId, undefined);
   // One pass over the same records the projection walks: metadata-free
   // buckets whose instance id no longer resolves to a registry engine
   // (deleted connections) cannot be honestly credited to any engine row,
@@ -436,7 +444,7 @@ export function UsageSection() {
         for (const [bucketInstanceId, bucketUsage] of Object.entries(task.usageByInstance ?? {})) {
           if ((bucketUsage.turns ?? 0) <= 0) continue;
           if (bucketUsage.engineId) continue;
-          if (legacyEngine(bucketInstanceId, undefined)) continue;
+          if (legacyBucketEngine(bucketInstanceId)) continue;
           unattributedTokens30d += bucketUsage.input + bucketUsage.output;
         }
       }
@@ -444,7 +452,7 @@ export function UsageSection() {
         if (roomUsage.lastAt < periodStartMs) continue;
         if ((roomUsage.turns ?? 0) <= 0) continue;
         if (roomUsage.engineId) continue;
-        if (legacyEngine(roomInstanceId, undefined)) continue;
+        if (legacyBucketEngine(roomInstanceId)) continue;
         unattributedTokens30d += roomUsage.input + roomUsage.output;
       }
     }
@@ -1087,14 +1095,14 @@ export function UsageSection() {
                     // subtracted from the legacy remainder and vanishes.
                     // A metadata-free bucket whose instance id no longer
                     // resolves came from a deleted connection.  Guessing
-                    // the engine from the task's CONFIGURED model would
-                    // credit the task's primary engine with a deleted
-                    // fallback connection's usage (review flagged it) —
-                    // those tokens surface in the unattributed total
-                    // instead of any engine row.
+                    // the engine — from the task's configured model OR
+                    // from a recreated slug's live mapping — would credit
+                    // the wrong driver with the old bucket's history
+                    // (review flagged both) — those tokens surface in the
+                    // unattributed total instead of any engine row.
                     const resolvedBucketEngine = bucketUsage.engineId
                       ? bucketEngine(bucketInstanceId, bucketUsage.engineId)
-                      : legacyEngine(bucketInstanceId, undefined);
+                      : legacyBucketEngine(bucketInstanceId);
                     if (resolvedBucketEngine !== id) continue;
                     tokensForEngine += bucketUsage.input + bucketUsage.output;
                     cachedForEngine += cachedInput(bucketUsage);
@@ -1138,7 +1146,7 @@ export function UsageSection() {
                 if ((roomUsage.turns ?? 0) <= 0) continue;
                 const resolvedRoomEngine = roomUsage.engineId
                   ? bucketEngine(roomInstanceId, roomUsage.engineId)
-                  : legacyEngine(roomInstanceId, undefined);
+                  : legacyBucketEngine(roomInstanceId);
                 if (resolvedRoomEngine !== id) continue;
                 tokensForEngine += roomUsage.input + roomUsage.output;
                 cachedForEngine += cachedInput(roomUsage);
