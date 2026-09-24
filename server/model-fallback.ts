@@ -124,7 +124,8 @@ export function unattendedModelDowngrade(
     if (isBuiltInClaudeSonnetOrOpus(model)) {
       // The driver's own current Haiku — claude-3-5-haiku-latest was a
       // stale alias pinned before Haiku 4.5 shipped.
-      model = "claude-haiku-4-5";
+      model = STATIC_CLAUDE_MODELS.options.find((o) => o.id.includes("haiku"))?.id
+        ?? "claude-haiku-4-5";
     }
   }
   if (model !== selection.model && opts.isCooling?.(selection.instanceId, model)) {

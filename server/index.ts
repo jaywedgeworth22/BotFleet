@@ -78,10 +78,9 @@ import {
   startGrokQuotaPoller,
 } from "./grok-quota.ts";
 import {
-  unattendedModelDowngrade,
-  inheritedUnattended,
   AUTO_FALLBACK_PRIORITY,
   enableQuotaCooldownPersist,
+  inheritedUnattended,
   lastTurnStartIndex,
   parseQuotaResetTime,
   providerErrorCodeFromStopReason,
@@ -94,6 +93,7 @@ import {
   turnQuotaOrCapEvidence,
   BOOT_RECOVERY_NOTICE,
   turnProducedAssistantOutput,
+  unattendedModelDowngrade,
 } from "./model-fallback.ts";
 import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";

@@ -738,14 +738,263 @@ export function isGithubWebhookPayload(payload: JsonValue): boolean {
   return Boolean(slimRepo(root.repository) || slimRepo(root.head_repository));
 }
 
-/** Drop GitHub, Sentry, and PagerDuty URL farms and log blobs. Other JSON is unchanged. */
+const COOLIFY_DEPLOYMENT_EVENTS = new Set([
+  "deployment_success",
+  "deployment_failed",
+  "deployment_failure",
+  "status_changed",
+  "restart_limit_reached",
+  "test",
+]);
+
+function looksLikeUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
+}
+
+export function isCoolifyWebhookPayload(payload: JsonValue): boolean {
+  const root = asRecord(payload);
+  if (!root) return false;
+  const hasDeploymentUuid = Boolean(pickStr(root, "deployment_uuid"));
+  const hasApplicationUuid = Boolean(pickStr(root, "application_uuid"));
+  const deployment = asRecord(root.deployment);
+  const application = asRecord(root.application) ?? asRecord(deployment?.application);
+  // Coolify-specific markers: UUIDs, named application, or nested deployment
+  // with Coolify shape.  A bare top-level `event` in COOLIFY_DEPLOYMENT_EVENTS
+  // (especially generic values like "test" / "status_changed") is not enough —
+  // those appear in other providers and would otherwise strip the payload to
+  // the Coolify allowlist.
+  const hasCoolifyMarker =
+    hasDeploymentUuid ||
+    hasApplicationUuid ||
+    Boolean(pickStr(root, "application_name")) ||
+    Boolean(pickStr(application, "name") || pickStr(application, "uuid")) ||
+    Boolean(deployment && (pickStr(deployment, "uuid") || pickStr(deployment, "status")));
+  if (!hasCoolifyMarker) return false;
+  const event = pickStr(root, "event");
+  if (event && COOLIFY_DEPLOYMENT_EVENTS.has(event)) return true;
+  if (hasDeploymentUuid && (hasApplicationUuid || pickStr(root, "application_name") || pickStr(application, "name"))) {
+    return true;
+  }
+  if (deployment && (pickStr(deployment, "uuid") || pickStr(deployment, "status"))) {
+    return hasApplicationUuid || Boolean(asRecord(root.application));
+  }
+  if (
+    (pickStr(root, "application_name") || pickStr(application, "name")) &&
+    (hasApplicationUuid || pickStr(application, "uuid")) &&
+    (pickStr(root, "deployment_url") || pickStr(root, "fqdn") || pickStr(deployment, "url"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function slimCoolifyDeployment(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "uuid", pickStr(rec, "uuid"));
+  assignDefined(out, "status", pickStr(rec, "status"));
+  assignDefined(out, "commit", pickStr(rec, "commit") ?? pickStr(rec, "commit_sha") ?? pickStr(rec, "sha"));
+  assignDefined(out, "url", pickStr(rec, "url") ?? pickStr(rec, "deployment_url"));
+  const message = pickStr(rec, "message") ?? pickStr(rec, "error") ?? pickStr(rec, "failure_reason");
+  if (message) out.message = message.length > 500 ? `${message.slice(0, 500)}…` : message;
+  return Object.keys(out).length ? out : undefined;
+}
+
+export function slimCoolifyPayload(payload: JsonValue): JsonValue {
+  const root = asRecord(payload);
+  if (!root) return payload;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "event", pickStr(root, "event"));
+  assignDefined(out, "success", pickBool(root, "success"));
+  const message = pickStr(root, "message") ?? pickStr(root, "error");
+  if (message) out.message = message.length > 500 ? `${message.slice(0, 500)}…` : message;
+  assignDefined(out, "application_name", pickStr(root, "application_name") ?? pickStr(asRecord(root.application), "name"));
+  assignDefined(out, "application_uuid", pickStr(root, "application_uuid") ?? pickStr(asRecord(root.application), "uuid"));
+  assignDefined(out, "deployment_uuid", pickStr(root, "deployment_uuid") ?? pickStr(asRecord(root.deployment), "uuid"));
+  assignDefined(out, "deployment_url", pickStr(root, "deployment_url") ?? pickStr(asRecord(root.deployment), "url"));
+  assignDefined(out, "fqdn", pickStr(root, "fqdn"));
+  assignDefined(out, "preview_fqdn", pickStr(root, "preview_fqdn"));
+  assignDefined(out, "project", pickStr(root, "project"));
+  assignDefined(out, "environment", pickStr(root, "environment"));
+  assignDefined(
+    out,
+    "commit",
+    pickStr(root, "commit") ??
+      pickStr(root, "commit_sha") ??
+      pickStr(root, "sha") ??
+      pickStr(asRecord(root.deployment), "commit"),
+  );
+  const deployment = slimCoolifyDeployment(root.deployment);
+  if (deployment) out.deployment = deployment;
+  return Object.keys(out).length ? out : payload;
+}
+
+const ASC_EVENT_SUFFIXES = [
+  "StateUpdated",
+  "AppVersionStateUpdated",
+  "ExternalBuildStateUpdated",
+  "VersionStateUpdated",
+];
+
+function isAscEventType(value: string | undefined): boolean {
+  if (!value) return false;
+  if (value.startsWith("build") || value.startsWith("appStore") || value.startsWith("app")) {
+    return ASC_EVENT_SUFFIXES.some((suffix) => value.endsWith(suffix));
+  }
+  return false;
+}
+
+export function isAscWebhookPayload(payload: JsonValue): boolean {
+  const root = asRecord(payload);
+  if (!root) return false;
+  const data = asRecord(root.data);
+  if (!data) return false;
+  const eventType = pickStr(data, "type");
+  if (!isAscEventType(eventType)) return false;
+  const attrs = asRecord(data.attributes);
+  const relationships = asRecord(data.relationships);
+  const instance = asRecord(relationships?.instance);
+  const instanceData = asRecord(instance?.data);
+  return Boolean(
+    attrs &&
+      (pickStr(attrs, "newState") ||
+        pickStr(attrs, "oldState") ||
+        pickStr(attrs, "newValue") ||
+        pickStr(attrs, "oldValue") ||
+        pickStr(attrs, "newExternalBuildState") ||
+        pickStr(attrs, "oldExternalBuildState")) &&
+      pickStr(instanceData, "type"),
+  );
+}
+
+function slimAscAttributes(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "oldState", pickStr(rec, "oldState") ?? pickStr(rec, "oldValue"));
+  assignDefined(out, "newState", pickStr(rec, "newState") ?? pickStr(rec, "newValue"));
+  assignDefined(
+    out,
+    "oldExternalBuildState",
+    pickStr(rec, "oldExternalBuildState"),
+  );
+  assignDefined(
+    out,
+    "newExternalBuildState",
+    pickStr(rec, "newExternalBuildState"),
+  );
+  assignDefined(out, "timestamp", pickStr(rec, "timestamp"));
+  assignDefined(out, "cfBundleShortVersionString", pickStr(rec, "cfBundleShortVersionString"));
+  assignDefined(out, "cfBundleVersion", pickStr(rec, "cfBundleVersion"));
+  assignDefined(out, "version", pickNum(rec, "version"));
+  return Object.keys(out).length ? out : undefined;
+}
+
+export function slimAscPayload(payload: JsonValue): JsonValue {
+  const root = asRecord(payload);
+  if (!root) return payload;
+  const data = asRecord(root.data);
+  if (!data) return payload;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "type", pickStr(data, "type"));
+  assignDefined(out, "id", pickStr(data, "id"));
+  assignDefined(out, "attributes", slimAscAttributes(data.attributes));
+  const relationships = asRecord(data.relationships);
+  const instance = asRecord(relationships?.instance);
+  const instanceData = asRecord(instance?.data);
+  if (instanceData) {
+    const slimInstance: Record<string, JsonValue> = {};
+    assignDefined(slimInstance, "type", pickStr(instanceData, "type"));
+    assignDefined(slimInstance, "id", pickStr(instanceData, "id"));
+    out.instance = slimInstance;
+  }
+  const included = Array.isArray(root.included) ? root.included : [];
+  const app = included.find((row) => pickStr(asRecord(row), "type") === "apps");
+  const appAttrs = asRecord(asRecord(app)?.attributes);
+  if (appAttrs) {
+    const slimApp: Record<string, JsonValue> = {};
+    assignDefined(slimApp, "name", pickStr(appAttrs, "name"));
+    assignDefined(slimApp, "bundleId", pickStr(appAttrs, "bundleId"));
+    if (Object.keys(slimApp).length) out.app = slimApp;
+  }
+  return Object.keys(out).length ? { data: out } : payload;
+}
+
+const GENERIC_MAX_DEPTH = 6;
+const GENERIC_MAX_KEYS = 48;
+const GENERIC_MAX_ARRAY = 20;
+const GENERIC_DROP_KEYS = new Set([
+  "html",
+  "body_html",
+  "attachments",
+  "screenshots",
+  "raw",
+  "headers",
+  "cookies",
+  "stacktrace",
+]);
+
+function shouldDropGenericKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  if (GENERIC_DROP_KEYS.has(normalized)) return true;
+  if (normalized.endsWith("_html") || normalized.endsWith("_raw")) return true;
+  return false;
+}
+
+function truncateGenericString(value: string): string {
+  if (value.length <= 2_000) return value;
+  if (looksLikeUrl(value)) return value.slice(0, 500);
+  return `${value.slice(0, 2_000)}…`;
+}
+
+function applyGenericPayloadBudget(value: JsonValue, depth = 0): JsonValue {
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "string") return truncateGenericString(value);
+    return value;
+  }
+  // Depth guard runs before descending into arrays or objects so deeply
+  // nested authenticated webhooks cannot exhaust the call stack.
+  if (depth >= GENERIC_MAX_DEPTH) {
+    return Array.isArray(value) ? "[nested array omitted]" : "[nested object omitted]";
+  }
+  if (Array.isArray(value)) {
+    const capped = value.slice(0, GENERIC_MAX_ARRAY).map((entry) => applyGenericPayloadBudget(entry, depth + 1));
+    if (value.length > GENERIC_MAX_ARRAY) capped.push(`…${value.length - GENERIC_MAX_ARRAY} more items omitted`);
+    return capped;
+  }
+  const rec = value as Record<string, JsonValue>;
+  const out: Record<string, JsonValue> = {};
+  let kept = 0;
+  for (const [key, entry] of Object.entries(rec)) {
+    if (shouldDropGenericKey(key)) continue;
+    if (kept >= GENERIC_MAX_KEYS) {
+      out._keys_omitted = Object.keys(rec).length - kept;
+      break;
+    }
+    out[key] = applyGenericPayloadBudget(entry, depth + 1);
+    kept += 1;
+  }
+  return out;
+}
+
+export function slimGenericPayload(payload: JsonValue): JsonValue {
+  return applyGenericPayloadBudget(payload);
+}
+
+/** Drop GitHub, Sentry, PagerDuty, Coolify, and ASC bloat; budget unknown JSON. */
 export function slimWebhookPayload(payload: JsonValue): JsonValue {
+  // Root JSON arrays never pass asRecord — budget them before provider detection
+  // so depth/item/string limits still apply to batch-shaped unknown webhooks.
+  if (Array.isArray(payload)) return slimGenericPayload(payload);
   const root = asRecord(payload);
   if (!root) return payload;
   if (isGithubWebhookPayload(root)) return slimGithubPayload(root);
   if (isPagerDutyWebhookPayload(root)) return slimPagerDutyPayload(root);
   if (isSentryWebhookPayload(root)) return slimSentryPayload(root);
-  return payload;
+  if (isCoolifyWebhookPayload(root)) return slimCoolifyPayload(root);
+  if (isAscWebhookPayload(root)) return slimAscPayload(root);
+  return slimGenericPayload(payload);
 }
 
 export function serializeWebhookPayload(payload: JsonValue): string {

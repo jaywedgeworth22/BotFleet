@@ -30,6 +30,9 @@ import type {
   RuntimeEventListener,
   SendTurnInput,
 } from "../contracts.ts";
+
+import { STATIC_CLAUDE_MODELS } from "../claude-models.ts";
+export { STATIC_CLAUDE_MODELS };
 import { computerProxyEnv } from "../container-computer.ts";
 import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { newEventId, newId } from "../contracts.ts";
@@ -104,12 +107,7 @@ export interface ClaudeConfig {
   disallowedTools?: string[];
 }
 
-// The static catalog lives in a dependency-free module so model-fallback.ts
-// can check built-in ids without importing the driver.
-import { STATIC_CLAUDE_MODELS } from "../claude-models.ts";
-export { STATIC_CLAUDE_MODELS };
-
-
+// model catalog ported from upstream packages/contracts/src/model.ts
 const CLAUDE_MODEL_ID = /^[a-z0-9][a-z0-9._:/-]*$/i;
 
 /** Rewrite a leftover API slug (`orcarouter/Qwen…`) to `host::model` when a

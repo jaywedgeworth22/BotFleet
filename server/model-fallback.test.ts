@@ -21,9 +21,9 @@ import {
   turnHitQuotaOrCap,
   turnQuotaOrCapEvidence,
   turnProducedAssistantOutput,
-  unattendedModelDowngrade,
   inheritedUnattended,
   type FallbackScanMessage,
+  unattendedModelDowngrade,
 } from "./model-fallback.ts";
 import { eligibleAutoFallbackChain, type AutoFallbackCandidate } from "./turn-safety.ts";
 
