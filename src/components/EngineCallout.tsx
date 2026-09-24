@@ -93,7 +93,7 @@ function EngineCalloutDisclosure(props: {
         />
       </button>
       {open && (
-        <div id={detailId} className="mt-1.5">
+        <div id={detailId} className="mt-1.5 max-h-64 overflow-y-auto">
           <p className="mb-1.5 text-ink">{entry.whyThisEngine.headline}</p>
           {entry.whyThisEngine.prose.map((line, index) => (
             <p key={index} className="mb-1 last:mb-0">
