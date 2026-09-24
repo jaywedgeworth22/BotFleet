@@ -369,8 +369,16 @@ export function shouldIgnoreWebhookEvent(
       const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
       if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) {
         if (lvl !== "error") {
+          const positiveHandling = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)`;
+          const inclusionPhrase = `(?:in\\s+scope|tracked|monitored|included|allowed|handled|processed|investigated|triaged|resolved)`;
           const errorOnlyPattern = new RegExp(
-            `\\b(?:(?:only|exclusively)\\s+(?:(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|focus(?:\\s+on)?)\\s+)?errors?(?:\\s+events?)?|errors?(?:\\s+events?)?\\s+(?:only|exclusively)|only\\s+errors?\\s+are\\s+in\\s+scope)\\b`,
+            `(?:` +
+              `\\b(?:only|exclusively)\\s+${positiveHandling}\\s+errors?(?:\\s+events?)?\\b` +
+              `|\\b${positiveHandling}\\s+errors?(?:\\s+events?)?\\s+(?:only|exclusively)\\b` +
+              `|\\b(?:only|exclusively)\\s+errors?(?:\\s+events?)?\\s+(?:are\\s+)?${inclusionPhrase}\\b` +
+              `|\\berrors?(?:\\s+events?)?\\s+(?:only|exclusively)\\s+(?:are\\s+)?${inclusionPhrase}\\b` +
+              `|\\b(?:(?:only|exclusively)\\s+errors?(?:\\s+events?)?|errors?(?:\\s+events?)?\\s+(?:only|exclusively))\\b(?!\\s*(?:(?:are|is|should(?:\\s+be)?|were|was|get|gets|must(?:\\s+be)?)\\s+)?(?:${exclusionVerb}|to\\s+be\\s+(?:ignored|dropped|excluded|skipped)))(?:\\s*[.;\\n]|\\s*$)` +
+            `)`,
             "i",
           );
           if (errorOnlyPattern.test(prompt) || errorOnlyPattern.test(name)) {

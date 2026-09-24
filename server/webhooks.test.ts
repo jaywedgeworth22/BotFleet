@@ -1117,6 +1117,29 @@ describe("WebhookManager", () => {
       }
     }
 
+    // 48. Excluded errors ("Only errors should be ignored", "Only errors are out of scope")
+    // do not drop lower-level events like warnings or debug deliveries.
+    const errorExclusionCases = [
+      "Only errors should be ignored.",
+      "Only errors are out of scope.",
+    ];
+    for (const prompt of errorExclusionCases) {
+      const { webhook: eeHook, secret: eeSecret } = h.manager.create({
+        name: `ErrorExclusion ${prompt}`,
+        prompt,
+        botId: "maus-1",
+      });
+      const eeWarningResult = h.manager.receive(eeHook.endpointId, eeSecret, clauseWarning);
+      expect(eeWarningResult).toMatchObject({ duplicate: false });
+      expect(eeWarningResult.runId).toBeDefined();
+      expect(eeWarningResult.ignored).toBeUndefined();
+
+      const eeDebugResult = h.manager.receive(eeHook.endpointId, eeSecret, clauseDebug);
+      expect(eeDebugResult).toMatchObject({ duplicate: false });
+      expect(eeDebugResult.runId).toBeDefined();
+      expect(eeDebugResult.ignored).toBeUndefined();
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
