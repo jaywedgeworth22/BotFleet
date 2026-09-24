@@ -6,6 +6,7 @@ import {
   hostAwareAllowedComputers,
   matchesLocalAutoConsent,
   requiresLocalAutoConsent,
+  type ComputerProviderId,
   type LocalAutoConsentCapability,
 } from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -116,7 +117,12 @@ import {
   type TurnComputerDeps,
   type TurnComputerMounts,
 } from "./computer-grants.ts";
-import { providerReloadKeys, revokedComputerProviders, turnUsesComputerProvider } from "./config-reload-keys.ts";
+import {
+  computerProviderBlocked,
+  providerReloadKeys,
+  revokedComputerProviders,
+  turnUsesComputerProvider,
+} from "./config-reload-keys.ts";
 import { computerReach } from "./computer-capability.ts";
 import {
   ensureDirs,
@@ -760,12 +766,16 @@ function botLocalAutoCapability(bot?: ComputerGrantSubject | null): LocalAutoCon
 }
 
 /** The destinations a bot holds right now, in either spelling. */
-/** True when Computer settings turned the Local VM provider off.  An install
- * with no `computerProviders` yet defers to the legacy allowlist, same as
- * the cloud lifecycle routes and `server/computer-grants.ts`. */
+/** True when a Computer provider is closed to new use: its toggle is off, or
+ * the legacy `allowedComputers` allowlist excludes its destination.  Same
+ * answer turn mounting gives (`server/computer-grants.ts`), so a lifecycle
+ * route cannot start what a turn would refuse to mount. */
+function computerProviderOff(config: typeof cfg, id: ComputerProviderId): boolean {
+  return computerProviderBlocked(config.botDefaults?.computerProviders, allowedBotComputers(config), id);
+}
+
 function localVmProviderOff(config: typeof cfg): boolean {
-  const providers = config.botDefaults?.computerProviders;
-  return Boolean(providers) && providers?.localVm !== true;
+  return computerProviderOff(config, "localVm");
 }
 
 function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
@@ -10993,13 +11003,13 @@ const server = createServer(async (req, res) => {
       // it here too, not just in turns: opening the Computer panel must not
       // provision, wake or join a billed Box (or a VPS) the operator turned
       // off.  Sleep and remove stay open, because they only wind a computer
-      // down.  An install with no `computerProviders` yet defers to the
-      // legacy allowlist, same as `server/computer-grants.ts`.
+      // down.  The legacy allowlist counts too, same as
+      // `server/computer-grants.ts`: an older client that removes "cloud"
+      // from `allowedComputers` closes both cloud backends here.
       if (m[2] !== "sleep" && m[2] !== "remove") {
         const backend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
         const providerId = backend === "vps" ? "selfHostedVps" : "asciiBox";
-        const providers = cfg.botDefaults?.computerProviders;
-        if (providers && providers[providerId] !== true) {
+        if (computerProviderOff(cfg, providerId)) {
           return json(res, 409, {
             error: `${COMPUTER_PROVIDER_LABEL[providerId]} is turned off in Computer settings`,
           });
