@@ -480,10 +480,19 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
   if (event && (pickStr(event, "event_type")?.startsWith("incident.") || pickStr(event, "resource_type") === "incident")) {
     return true;
   }
-  if (Array.isArray(root.messages)) {
+  if (Array.isArray(root.messages) && root.messages.length > 0) {
     return root.messages.some((msg) => {
       const rec = asRecord(msg);
-      return Boolean(rec && (pickStr(rec, "event")?.startsWith("incident.") || asRecord(rec.incident)));
+      if (!rec) return false;
+      const eventName = pickStr(rec, "event") ?? pickStr(rec, "type");
+      const inc = asRecord(rec.incident);
+      if (eventName?.startsWith("incident.") && inc) {
+        return true;
+      }
+      if (inc && typeof inc.html_url === "string" && inc.html_url.includes("pagerduty.com")) {
+        return true;
+      }
+      return false;
     });
   }
   return false;

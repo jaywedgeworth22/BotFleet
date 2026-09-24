@@ -386,5 +386,78 @@ describe("WebhookManager", () => {
       outcome: "ignored",
       reason: expect.stringContaining("is marked out of scope by trigger instructions"),
     });
+
+    // 7. Clause-scoped exclusion: "Ignore debug events; investigate warning events" should only ignore debug
+    const { webhook: clauseHook, secret: clauseSecret } = h.manager.create({
+      name: "Sentry Triage",
+      prompt: "Ignore debug events; investigate warning events. Fix all crashes.",
+      botId: "maus-1",
+    });
+    const clauseWarning = {
+      payload: {
+        action: "unresolved",
+        data: {
+          issue: {
+            id: "103",
+            shortId: "ST-4",
+            title: "Warning that must be investigated",
+            level: "warning",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    };
+    const clauseWarningResult = h.manager.receive(clauseHook.endpointId, clauseSecret, clauseWarning);
+    expect(clauseWarningResult).toMatchObject({ duplicate: false });
+    expect(clauseWarningResult.runId).toBeDefined();
+
+    const clauseDebug = {
+      payload: {
+        action: "unresolved",
+        data: {
+          issue: {
+            id: "104",
+            shortId: "ST-5",
+            title: "Debug log to ignore",
+            level: "debug",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    };
+    const clauseDebugResult = h.manager.receive(clauseHook.endpointId, clauseSecret, clauseDebug);
+    expect(clauseDebugResult).toMatchObject({ ignored: true });
+
+    // 8. Terminal check run created with a conclusion should NOT be ignored by compile gates
+    const completedCheckEvent = {
+      eventName: "check_run",
+      payload: {
+        action: "created",
+        check_run: {
+          id: 54321,
+          status: "completed",
+          conclusion: "failure",
+        },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const completedCheckResult = h.manager.receive(compileHook.endpointId, compileSecret, completedCheckEvent);
+    expect(completedCheckResult).toMatchObject({ duplicate: false });
+    expect(completedCheckResult.runId).toBeDefined();
+
+    // 9. Active check run created without completion should be ignored
+    const activeCheckEvent = {
+      eventName: "check_run",
+      payload: {
+        action: "created",
+        check_run: {
+          id: 54322,
+          status: "in_progress",
+        },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const activeCheckResult = h.manager.receive(compileHook.endpointId, compileSecret, activeCheckEvent);
+    expect(activeCheckResult).toMatchObject({ ignored: true });
   });
 });

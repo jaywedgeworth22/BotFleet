@@ -339,4 +339,13 @@ describe("slimWebhookPayload", () => {
     expect((messages[1].incident as Record<string, JsonValue>).title).toBe("Second incident in batch");
     expect(JSON.stringify(slim)).not.toContain("verbose team");
   });
+
+  it("does not classify unrelated payloads with an incident property as PagerDuty without an event marker", () => {
+    const generic = {
+      messages: [{ incident: { id: "custom-id" }, body: "important body text" }],
+    };
+    expect(isPagerDutyWebhookPayload(generic)).toBe(false);
+    expect(slimWebhookPayload(generic)).toEqual(generic);
+    expect(serializeWebhookPayload(generic)).toContain("important body text");
+  });
 });

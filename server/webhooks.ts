@@ -335,9 +335,24 @@ export function shouldIgnoreWebhookEvent(
     const action = pickStr(root, "action");
 
     const isLevelExcluded = (lvl: string): boolean => {
-      const filterPattern = new RegExp(`(?:out of scope|stay silent|ignore|drop)[^.]*?\\b${lvl}\\b`, "i");
-      if (!filterPattern.test(prompt)) return false;
-      const negationPattern = new RegExp(`(?:do\\s+not|don't|never|not)\\s+(?:out of scope|stay silent|ignore|drop)[^.]*?\\b${lvl}\\b`, "i");
+      // Find exclusion phrases, stopping at clause boundaries (;, \n, .)
+      const clausePattern = new RegExp(
+        `(?:out of scope|stay silent|ignore|drop)[^.;\\n]*?\\b${lvl}\\b`,
+        "i",
+      );
+      if (!clausePattern.test(prompt)) return false;
+
+      // Ensure no contrasting action verb (investigate, act, handle, fix, resolve) intervenes between the exclusion and the level
+      const interveningPattern = new RegExp(
+        `(?:out of scope|stay silent|ignore|drop)[^.;\\n]*?\\b(?:investigate|act|handle|fix|resolve|watch)\\b[^.;\\n]*?\\b${lvl}\\b`,
+        "i",
+      );
+      if (interveningPattern.test(prompt)) return false;
+
+      const negationPattern = new RegExp(
+        `(?:do\\s+not|don't|never|not)\\s+(?:out of scope|stay silent|ignore|drop)[^.;\\n]*?\\b${lvl}\\b`,
+        "i",
+      );
       if (negationPattern.test(prompt)) return false;
       return true;
     };
@@ -353,9 +368,16 @@ export function shouldIgnoreWebhookEvent(
 
     if (action === "assigned" || action === "unassigned") {
       const isAssignmentExcluded = (): boolean => {
-        const filterPattern = /(?:out of scope|stay silent|ignore|drop)[^.]*?\b(?:assign(?:ed|ment|ee)?|ownership)\b/i;
-        if (!filterPattern.test(prompt)) return false;
-        const negationPattern = /(?:do\\s+not|don't|never|not)\\s+(?:out of scope|stay silent|ignore|drop)[^.]*?\b(?:assign(?:ed|ment|ee)?|ownership)\b/i;
+        const clausePattern =
+          /(?:out of scope|stay silent|ignore|drop)[^.;\n]*?\b(?:assign(?:ed|ment|ee)?|ownership)\b/i;
+        if (!clausePattern.test(prompt)) return false;
+
+        const interveningPattern =
+          /(?:out of scope|stay silent|ignore|drop)[^.;\n]*?\b(?:investigate|act|handle|fix|resolve|watch)\b[^.;\n]*?\b(?:assign(?:ed|ment|ee)?|ownership)\b/i;
+        if (interveningPattern.test(prompt)) return false;
+
+        const negationPattern =
+          /(?:do\s+not|don't|never|not)\s+(?:out of scope|stay silent|ignore|drop)[^.;\n]*?\b(?:assign(?:ed|ment|ee)?|ownership)\b/i;
         return !negationPattern.test(prompt);
       };
 
@@ -395,11 +417,14 @@ export function shouldIgnoreWebhookEvent(
     if (eventName === "workflow_run") {
       const workflowRun = asRecord(root?.workflow_run);
       const runStatus = pickStr(workflowRun, "status");
+      const runConclusion = pickStr(workflowRun, "conclusion");
+      const isTerminal = runStatus === "completed" && Boolean(runConclusion);
       if (
-        action === "requested" ||
-        action === "in_progress" ||
-        runStatus === "queued" ||
-        runStatus === "in_progress"
+        !isTerminal &&
+        (action === "requested" ||
+          action === "in_progress" ||
+          runStatus === "queued" ||
+          runStatus === "in_progress")
       ) {
         return {
           ignore: true,
@@ -410,12 +435,14 @@ export function shouldIgnoreWebhookEvent(
       const checkRun = asRecord(root?.check_run);
       const checkStatus = pickStr(checkRun, "status");
       const checkConclusion = pickStr(checkRun, "conclusion");
+      const isTerminal = checkStatus === "completed" && Boolean(checkConclusion);
       if (
-        action === "created" ||
-        action === "rerequested" ||
-        checkStatus === "queued" ||
-        checkStatus === "in_progress" ||
-        (action !== "completed" && !checkConclusion)
+        !isTerminal &&
+        (action === "created" ||
+          action === "rerequested" ||
+          action === "requested" ||
+          checkStatus === "queued" ||
+          checkStatus === "in_progress")
       ) {
         return {
           ignore: true,
