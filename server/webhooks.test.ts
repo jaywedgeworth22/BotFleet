@@ -1344,6 +1344,30 @@ describe("WebhookManager", () => {
     const handleOnlyWarningResult = h.manager.receive(handleOnlyHook.endpointId, handleOnlySecret, clauseWarning);
     expect(handleOnlyWarningResult).toMatchObject({ ignored: true });
 
+    // 64. Bare negative level scopes ("No warning events.", "No debug events.")
+    // ignore matching deliveries.
+    const { webhook: bareNoWarningHook, secret: bareNoWarningSecret } = h.manager.create({
+      name: "No Warning Handler",
+      prompt: "No warning events.",
+      botId: "maus-1",
+    });
+    const bareNoWarningResult = h.manager.receive(bareNoWarningHook.endpointId, bareNoWarningSecret, clauseWarning);
+    expect(bareNoWarningResult).toMatchObject({ ignored: true });
+
+    const bareNoErrorResult = h.manager.receive(bareNoWarningHook.endpointId, bareNoWarningSecret, clauseError);
+    expect(bareNoErrorResult).toMatchObject({ duplicate: false });
+    expect(bareNoErrorResult.runId).toBeDefined();
+
+    // 65. "No warning events are out of scope." preserves warning deliveries.
+    const { webhook: noWarningNotOutOfScopeHook, secret: noWarningNotOutOfScopeSecret } = h.manager.create({
+      name: "Warning In Scope",
+      prompt: "No warning events are out of scope.",
+      botId: "maus-1",
+    });
+    const noWarningNotOutOfScopeResult = h.manager.receive(noWarningNotOutOfScopeHook.endpointId, noWarningNotOutOfScopeSecret, clauseWarning);
+    expect(noWarningNotOutOfScopeResult).toMatchObject({ duplicate: false });
+    expect(noWarningNotOutOfScopeResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

@@ -493,6 +493,10 @@ function slimPagerDutyIncident(value: JsonValue | undefined): JsonValue | undefi
   assignDefined(out, "id", pickStr(rec, "id"));
   assignDefined(out, "incident_number", pickNum(rec, "incident_number") ?? pickNum(rec, "number"));
   assignDefined(out, "title", pickStr(rec, "title") ?? pickStr(rec, "summary"));
+  const description = pickStr(rec, "description");
+  if (description) {
+    out.description = description.length > 500 ? `${description.slice(0, 500)}…` : description;
+  }
   assignDefined(out, "status", pickStr(rec, "status"));
   assignDefined(out, "urgency", pickStr(rec, "urgency"));
   assignDefined(out, "html_url", pickStr(rec, "html_url"));

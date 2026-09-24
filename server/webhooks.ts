@@ -371,13 +371,19 @@ export function shouldIgnoreWebhookEvent(
           `|\\b(?:except(?:\\s+for)?|aside\\s+from|other\\s+than|excluding|without)\\b(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${lvl}s?\\b(?:(?!${exclusionVerb})[^.;\\n])*?${contrastingVerb})`,
         "i",
       );
+      const bareNegativePattern = new RegExp(
+        `(?:^|[.;\\n]|${contrastingVerb}[^.;\\n]*?)\\s*\\b(?:no|not|neither)\\s+(?:any\\s+)?\\b${lvl}s?(?:\\s+events?)?\\b`,
+        "i",
+      );
       const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
       const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
       const hasLevelExclusion =
         verbFirstPattern.test(prompt) ||
         targetFirstPattern.test(prompt) ||
         positiveScopeException.test(prompt) ||
-        positiveScopeException.test(name);
+        positiveScopeException.test(name) ||
+        bareNegativePattern.test(prompt) ||
+        bareNegativePattern.test(name);
       if (!hasLevelExclusion) {
         if (lvl !== "error") {
           const nonErrorTarget = `\\bnon-?errors?(?:\\s+events?)?\\b`;
@@ -472,7 +478,7 @@ export function shouldIgnoreWebhookEvent(
           `|${negativeWord}\\s+[^.;\\n]*?\\b${lvl}s?\\b[^.;\\n]*?${exclusionVerb})`,
         "i",
       );
-      if (negationPattern.test(prompt)) return false;
+      if (negationPattern.test(prompt) || negationPattern.test(name)) return false;
 
       // A conditional carve-out ("ignore warning events unless they occur
       // in production", "except in production", "only in staging", "only if from staging") qualifies

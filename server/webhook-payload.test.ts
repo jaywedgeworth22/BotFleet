@@ -775,6 +775,51 @@ describe("slimWebhookPayload", () => {
       name: "OnCall Hero",
     });
   });
+
+  it("preserves bounded incident description in slimmed PagerDuty payloads", () => {
+    const pdIncidentWithDesc = {
+      event: {
+        event_type: "incident.trigger",
+        resource_type: "incident",
+        data: {
+          id: "PD-DESC-1",
+          type: "incident",
+          title: "Alert",
+          description: "Database connection pool exhausted on prod-db-01 causing HTTP 500 errors across api-gateway.",
+          status: "triggered",
+          urgency: "high",
+          html_url: "https://my-team.pagerduty.com/incidents/PD-DESC-1",
+        },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(pdIncidentWithDesc)).toBe(true);
+    const slim = slimWebhookPayload(pdIncidentWithDesc) as Record<string, JsonValue>;
+    const incident = slim.incident as Record<string, JsonValue>;
+    expect(incident.title).toBe("Alert");
+    expect(incident.description).toBe(
+      "Database connection pool exhausted on prod-db-01 causing HTTP 500 errors across api-gateway.",
+    );
+
+    const pdLongDesc = {
+      event: {
+        event_type: "incident.trigger",
+        resource_type: "incident",
+        data: {
+          id: "PD-DESC-2",
+          type: "incident",
+          title: "Alert",
+          description: "d".repeat(600),
+          status: "triggered",
+          html_url: "https://my-team.pagerduty.com/incidents/PD-DESC-2",
+        },
+      },
+    };
+    const slimLong = slimWebhookPayload(pdLongDesc) as Record<string, JsonValue>;
+    const incLong = slimLong.incident as Record<string, JsonValue>;
+    expect(typeof incLong.description).toBe("string");
+    expect((incLong.description as string).length).toBe(501); // 500 + '…'
+    expect((incLong.description as string).endsWith("…")).toBe(true);
+  });
 });
 
 
