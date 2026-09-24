@@ -250,6 +250,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
+import { serializedPreview } from "./serialized-preview.ts";
 import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
@@ -3733,14 +3734,18 @@ const agentRoutine = (
   // back to the model, so scrub the complete value before taking its preview.
   const safeInstructions = redactSecretsInText(routine.prompt);
   const safeName = redactSecretsInText(routine.name);
+  // Bound the preview by its serialized UTF-8 size, not UTF-16 units, so CJK
+  // or control-character instructions cannot push 100 previews past the list
+  // budget, and an emoji is never split at the cut.
+  const preview = includeInstructions ? undefined : serializedPreview(safeInstructions, 160);
   return {
     id: routine.id,
     name: safeName,
     ...(includeInstructions
       ? { instructions: safeInstructions }
       : {
-          instructionsPreview: safeInstructions.slice(0, 160),
-          instructionsPreviewTruncated: safeInstructions.length > 160,
+          instructionsPreview: preview!.preview,
+          instructionsPreviewTruncated: preview!.truncated,
         }),
     enabled: routine.enabled,
     runOn: routine.runOn,
