@@ -1066,7 +1066,7 @@ export function ComputerPanel({
                 // label for both hides which one is about to happen.
                 ["cloud", cloudDestinationLabel(cloudBackend)],
                 ["vm", "Local VM"],
-                ["local", "This Computer"],
+                ["local", typeof window !== "undefined" && (window.ogb?.platform === "darwin" || (typeof navigator !== "undefined" && navigator.userAgent.includes("Mac"))) ? "This Mac" : "This Computer"],
                 ["off", "Off"],
               ] as const
             ).map(([mode, label], i) => (

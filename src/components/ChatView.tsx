@@ -388,14 +388,20 @@ function Bubble({
             is a logo only; the model name still lives in its tooltip. */}
         <div className="flex items-center gap-1.5">
           {message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
-          {bot && bot.modelSelection && (
-            <span
-              className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-              title={bot.modelSelection.model}
-            >
-              <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={16} />
-            </span>
-          )}
+          {bot && bot.modelSelection && (() => {
+            const instance = state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId);
+            const modelOption = instance?.models?.options?.find((o: any) => o.id === bot.modelSelection.model);
+            const modelName = modelOption?.label || bot.modelSelection.model;
+            const title = instance ? `${modelName} (${instance.displayName || instance.driverKind})` : bot.modelSelection.model;
+            return (
+              <span
+                className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                title={title}
+              >
+                <ProviderMark driverKind={instance?.driverKind ?? "openai"} model={bot.modelSelection.model} size={16} />
+              </span>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -1489,7 +1495,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             lastBotTextId={lastBotTextId}
             emergingId={popping?.id}
             canRetryLast={!bot.busy && Boolean(lastUserMessage)}
-            engine={state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId)}
+            engine={state.instances.find((i) => i.instanceId === (bot.activeModelSelection ?? bot.modelSelection).instanceId)}
             onStartEdit={startEdit}
             onCancelEdit={cancelEdit}
             onSubmitEdit={submitEdit}
@@ -1529,7 +1535,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             startedAt={bot.activityStartedAt}
             label={activityLabel}
             answering={popping !== null || Boolean(streaming)}
-            modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
+            modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} model={presenceModel.model} size={14} /> : undefined}
             modelName={presenceModel?.name}
           >
             {/* Live streaming text: shown while the driver is still

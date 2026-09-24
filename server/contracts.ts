@@ -551,6 +551,10 @@ export interface ModelCatalog {
      * the model-facing rebuild (server/context-rebuild.ts). Unknown falls
      * back to a pattern table over the model id, then a conservative default. */
     contextWindow?: number;
+    /** Effort levels this specific model supports, if any.
+     * When defined, only models with non-empty effortLevels support effort. */
+    effortLevels?: readonly EffortLevel[];
+    supportsEffort?: boolean;
   }>;
 }
 

@@ -237,6 +237,8 @@ export interface Task {
   /** Optional engine for this conversation.  Absent means the bot's own
    * modelSelection.  Used in Projects mode so a thread is not a named bot. */
   modelSelection?: ModelSelection;
+  /** Active engine actually in use (including fallback rollover). */
+  activeModelSelection?: ModelSelection;
   /** Stable webhook/routine identity so a re-fire appends here. */
   automationKey?: string;
 }
@@ -281,6 +283,8 @@ export interface Bot {
   /** what the bot is doing, as the harness sees it; busy is derived from it */
   activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead";
   modelSelection: ModelSelection;
+  /** Active engine actually in use (including fallback rollover). */
+  activeModelSelection?: ModelSelection;
   /** Where this bot's computer runs; unset = auto (cloud box if one exists, else local). */
   computers?: Array<"cloud" | "vm" | "local" | "off">;
   /** Which cloud computer backs `computer: "cloud"`; absent means Box. */
@@ -628,7 +632,17 @@ export interface InstanceInfo {
       };
     };
   };
-  models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean }> };
+  models: {
+    default: string;
+    options: Array<{
+      id: string;
+      label: string;
+      custom?: boolean;
+      loaded?: boolean;
+      effortLevels?: readonly EffortLevel[];
+      supportsEffort?: boolean;
+    }>;
+  };
   capabilities?: {
     computerMcp?: boolean;
     agentsMcp?: boolean;

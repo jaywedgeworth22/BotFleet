@@ -77,11 +77,16 @@ struct ChatView: View {
     /// matching `task.modelSelection ?? bot.modelSelection` on the server —
     /// then joins through the cached instanceId -> driverKind map on
     /// `Session` rather than parsing `instanceId`, which is operator-named
-    /// and not reliably prefixed by driver kind.
-    private var currentDriverKind: String? {
+    private var currentModelSelection: ModelSelection? {
         guard case let .bot(bot) = current else { return nil }
-        let selection = bot.tasks?.first(where: { $0.threadId == bot.threadId })?.modelSelection
+        let currentTask = bot.tasks?.first(where: { $0.threadId == bot.threadId })
+        return currentTask?.activeModelSelection
+            ?? currentTask?.modelSelection
             ?? bot.modelSelection
+    }
+
+    private var currentDriverKind: String? {
+        guard let selection = currentModelSelection else { return nil }
         return session.instanceDriverKinds[selection.instanceId]
     }
 
@@ -90,7 +95,7 @@ struct ChatView: View {
     /// named here or it would become silent chrome.
     private var headerProfileAccessibilityLabel: String {
         if let currentDriverKind {
-            return "Open \(current.name) profile, \(ProviderMarkView.displayName(for: currentDriverKind))"
+            return "Open \(current.name) profile, \(ProviderMarkView.displayName(for: currentDriverKind, model: currentModelSelection?.model))"
         }
         return "Open \(current.name) profile"
     }
@@ -376,7 +381,7 @@ struct ChatView: View {
                         )
                         .overlay(alignment: .bottomTrailing) {
                             if let currentDriverKind {
-                                ProviderMarkView(driverKind: currentDriverKind, size: 15)
+                                ProviderMarkView(driverKind: currentDriverKind, model: currentModelSelection?.model, size: 15)
                                     .offset(x: 2, y: 2)
                             }
                         }

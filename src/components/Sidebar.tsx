@@ -1562,7 +1562,7 @@ function BotContextMenu({
           () => dispatch({ type: "updateBot", botId: bot.id, patch: { chiefOfStaff: !bot.chiefOfStaff } }),
           {
             disabled: !bot.chiefOfStaff && !canCoordinate,
-            hint: !bot.chiefOfStaff && !canCoordinate ? "Choose a Claude or ACP engine first" : undefined,
+            hint: !bot.chiefOfStaff && !canCoordinate ? "Choose an engine with coordination first" : undefined,
           },
         ),
         item(<FolderPlus size={16} className="text-ink-secondary" />, "Move to Section", () => {
@@ -1670,11 +1670,15 @@ function BotListItem({
               inputClassName="w-full rounded bg-inset px-1 py-0.5 text-[15px] font-semibold"
             />
             {(() => {
-              const instance = state.instances.find((entry) => entry.instanceId === bot.modelSelection.instanceId);
+              const currentSelection = bot.activeModelSelection ?? bot.modelSelection;
+              const instance = state.instances.find((entry) => entry.instanceId === currentSelection.instanceId);
               if (!instance) return null;
+              const modelOption = instance.models.options.find((o) => o.id === currentSelection.model);
+              const modelName = modelOption?.label || currentSelection.model;
+              const title = `${modelName} (${instance.displayName || instance.driverKind})`;
               return (
-                <span className="ml-2 shrink-0" title={instance.displayName || instance.driverKind}>
-                  <ProviderMark driverKind={instance.driverKind} size={14} />
+                <span className="ml-2 shrink-0" title={title}>
+                  <ProviderMark driverKind={instance.driverKind} model={currentSelection.model} size={14} />
                 </span>
               );
             })()}

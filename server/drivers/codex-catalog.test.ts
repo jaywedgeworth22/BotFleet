@@ -61,12 +61,12 @@ describe("readCodexModelCatalog", () => {
     expect(STATIC_CODEX_MODELS).toEqual({
       default: "gpt-5.6-luna",
       options: [
-        { id: "gpt-6-astra", label: "GPT-6 Astra" },
-        { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-        { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-        { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-        { id: "gpt-5.5", label: "GPT-5.5" },
-        { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
+        { id: "gpt-6-astra", label: "GPT-6 Astra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-5.5", label: "GPT-5.5", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
       ],
     });
   });
