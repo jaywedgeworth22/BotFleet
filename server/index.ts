@@ -660,7 +660,7 @@ async function defaultSelection(excludeInstanceId?: string) {
   // A bot being created can ride a probe taken moments ago; the engine rail
   // still refreshes on demand.
   const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
-  const available = described.filter(
+  const candidates = described.filter(
     (d) => d.snapshot.state === "available" && d.instanceId !== excludeInstanceId,
   );
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
@@ -668,8 +668,28 @@ async function defaultSelection(excludeInstanceId?: string) {
   // spawn ENOENT — the single worst first-run experience, and the one every
   // user with no CLIs used to get. An empty selection is honest: the UI shows
   // the setup path instead of a bot that cannot answer.
-  const pick = available.find((d) => d.driverKind === "antigravityAgent") ?? available.find((d) => d.driverKind === "grokAgent") ?? available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
-  return { instanceId: pick?.instanceId ?? "", model: pick?.models.default ?? "" };
+  const ordered = [
+    ...candidates.filter((d) => d.driverKind === "antigravityAgent"),
+    ...candidates.filter((d) => d.driverKind === "grokAgent"),
+    ...candidates.filter((d) => d.driverKind === "claudeAgent"),
+    ...candidates.filter(
+      (d) => d.driverKind !== "antigravityAgent" && d.driverKind !== "grokAgent" && d.driverKind !== "claudeAgent",
+    ),
+  ];
+
+  for (const pick of ordered) {
+    const liveInstance = registry.get(pick.instanceId);
+    if (!liveInstance || liveInstance.enabled === false) continue;
+    try {
+      const snap = await liveInstance.snapshot();
+      if (snap.state === "available") {
+        return { instanceId: pick.instanceId, model: pick.models.default };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return { instanceId: "", model: "" };
 }
 
 function checkedModelSelection(
@@ -3103,8 +3123,32 @@ async function startTurn(
   if (effort && !allowedEfforts.includes(effort)) {
     if (!allowedEfforts.length) {
       // The model does not support effort at all (legacy stored configuration).
-      // Drop it and clear it from the bot so the turn can proceed without bricking.
-      store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, effort: undefined } });
+      // Drop it and clear it from the owning selection (task, fallback, or bot)
+      // so the turn can proceed without bricking or clobbering an unrelated primary effort.
+      // Strip it from every entry of the owning chain that names this
+      // instance+model — primary and fallbacks alike.  A chain can list the
+      // same model twice (A -> B -> A), and matching only the first hit would
+      // clear the wrong entry and leave the stale effort on the one selected.
+      const matches = (s: ModelSelection) => s.instanceId === selection.instanceId && s.model === selection.model;
+      const stripChain = (chain: ModelSelection): ModelSelection | null => {
+        const primaryHit = matches(chain) && chain.effort !== undefined;
+        const fallbackHit = chain.fallbacks?.some((f) => matches(f) && f.effort !== undefined) ?? false;
+        if (!primaryHit && !fallbackHit) return null;
+        return {
+          ...chain,
+          ...(primaryHit ? { effort: undefined } : {}),
+          ...(fallbackHit
+            ? { fallbacks: chain.fallbacks!.map((f) => (matches(f) ? { ...f, effort: undefined } : f)) }
+            : {}),
+        };
+      };
+      if (task.modelSelection) {
+        const next = stripChain(task.modelSelection);
+        if (next) store.patchTask(bot.id, threadId, { modelSelection: next });
+      } else {
+        const next = stripChain(bot.modelSelection);
+        if (next) store.patchBot(bot.id, { modelSelection: next });
+      }
       effort = undefined;
     } else {
       throw Object.assign(
@@ -10334,6 +10378,75 @@ const server = createServer(async (req, res) => {
       saveConfig({ conversationMode: cfg.conversationMode });
       const mergeThreads = body.mergeThreads === true && cfg.conversationMode === "simple";
       if (mergeThreads) store.mergeAllExtraThreads();
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
+    // Feature toggles are not credentials, so the phone gets a narrow route
+    // rather than write access to /api/config (which carries API keys).
+    if (method === "PATCH" && path === "/api/features") {
+      const body = await readBody(req);
+      const featurePatch = {
+        ...(typeof body.showToolCalls === "boolean" ? { showToolCalls: body.showToolCalls } : {}),
+        ...(typeof body.summarizeToolCalls === "boolean" ? { summarizeToolCalls: body.summarizeToolCalls } : {}),
+      };
+      if (Object.keys(featurePatch).length === 0) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      const patch = parseConfigPatch({ features: featurePatch });
+      if (patch.features === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.features = { ...cfg.features, ...patch.features };
+      saveConfig({ features: cfg.features });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
+    // Channel turn length is a display preference, not a credential.
+    if (method === "PATCH" && path === "/api/room-turn-timeout") {
+      const body = await readBody(req);
+      if (
+        typeof body.turnTimeoutMinutes !== "number" ||
+        !Number.isInteger(body.turnTimeoutMinutes)
+      ) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      let patch;
+      try {
+        patch = parseConfigPatch({
+          rooms: { turnTimeoutMinutes: body.turnTimeoutMinutes },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid configuration";
+        return json(res, 400, { error: message });
+      }
+      if (patch.rooms?.turnTimeoutMinutes === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.rooms = { ...cfg.rooms, turnTimeoutMinutes: patch.rooms.turnTimeoutMinutes };
+      saveConfig({ rooms: cfg.rooms });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
+    // Profile name + email only. Skins stay on the Mac.
+    if (method === "PATCH" && path === "/api/profile") {
+      const body = await readBody(req);
+      const patch = parseConfigPatch({
+        profile: {
+          name: typeof body.name === "string" ? body.name : undefined,
+          email: typeof body.email === "string" ? body.email : undefined,
+        },
+      });
+      if (patch.profile === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.profile = {
+        name: patch.profile.name ?? cfg.profile?.name ?? "",
+        email: patch.profile.email ?? cfg.profile?.email ?? "",
+      };
+      saveConfig({ profile: cfg.profile });
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);

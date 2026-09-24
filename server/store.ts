@@ -1572,6 +1572,22 @@ export class Store {
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
+    // Only a real engine/model switch invalidates inheriting tasks' last-turn
+    // selection.  Effort- or fallback-only edits (e.g. startTurn stripping an
+    // unsupported effort) keep the same primary model and must not clear it.
+    const modelSwitched =
+      patch.modelSelection !== undefined &&
+      (patch.modelSelection?.instanceId !== bot.modelSelection?.instanceId ||
+        patch.modelSelection?.model !== bot.modelSelection?.model);
+    if (modelSwitched) {
+      if (bot.tasks) {
+        for (const task of bot.tasks) {
+          if (!task.modelSelection) {
+            delete task.activeModelSelection;
+          }
+        }
+      }
+    }
     Object.assign(bot, patch);
     this.saveBots();
     this.emit({ type: "bot", botId: id });

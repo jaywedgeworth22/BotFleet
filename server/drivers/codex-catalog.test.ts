@@ -89,7 +89,7 @@ describe("readCodexModelCatalog", () => {
       default: "gpt-fake-default",
       options: [
         { id: "gpt-fake-default", label: "GPT Fake Default" },
-        { id: "gpt-page-two", label: "GPT Page Two" },
+        { id: "gpt-page-two", label: "GPT Page Two", effortLevels: ["low", "high"], supportsEffort: true },
       ],
     });
   });

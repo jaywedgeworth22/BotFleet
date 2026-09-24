@@ -155,6 +155,71 @@ final class Session: ObservableObject {
     /// for the same attachment path.
     private var avatarFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
     private var avatarCacheGeneration = 0
+    /// Per-mutation success flags for one settings flush.  `status` may be a
+    /// recovery GET applied for display even when a PATCH failed; callers must
+    /// require their own OK flag before treating the mutation as saved.
+    private struct SettingsFlushOutcome: Sendable {
+        var status: ConfigStatus?
+        var conversationModeOK: Bool? = nil
+        var terminologyOK: Bool? = nil
+        var featuresOK: Bool? = nil
+        var profileOK: Bool? = nil
+        var timeoutOK: Bool? = nil
+
+        /// True when at least one mutation in this flush reported failure.
+        var hasFailedMutation: Bool {
+            conversationModeOK == false
+                || terminologyOK == false
+                || featuresOK == false
+                || profileOK == false
+                || timeoutOK == false
+        }
+
+        /// Merge a superseded partial with the flush that inherited requeued
+        /// fields.  Confirmed successes (`true`) win so an earlier PATCH in the
+        /// partial flush is not lost; a requeued field that the replacement
+        /// saved upgrades `false` to `true`.
+        func mergingRequeuedFollow(from replacement: SettingsFlushOutcome) -> SettingsFlushOutcome {
+            func mergeFlag(_ partial: Bool?, _ replacement: Bool?) -> Bool? {
+                if partial == true || replacement == true { return true }
+                if partial == false || replacement == false { return false }
+                return nil
+            }
+            return SettingsFlushOutcome(
+                status: replacement.status ?? status,
+                conversationModeOK: mergeFlag(conversationModeOK, replacement.conversationModeOK),
+                terminologyOK: mergeFlag(terminologyOK, replacement.terminologyOK),
+                featuresOK: mergeFlag(featuresOK, replacement.featuresOK),
+                profileOK: mergeFlag(profileOK, replacement.profileOK),
+                timeoutOK: mergeFlag(timeoutOK, replacement.timeoutOK)
+            )
+        }
+    }
+
+    /// One-in-flight settings PATCH chain shared by every full-config settings
+    /// mutation (conversation mode, terminology, features, profile, room
+    /// timeout).  Concurrent cross-type saves each return a full ConfigStatus;
+    /// a shared tail keeps those assignments ordered so an older snapshot
+    /// cannot finish last and regress session.config.  Field-level coalesce
+    /// remains per endpoint; queued work is pairing-bound and cleared on
+    /// sign-out / re-pair.  Callers get nil when their own PATCH failed even
+    /// if a recovery GET refreshed config for display.
+    private var settingsUpdateTail: Task<SettingsFlushOutcome?, Never>?
+    private var settingsUpdateGeneration = 0
+    private var pendingConversationMode: String?
+    private var pendingConversationMergeThreads = false
+    private var pendingConversationModeSet = false
+    private var pendingTerminology: String?
+    private var pendingTerminologyCustom: RoomLabels?
+    private var pendingTerminologySet = false
+    private var pendingFeaturesShowToolCalls: Bool?
+    private var pendingFeaturesSummarizeToolCalls: Bool?
+    private var pendingProfileName: String?
+    private var pendingProfileEmail: String?
+    private var pendingProfileHasName = false
+    private var pendingProfileHasEmail = false
+    private var pendingRoomTurnTimeoutMinutes: Int?
+    private var pendingRoomTurnTimeout = false
     /// A saved connection exists, but its token could not be read yet. Keeps
     /// "the keychain is locked" from being mistaken for "not paired".
     private var restorePending = false
@@ -201,6 +266,34 @@ final class Session: ObservableObject {
         Task { await refreshNotificationAuthorization() }
     }
 
+    /// Drop coalesced settings PATCHes when the paired computer changes so a
+    /// queued mode, terminology, name, email, toggle, or timeout cannot land
+    /// on the next pairing.  Also detach `settingsUpdateTail` so the next
+    /// pairing does not await an in-flight request that still targets the
+    /// previous computer (and its request timeout).
+    private func cancelPendingSettingsMutations() {
+        pendingConversationMode = nil
+        pendingConversationMergeThreads = false
+        pendingConversationModeSet = false
+        pendingTerminology = nil
+        pendingTerminologyCustom = nil
+        pendingTerminologySet = false
+        pendingFeaturesShowToolCalls = nil
+        pendingFeaturesSummarizeToolCalls = nil
+        pendingProfileName = nil
+        pendingProfileEmail = nil
+        pendingProfileHasName = false
+        pendingProfileHasEmail = false
+        pendingRoomTurnTimeoutMinutes = nil
+        pendingRoomTurnTimeout = false
+        settingsUpdateGeneration += 1
+        // Detach before cancel so a concurrent enqueue cannot re-chain onto
+        // this task after we bump the generation.
+        let abandoned = settingsUpdateTail
+        settingsUpdateTail = nil
+        abandoned?.cancel()
+    }
+
     /// Rebuild the last connection at launch.
     ///
     /// Three outcomes, and keeping them apart is the whole point. No saved
@@ -244,6 +337,7 @@ final class Session: ObservableObject {
         let first = rotation.currentEndpoint.map(saved.dialing) ?? saved
         client = CompanionClient(connection: first, token: stored)
         pairingGeneration += 1
+        cancelPendingSettingsMutations()
         cachedInstances = []
         status = .connecting
     }
@@ -321,6 +415,7 @@ final class Session: ObservableObject {
             token: paired.token
         )
         pairingGeneration += 1
+        cancelPendingSettingsMutations()
         self.state = CompanionState()
         instanceDriverKinds = [:]
         cachedInstances = []
@@ -392,6 +487,7 @@ final class Session: ObservableObject {
         instanceDriverKinds = [:]
         cachedInstances = []
         pairingGeneration += 1
+        cancelPendingSettingsMutations()
         resetAvatarCache()
         NotificationCoordinator.shared.setBadge(0)
         status = .unpaired
@@ -1558,36 +1654,582 @@ final class Session: ObservableObject {
 
     @MainActor
     func configStatus() async -> ConfigStatus? {
+        // Departure can await saveProfile() then enqueue saveRoomTimeout(),
+        // replacing `settingsUpdateTail` and bumping generation while a single
+        // await of the prior tail is suspended.  Keep awaiting until generation
+        // is unchanged across an await of the current tail (tail stable), then
+        // capture that generation for the GET guard so we never run concurrent
+        // with a replacement PATCH and apply a stale full status last.
+        let generation: Int
+        while true {
+            let generationAtAwait = settingsUpdateGeneration
+            _ = await settingsUpdateTail?.value
+            if settingsUpdateGeneration == generationAtAwait {
+                generation = generationAtAwait
+                break
+            }
+        }
         guard let client else { return nil }
         let status = try? await client.config()
-        if let status { self.config = status }
+        guard let status else { return nil }
+        guard settingsUpdateGeneration == generation else { return nil }
+        self.config = status
         return status
     }
 
     @MainActor
     func updateConversationMode(_ conversationMode: String, mergeThreads: Bool = false) async -> ConfigStatus? {
-        guard let client else { return nil }
-        do {
-            let updated = try await client.updateConversationMode(conversationMode, mergeThreads: mergeThreads)
-            self.config = updated
-            return updated
-        } catch {
-            recordActionError(error)
-            return nil
-        }
+        pendingConversationMode = conversationMode
+        pendingConversationMergeThreads = mergeThreads
+        pendingConversationModeSet = true
+        let outcome = await enqueueSettingsUpdate()
+        guard let outcome, outcome.conversationModeOK == true else { return nil }
+        return outcome.status
     }
 
     @MainActor
     func updateTerminology(_ terminology: String, custom: RoomLabels? = nil) async -> ConfigStatus? {
-        guard let client else { return nil }
-        do {
-            let updated = try await client.updateTerminology(terminology, custom: custom)
-            self.config = updated
-            return updated
-        } catch {
-            recordActionError(error)
-            return nil
+        pendingTerminology = terminology
+        pendingTerminologyCustom = custom
+        pendingTerminologySet = true
+        let outcome = await enqueueSettingsUpdate()
+        guard let outcome, outcome.terminologyOK == true else { return nil }
+        return outcome.status
+    }
+
+    @MainActor
+    func updateFeatures(showToolCalls: Bool? = nil, summarizeToolCalls: Bool? = nil) async -> ConfigStatus? {
+        if let showToolCalls {
+            pendingFeaturesShowToolCalls = showToolCalls
         }
+        if let summarizeToolCalls {
+            pendingFeaturesSummarizeToolCalls = summarizeToolCalls
+        }
+        guard pendingFeaturesShowToolCalls != nil || pendingFeaturesSummarizeToolCalls != nil else {
+            return config
+        }
+        let outcome = await enqueueSettingsUpdate()
+        guard let outcome, outcome.featuresOK == true else { return nil }
+        return outcome.status
+    }
+
+    @MainActor
+    func updateRoomTurnTimeout(minutes: Int) async -> ConfigStatus? {
+        pendingRoomTurnTimeoutMinutes = minutes
+        pendingRoomTurnTimeout = true
+        let outcome = await enqueueSettingsUpdate()
+        guard let outcome, outcome.timeoutOK == true else { return nil }
+        return outcome.status
+    }
+
+    @MainActor
+    func updateProfile(name: String? = nil, email: String? = nil) async -> ConfigStatus? {
+        // nil means omit (dirty-only PATCH).  Only non-nil args join the coalesce.
+        if let name {
+            pendingProfileName = name
+            pendingProfileHasName = true
+        }
+        if let email {
+            pendingProfileEmail = email
+            pendingProfileHasEmail = true
+        }
+        guard pendingProfileHasName || pendingProfileHasEmail else { return config }
+        let outcome = await enqueueSettingsUpdate()
+        guard let outcome, outcome.profileOK == true else { return nil }
+        return outcome.status
+    }
+
+    /// Chain one settings flush behind any in-flight full-config settings work.
+    /// The latest generation drains every pending field group so a superseded
+    /// task cannot leave another endpoint's coalesce stranded.  Superseded
+    /// waiters follow `settingsUpdateTail` to that drain instead of treating
+    /// latest-wins as a failed save.
+    @MainActor
+    private func enqueueSettingsUpdate() async -> SettingsFlushOutcome? {
+        settingsUpdateGeneration += 1
+        let generation = settingsUpdateGeneration
+        let enqueuePairing = pairingGeneration
+        let previous = settingsUpdateTail
+        let task = Task<SettingsFlushOutcome?, Never> { @MainActor in
+            _ = await previous?.value
+            guard self.pairingGeneration == enqueuePairing else { return nil }
+            // Latest-wins: a newer enqueue already holds our coalesced fields.
+            // Return nil from this generation's task; the waiter below follows
+            // the replacement tail so callers are not told the save failed.
+            guard self.settingsUpdateGeneration == generation else { return nil }
+            return await self.flushPendingSettingsMutations(
+                enqueuePairing: enqueuePairing,
+                generation: generation
+            )
+        }
+        settingsUpdateTail = task
+        if let outcome = await task.value {
+            // Superseded flush may requeue failed fields into a newer generation
+            // and still return a non-nil partial outcome (e.g. timeoutOK == false).
+            // Follow that replacement like the nil supersession path so callers
+            // are not told the save failed when the inheriting flush succeeds.
+            if outcome.hasFailedMutation, settingsUpdateGeneration > generation {
+                if let followed = await awaitSettingsFlushAfterSupersede(
+                    generation: generation,
+                    enqueuePairing: enqueuePairing
+                ) {
+                    return outcome.mergingRequeuedFollow(from: followed)
+                }
+            }
+            return outcome
+        }
+        return await awaitSettingsFlushAfterSupersede(
+            generation: generation,
+            enqueuePairing: enqueuePairing
+        )
+    }
+
+    /// After latest-wins skips our generation, await the flush that inherited
+    /// our pending fields so `updateRoomTurnTimeout` (and siblings) observe
+    /// that outcome instead of a false nil / "Could not save".
+    @MainActor
+    private func awaitSettingsFlushAfterSupersede(
+        generation: Int,
+        enqueuePairing: Int
+    ) async -> SettingsFlushOutcome? {
+        var accumulated: SettingsFlushOutcome?
+        while true {
+            guard pairingGeneration == enqueuePairing else { return nil }
+            let generationAtAwait = settingsUpdateGeneration
+            // We were still the tip and finished with nil → real failure / empty.
+            guard generationAtAwait > generation else { return accumulated }
+            guard let tail = settingsUpdateTail else { return accumulated }
+            let outcome = await tail.value
+            if let outcome {
+                let merged = accumulated.map { $0.mergingRequeuedFollow(from: outcome) } ?? outcome
+                // Superseded partial failure: failed fields were requeued into a
+                // newer flush — keep following, preserving any successes already
+                // confirmed in this chain.
+                if merged.hasFailedMutation, settingsUpdateGeneration > generationAtAwait {
+                    accumulated = merged
+                    continue
+                }
+                return merged
+            }
+            // That tail was also superseded. Loop if a newer generation exists.
+            if settingsUpdateGeneration == generationAtAwait {
+                return accumulated
+            }
+        }
+    }
+
+
+    /// After a mid-flush supersede, restore profile fields that were snapshotted
+    /// but never PATCHed, skipping any field a newer call already coalesced.
+    @MainActor
+    private func requeueUnsentProfileAfterSupersede(
+        sendName: String?,
+        sendEmail: String?,
+        hadProfile: Bool
+    ) {
+        guard hadProfile else { return }
+        if let sendName, !pendingProfileHasName {
+            pendingProfileName = sendName
+            pendingProfileHasName = true
+        }
+        if let sendEmail, !pendingProfileHasEmail {
+            pendingProfileEmail = sendEmail
+            pendingProfileHasEmail = true
+        }
+    }
+
+    @MainActor
+    private func requeueUnsentTimeoutAfterSupersede(
+        timeoutMinutes: Int?,
+        hadTimeout: Bool
+    ) {
+        guard hadTimeout, let timeoutMinutes, !pendingRoomTurnTimeout else { return }
+        pendingRoomTurnTimeoutMinutes = timeoutMinutes
+        pendingRoomTurnTimeout = true
+    }
+
+    @MainActor
+    private func requeueUnsentConversationModeAfterSupersede(
+        mode: String?,
+        mergeThreads: Bool,
+        hadMode: Bool
+    ) {
+        guard hadMode, let mode, !pendingConversationModeSet else { return }
+        pendingConversationMode = mode
+        pendingConversationMergeThreads = mergeThreads
+        pendingConversationModeSet = true
+    }
+
+    @MainActor
+    private func requeueUnsentTerminologyAfterSupersede(
+        terminology: String?,
+        custom: RoomLabels?,
+        hadTerminology: Bool
+    ) {
+        guard hadTerminology, let terminology, !pendingTerminologySet else { return }
+        pendingTerminology = terminology
+        pendingTerminologyCustom = custom
+        pendingTerminologySet = true
+    }
+
+    @MainActor
+    private func requeueUnsentFeaturesAfterSupersede(
+        show: Bool?,
+        summarize: Bool?
+    ) {
+        if show != nil, pendingFeaturesShowToolCalls == nil {
+            pendingFeaturesShowToolCalls = show
+        }
+        if summarize != nil, pendingFeaturesSummarizeToolCalls == nil {
+            pendingFeaturesSummarizeToolCalls = summarize
+        }
+    }
+
+    /// Re-queue every still-unsent snapshot after a mid-flush supersede.
+    @MainActor
+    private func requeueUnsentAfterSupersede(
+        mode: String?,
+        mergeThreads: Bool,
+        hadMode: Bool,
+        terminology: String?,
+        terminologyCustom: RoomLabels?,
+        hadTerminology: Bool,
+        show: Bool?,
+        summarize: Bool?,
+        sendName: String?,
+        sendEmail: String?,
+        hadProfile: Bool,
+        timeoutMinutes: Int?,
+        hadTimeout: Bool
+    ) {
+        requeueUnsentConversationModeAfterSupersede(
+            mode: mode,
+            mergeThreads: mergeThreads,
+            hadMode: hadMode
+        )
+        requeueUnsentTerminologyAfterSupersede(
+            terminology: terminology,
+            custom: terminologyCustom,
+            hadTerminology: hadTerminology
+        )
+        requeueUnsentFeaturesAfterSupersede(show: show, summarize: summarize)
+        requeueUnsentProfileAfterSupersede(
+            sendName: sendName,
+            sendEmail: sendEmail,
+            hadProfile: hadProfile
+        )
+        requeueUnsentTimeoutAfterSupersede(
+            timeoutMinutes: timeoutMinutes,
+            hadTimeout: hadTimeout
+        )
+    }
+
+    /// Snapshot and send whatever settings fields are pending, in a fixed order.
+    /// Confirmed applies still update `config` for this pairing; a mid-flush
+    /// generation bump stops further PATCHes so the newer tail can drain what
+    /// remains (including requeued fields after a superseded failure).  When a
+    /// PATCH fails, a recovery GET still refreshes `config` for display, but
+    /// the matching OK flag stays false so callers do not advance dirty baselines.
+    @MainActor
+    private func flushPendingSettingsMutations(
+        enqueuePairing: Int,
+        generation: Int
+    ) async -> SettingsFlushOutcome? {
+        let mode = pendingConversationModeSet ? pendingConversationMode : nil
+        let mergeThreads = pendingConversationMergeThreads
+        let hadMode = pendingConversationModeSet
+        pendingConversationModeSet = false
+        pendingConversationMode = nil
+        pendingConversationMergeThreads = false
+
+        let terminology = pendingTerminologySet ? pendingTerminology : nil
+        let terminologyCustom = pendingTerminologySet ? pendingTerminologyCustom : nil
+        let hadTerminology = pendingTerminologySet
+        pendingTerminologySet = false
+        pendingTerminology = nil
+        pendingTerminologyCustom = nil
+
+        let show = pendingFeaturesShowToolCalls
+        let summarize = pendingFeaturesSummarizeToolCalls
+        pendingFeaturesShowToolCalls = nil
+        pendingFeaturesSummarizeToolCalls = nil
+
+        let sendName = pendingProfileHasName ? pendingProfileName : nil
+        let sendEmail = pendingProfileHasEmail ? pendingProfileEmail : nil
+        let hadProfile = pendingProfileHasName || pendingProfileHasEmail
+        pendingProfileHasName = false
+        pendingProfileHasEmail = false
+        pendingProfileName = nil
+        pendingProfileEmail = nil
+
+        let timeoutMinutes = pendingRoomTurnTimeout ? pendingRoomTurnTimeoutMinutes : nil
+        let hadTimeout = pendingRoomTurnTimeout
+        pendingRoomTurnTimeout = false
+        pendingRoomTurnTimeoutMinutes = nil
+
+        guard hadMode || hadTerminology || show != nil || summarize != nil || hadProfile || hadTimeout else {
+            return SettingsFlushOutcome(status: config)
+        }
+        guard let client else { return nil }
+
+        var outcome = SettingsFlushOutcome(status: config)
+        var latest = config
+
+        func applyRecoveryConfig() async {
+            if let status = try? await client.config(),
+               pairingGeneration == enqueuePairing,
+               settingsUpdateGeneration == generation {
+                config = status
+                latest = status
+                outcome.status = status
+            }
+        }
+
+        if hadMode, let mode {
+            do {
+                let updated = try await client.updateConversationMode(mode, mergeThreads: mergeThreads)
+                guard pairingGeneration == enqueuePairing else {
+                    return SettingsFlushOutcome(status: updated, conversationModeOK: true)
+                }
+                config = updated
+                latest = updated
+                outcome.status = updated
+                outcome.conversationModeOK = true
+            } catch {
+                guard pairingGeneration == enqueuePairing else { return outcome }
+                if settingsUpdateGeneration != generation {
+                    requeueUnsentAfterSupersede(
+                        mode: mode,
+                        mergeThreads: mergeThreads,
+                        hadMode: true,
+                        terminology: terminology,
+                        terminologyCustom: terminologyCustom,
+                        hadTerminology: hadTerminology,
+                        show: show,
+                        summarize: summarize,
+                        sendName: sendName,
+                        sendEmail: sendEmail,
+                        hadProfile: hadProfile,
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: hadTimeout
+                    )
+                    outcome.conversationModeOK = false
+                    return outcome
+                }
+                recordActionError(error)
+                outcome.conversationModeOK = false
+                await applyRecoveryConfig()
+            }
+            if settingsUpdateGeneration != generation || pairingGeneration != enqueuePairing {
+                requeueUnsentAfterSupersede(
+                    mode: nil,
+                    mergeThreads: false,
+                    hadMode: false,
+                    terminology: terminology,
+                    terminologyCustom: terminologyCustom,
+                    hadTerminology: hadTerminology,
+                    show: show,
+                    summarize: summarize,
+                    sendName: sendName,
+                    sendEmail: sendEmail,
+                    hadProfile: hadProfile,
+                    timeoutMinutes: timeoutMinutes,
+                    hadTimeout: hadTimeout
+                )
+                return outcome
+            }
+        }
+
+        if hadTerminology, let terminology {
+            do {
+                let updated = try await client.updateTerminology(terminology, custom: terminologyCustom)
+                guard pairingGeneration == enqueuePairing else {
+                    return SettingsFlushOutcome(status: updated, terminologyOK: true)
+                }
+                config = updated
+                latest = updated
+                outcome.status = updated
+                outcome.terminologyOK = true
+            } catch {
+                guard pairingGeneration == enqueuePairing else { return outcome }
+                if settingsUpdateGeneration != generation {
+                    requeueUnsentAfterSupersede(
+                        mode: nil,
+                        mergeThreads: false,
+                        hadMode: false,
+                        terminology: terminology,
+                        terminologyCustom: terminologyCustom,
+                        hadTerminology: true,
+                        show: show,
+                        summarize: summarize,
+                        sendName: sendName,
+                        sendEmail: sendEmail,
+                        hadProfile: hadProfile,
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: hadTimeout
+                    )
+                    outcome.terminologyOK = false
+                    return outcome
+                }
+                recordActionError(error)
+                outcome.terminologyOK = false
+                await applyRecoveryConfig()
+            }
+            if settingsUpdateGeneration != generation || pairingGeneration != enqueuePairing {
+                requeueUnsentAfterSupersede(
+                    mode: nil,
+                    mergeThreads: false,
+                    hadMode: false,
+                    terminology: nil,
+                    terminologyCustom: nil,
+                    hadTerminology: false,
+                    show: show,
+                    summarize: summarize,
+                    sendName: sendName,
+                    sendEmail: sendEmail,
+                    hadProfile: hadProfile,
+                    timeoutMinutes: timeoutMinutes,
+                    hadTimeout: hadTimeout
+                )
+                return outcome
+            }
+        }
+
+        if show != nil || summarize != nil {
+            do {
+                let updated = try await client.updateFeatures(
+                    showToolCalls: show,
+                    summarizeToolCalls: summarize
+                )
+                guard pairingGeneration == enqueuePairing else {
+                    return SettingsFlushOutcome(status: updated, featuresOK: true)
+                }
+                config = updated
+                latest = updated
+                outcome.status = updated
+                outcome.featuresOK = true
+            } catch {
+                guard pairingGeneration == enqueuePairing else { return outcome }
+                if settingsUpdateGeneration != generation {
+                    requeueUnsentAfterSupersede(
+                        mode: nil,
+                        mergeThreads: false,
+                        hadMode: false,
+                        terminology: nil,
+                        terminologyCustom: nil,
+                        hadTerminology: false,
+                        show: show,
+                        summarize: summarize,
+                        sendName: sendName,
+                        sendEmail: sendEmail,
+                        hadProfile: hadProfile,
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: hadTimeout
+                    )
+                    outcome.featuresOK = false
+                    return outcome
+                }
+                recordActionError(error)
+                outcome.featuresOK = false
+                // Keep going so a feature failure does not drop a pending
+                // profile or timeout that shared this flush snapshot.
+                await applyRecoveryConfig()
+            }
+            if settingsUpdateGeneration != generation || pairingGeneration != enqueuePairing {
+                requeueUnsentAfterSupersede(
+                    mode: nil,
+                    mergeThreads: false,
+                    hadMode: false,
+                    terminology: nil,
+                    terminologyCustom: nil,
+                    hadTerminology: false,
+                    show: nil,
+                    summarize: nil,
+                    sendName: sendName,
+                    sendEmail: sendEmail,
+                    hadProfile: hadProfile,
+                    timeoutMinutes: timeoutMinutes,
+                    hadTimeout: hadTimeout
+                )
+                return outcome
+            }
+        }
+
+        if hadProfile, sendName != nil || sendEmail != nil {
+            do {
+                let updated = try await client.updateProfile(name: sendName, email: sendEmail)
+                guard pairingGeneration == enqueuePairing else {
+                    return SettingsFlushOutcome(status: updated, profileOK: true)
+                }
+                config = updated
+                latest = updated
+                outcome.status = updated
+                outcome.profileOK = true
+            } catch {
+                guard pairingGeneration == enqueuePairing else { return outcome }
+                if settingsUpdateGeneration != generation {
+                    requeueUnsentAfterSupersede(
+                        mode: nil,
+                        mergeThreads: false,
+                        hadMode: false,
+                        terminology: nil,
+                        terminologyCustom: nil,
+                        hadTerminology: false,
+                        show: nil,
+                        summarize: nil,
+                        sendName: sendName,
+                        sendEmail: sendEmail,
+                        hadProfile: true,
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: hadTimeout
+                    )
+                    outcome.profileOK = false
+                    return outcome
+                }
+                recordActionError(error)
+                outcome.profileOK = false
+                // Continue so a pending timeout in this snapshot still sends.
+                await applyRecoveryConfig()
+            }
+            if settingsUpdateGeneration != generation || pairingGeneration != enqueuePairing {
+                requeueUnsentTimeoutAfterSupersede(
+                    timeoutMinutes: timeoutMinutes,
+                    hadTimeout: hadTimeout
+                )
+                return outcome
+            }
+        }
+
+        if hadTimeout, let timeoutMinutes {
+            do {
+                let updated = try await client.updateRoomTurnTimeout(minutes: timeoutMinutes)
+                guard pairingGeneration == enqueuePairing else {
+                    return SettingsFlushOutcome(status: updated, timeoutOK: true)
+                }
+                config = updated
+                latest = updated
+                outcome.status = updated
+                outcome.timeoutOK = true
+            } catch {
+                guard pairingGeneration == enqueuePairing else { return outcome }
+                if settingsUpdateGeneration != generation {
+                    requeueUnsentTimeoutAfterSupersede(
+                        timeoutMinutes: timeoutMinutes,
+                        hadTimeout: true
+                    )
+                    outcome.timeoutOK = false
+                    return outcome
+                }
+                recordActionError(error)
+                outcome.timeoutOK = false
+                // Refresh display from server, but keep timeoutOK false so
+                // saveRoomTimeout does not advance savedRoomTimeout.
+                await applyRecoveryConfig()
+            }
+        }
+
+        outcome.status = latest
+        return outcome
     }
 
     func instances() async -> [Instance] {

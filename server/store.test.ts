@@ -975,3 +975,46 @@ describe("Store task working folder — cloud runs", () => {
     expect(store.pinTaskCwd(bot.id, bot.threadId)).toBeNull();
   });
 });
+
+describe("Store patchBot modelSelection", () => {
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+  });
+
+  it("clears activeModelSelection on inheriting tasks when bot modelSelection changes", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchTask(bot.id, bot.threadId, {
+      activeModelSelection: { instanceId: "fallback", model: "fallback-model" },
+    });
+    expect(store.taskByThread(bot.id, bot.threadId)?.activeModelSelection).toEqual({
+      instanceId: "fallback",
+      model: "fallback-model",
+    });
+
+    store.patchBot(bot.id, {
+      modelSelection: { instanceId: "grok", model: "grok-4" },
+    });
+
+    expect(store.taskByThread(bot.id, bot.threadId)?.activeModelSelection).toBeUndefined();
+  });
+
+  it("preserves activeModelSelection on tasks with their own modelSelection override", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchTask(bot.id, bot.threadId, {
+      modelSelection: { instanceId: "custom", model: "custom-model" },
+      activeModelSelection: { instanceId: "custom", model: "custom-model" },
+    });
+
+    store.patchBot(bot.id, {
+      modelSelection: { instanceId: "grok", model: "grok-4" },
+    });
+
+    expect(store.taskByThread(bot.id, bot.threadId)?.activeModelSelection).toEqual({
+      instanceId: "custom",
+      model: "custom-model",
+    });
+  });
+});
+

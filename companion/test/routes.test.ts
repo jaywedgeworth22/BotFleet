@@ -310,3 +310,21 @@ describe("conversation mode", () => {
     expect(ask("PATCH", "/api/conversation-mode", false)?.status).toBe(401);
   });
 });
+
+describe("settings display preferences", () => {
+  it("lets the phone change features, channel turn timeout, and profile without opening config", () => {
+    expect(allowed("PATCH", "/api/features")).toBe(true);
+    expect(allowed("PATCH", "/api/room-turn-timeout")).toBe(true);
+    expect(allowed("PATCH", "/api/profile")).toBe(true);
+    expect(allowed("PUT", "/api/features")).toBe(false);
+    expect(allowed("GET", "/api/profile")).toBe(false);
+    expect(allowed("PATCH", "/api/config")).toBe(false);
+    expect(allowed("PUT", "/api/config")).toBe(false);
+  });
+
+  it("still refuses an unpaired device", () => {
+    expect(ask("PATCH", "/api/features", false)?.status).toBe(401);
+    expect(ask("PATCH", "/api/room-turn-timeout", false)?.status).toBe(401);
+    expect(ask("PATCH", "/api/profile", false)?.status).toBe(401);
+  });
+});

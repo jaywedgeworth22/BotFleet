@@ -538,6 +538,22 @@ public struct ProviderSnapshot: Codable, Hashable, Sendable {
     public var version: String?
 
     public var isAvailable: Bool { state == "available" }
+
+    /// Phone Settings strip labels.  Mac owns setup, so these never deep-link
+    /// into key entry or a CLI path — they only say what is true right now.
+    public var engineStatusLabel: String {
+        if isAvailable, authenticated == false { return "Sign in" }
+        if !isAvailable { return "Unavailable" }
+        return "Ready"
+    }
+
+    /// Reserved for a structured missing-binary signal on `ProviderSnapshot`.
+    /// Claude/Codex currently map every `execCli` `--version` failure (timeout,
+    /// nonzero exit, ENOENT) to the same "`<cli>` CLI not found" reason, so
+    /// matching that text would mislabel installed-but-unresponsive CLIs as
+    /// "Not installed".  Until the wire format carries an unambiguous signal,
+    /// keep the general "Unavailable" label.
+    var isMissingBinary: Bool { false }
 }
 
 public struct ModelOption: Codable, Hashable, Identifiable, Sendable {
@@ -567,11 +583,16 @@ public struct Instance: Codable, Hashable, Identifiable, Sendable {
     public var instanceId: String
     public var driverKind: String
     public var displayName: String?
+    /// Absent means enabled.  A false value is a Mac-side hide — the phone
+    /// strip only shows engines that are still on.
+    public var enabled: Bool?
     public var snapshot: ProviderSnapshot
     public var models: ModelCatalog
     public var capabilities: InstanceCapabilities?
 
     public var id: String { instanceId }
+
+    public var isEnabled: Bool { enabled != false }
 
     public func effortLevels(for modelId: String) -> [String] {
         guard let engineLevels = capabilities?.effortLevels, !engineLevels.isEmpty else {
@@ -644,12 +665,30 @@ public struct RoomLabels: Codable, Hashable, Sendable {
     }
 }
 
+public struct ConfigFeatures: Codable, Hashable, Sendable {
+    public var skillRecorder: Bool?
+    public var showToolCalls: Bool?
+    public var summarizeToolCalls: Bool?
+
+    /// Matches `showToolCallsEnabled` on the Mac: on unless explicitly off.
+    public var showsToolCalls: Bool { showToolCalls != false }
+
+    /// Matches `summarizeToolCallsEnabled` on the Mac: on unless explicitly off.
+    public var summarizesToolCalls: Bool { summarizeToolCalls != false }
+}
+
+public struct ConfigRooms: Codable, Hashable, Sendable {
+    public var turnTimeoutMinutes: Int?
+}
+
 public struct ConfigStatus: Codable, Sendable {
     public var composio: ConfigFlag?
     public var box: ConfigFlag?
     public var tts: ConfigFlag?
     public var imageGen: ConfigFlag?
     public var profile: Profile?
+    public var features: ConfigFeatures?
+    public var rooms: ConfigRooms?
     public var terminology: String?
     /// The finished words, resolved by the harness so every client agrees.
     /// Absent only when talking to a harness older than this feature.

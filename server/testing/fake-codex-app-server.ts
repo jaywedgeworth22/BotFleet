@@ -97,7 +97,13 @@ process.stdin.on("data", (chunk) => {
             result: {
               data: [
                 { id: "gpt-hidden", displayName: "Hidden", hidden: true, isDefault: false },
-                { id: "gpt-page-two", displayName: "GPT Page Two", hidden: false, isDefault: false },
+                {
+                  id: "gpt-page-two",
+                  displayName: "GPT Page Two",
+                  hidden: false,
+                  isDefault: false,
+                  supportedReasoningEfforts: ["low", "unknown-tier", { reasoningEffort: "high" }, { reasoningEffort: "bogus" }],
+                },
               ],
               nextCursor: null,
             },
