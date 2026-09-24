@@ -251,4 +251,12 @@ describe("computerProvidersStale (PUT /api/config compare-and-swap)", () => {
     expect(route.indexOf("providerConfigBusy = true;")).toBeGreaterThan(cas);
     expect(route).toContain('code: "computer_providers_stale"');
   });
+
+  it("keeps the two-space sentence gap in the stale-save error the window shows", () => {
+    // The client puts this error in a plain <div>, where two ASCII spaces
+    // collapse; the copy rule's NBSP + space pair survives.
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    expect(source).toContain('"Provider settings changed in another window.\\u00a0 Review them and try again."');
+    expect(source).not.toContain("another window. Review them");
+  });
 });
