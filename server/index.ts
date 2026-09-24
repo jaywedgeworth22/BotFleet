@@ -116,6 +116,7 @@ import {
   type TurnComputerDeps,
   type TurnComputerMounts,
 } from "./computer-grants.ts";
+import { providerReloadKeys } from "./config-reload-keys.ts";
 import { computerReach } from "./computer-capability.ts";
 import {
   ensureDirs,
@@ -10639,28 +10640,9 @@ const server = createServer(async (req, res) => {
       if (patch.observability !== undefined) {
         console.log(observabilityBootLine(await observability.apply()));
       }
-      // Provider keys change the fleet. Profile, voice, VPS, and room timeout
-      // changes do not rebuild it: no driver reads them, and they should not
-      // interrupt in-flight turns.  Terminology is only a display word, so
-      // renaming rooms must never kill a turn that is running.
-      const reloadKeys = Object.keys(patch).filter(
-        (key) =>
-          key !== "profile" &&
-          key !== "tts" &&
-          key !== "imageGen" &&
-          key !== "vps" &&
-          key !== "rooms" &&
-          key !== "localVm" &&
-          key !== "autoUpdate" &&
-          key !== "ingress" &&
-          key !== "usage" &&
-          key !== "observability" &&
-          key !== "infisical" &&
-          key !== "features" &&
-          key !== "terminology" &&
-          key !== "terminologyCustom" &&
-          key !== "conversationMode",
-      );
+      // Provider keys change the fleet; see CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD
+      // for the keys that must not interrupt in-flight turns.
+      const reloadKeys = providerReloadKeys(patch);
       if (reloadKeys.length > 0) {
         await reloadProviders();
         // The fleet has just been rebuilt on whatever `cfg` resolves to right
