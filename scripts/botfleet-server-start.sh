@@ -102,7 +102,14 @@ preflight() {
 probe_imports() {
   local probe_log
   probe_log="$(mktemp "${TMPDIR:-/tmp}/botfleet-probe.XXXXXX")"
-  if (cd "$ROOT" && "$NODE" --experimental-strip-types -e "await import('yaml')") >"$probe_log" 2>&1; then
+  # Probe packages the harness loads at boot — not only yaml — plus the config
+  # module (side-effect free) so a partial install missing any of these still
+  # triggers the one-shot heal before exec'ing server/index.ts.
+  if (cd "$ROOT" && "$NODE" --experimental-strip-types -e "
+    await import('yaml');
+    await import('zod');
+    await import('./server/config.ts');
+  ") >"$probe_log" 2>&1; then
     rm -f "$probe_log"
     return 0
   fi

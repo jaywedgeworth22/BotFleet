@@ -23,7 +23,6 @@ import {
   turnProducedAssistantOutput,
   type FallbackScanMessage,
   unattendedModelDowngrade,
-  inheritedUnattended,
 } from "./model-fallback.ts";
 import { eligibleAutoFallbackChain, type AutoFallbackCandidate } from "./turn-safety.ts";
 

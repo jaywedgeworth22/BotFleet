@@ -214,6 +214,19 @@ describe("slimWebhookPayload", () => {
     expect(serializeWebhookPayload(payload)).not.toContain("<p><p>");
   });
 
+
+  it("routes root JSON arrays through the generic budget", () => {
+    const payload: JsonValue = Array.from({ length: 30 }, (_, i) => ({
+      id: i,
+      body_html: "<p>".repeat(100),
+      note: `item-${i}`,
+    }));
+    const slim = slimWebhookPayload(payload) as JsonValue[];
+    expect(Array.isArray(slim)).toBe(true);
+    expect(slim.length).toBeLessThanOrEqual(21); // 20 + omission marker
+    expect(JSON.stringify(slim)).not.toContain("<p><p>");
+    expect(JSON.stringify(slim)).toContain("item-0");
+  });
   it("applies the depth limit before descending into nested arrays", () => {
     // Six levels of arrays would previously recurse past GENERIC_MAX_DEPTH
     // because the depth guard ran only on objects.

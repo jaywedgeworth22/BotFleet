@@ -984,6 +984,9 @@ export function slimGenericPayload(payload: JsonValue): JsonValue {
 
 /** Drop GitHub, Sentry, PagerDuty, Coolify, and ASC bloat; budget unknown JSON. */
 export function slimWebhookPayload(payload: JsonValue): JsonValue {
+  // Root JSON arrays never pass asRecord — budget them before provider detection
+  // so depth/item/string limits still apply to batch-shaped unknown webhooks.
+  if (Array.isArray(payload)) return slimGenericPayload(payload);
   const root = asRecord(payload);
   if (!root) return payload;
   if (isGithubWebhookPayload(root)) return slimGithubPayload(root);
