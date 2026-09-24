@@ -1026,6 +1026,29 @@ describe("WebhookManager", () => {
       expect(modWarningResult.ignored).toBeUndefined();
     }
 
+    // 44. Passive exclusions ("should be ignored", "are dropped") exclude the
+    // level; negated passives and adjective uses ("handle dropped warnings") do not.
+    const passiveCases: Array<[string, boolean]> = [
+      ["Warning events should be ignored.", true],
+      ["Warning events are dropped.", true],
+      ["Warning events should not be ignored.", false],
+      ["Handle dropped warning events.", false],
+    ];
+    for (const [prompt, ignored] of passiveCases) {
+      const { webhook: passiveHook, secret: passiveSecret } = h.manager.create({
+        name: `Passive ${prompt}`,
+        prompt,
+        botId: "maus-1",
+      });
+      const passiveResult = h.manager.receive(passiveHook.endpointId, passiveSecret, clauseWarning);
+      if (ignored) {
+        expect(passiveResult).toMatchObject({ ignored: true });
+      } else {
+        expect(passiveResult.runId).toBeDefined();
+        expect(passiveResult.ignored).toBeUndefined();
+      }
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
