@@ -46,6 +46,9 @@ export function unattendedModelDowngrade(
     automationSource?: string;
     hasExplicitSelection?: boolean;
     effortLevels?: readonly string[];
+    /** Driver kind of the selected instance (e.g. "claudeAgent").  Custom
+     *  instances under arbitrary ids share their driver's downgrade family. */
+    driverKind?: string;
     /** Quota cooldowns vetted the pre-downgrade model; the rewrite must not
      *  route onto a cheaper model that is itself cooling down. */
     isCooling?: (instanceId: string, model: string) => boolean;
@@ -57,12 +60,21 @@ export function unattendedModelDowngrade(
     opts.automationSource === "webhook" ||
     opts.automationSource === "resource";
   if (!automated) return selection;
+  // Resolve the downgrade family from the driver kind so operator-added
+  // instances ("claude2", "gravity") get the same cheaper-model treatment
+  // as the reserved ids; fall back to the instance id for callers (and
+  // tests) that do not resolve a driver kind.
+  const family =
+    opts.driverKind === "claudeAgent" ? "claude"
+    : opts.driverKind === "antigravityAgent" ? "antigravity"
+    : opts.driverKind?.includes("gemini") ? "gemini"
+    : selection.instanceId;
   let model = selection.model;
-  if (selection.instanceId === "gemini") {
+  if (family === "gemini") {
     model = model.replace("-pro", "-flash");
-  } else if (selection.instanceId === "antigravity") {
+  } else if (family === "antigravity") {
     model = antigravityFlashModel(model);
-  } else if (selection.instanceId === "claude") {
+  } else if (family === "claude") {
     if (model.includes("sonnet") || model.includes("opus")) {
       // The driver's own current Haiku — claude-3-5-haiku-latest was a
       // stale alias pinned before Haiku 4.5 shipped.

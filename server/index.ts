@@ -2994,8 +2994,12 @@ async function startTurn(
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
 
   selection = unattendedModelDowngrade(selection, {
-    unattended: opts?.unattended,
+    // Continuations (cardContinuation without a fresh unattended flag) inherit
+    // the bot's marked state from the mark/clear block above; an explicit
+    // false still opts out.
+    unattended: opts?.unattended ?? isUnattended(bot.id),
     automationSource: opts?.automationSource,
+    driverKind: registry.get(selection.instanceId)?.driverKind,
     hasExplicitSelection: Boolean(opts?.modelSelection),
     effortLevels: registry.get(selection.instanceId)?.adapter.capabilities.effortLevels,
     isCooling: (instanceId, model) => Boolean(quotaCooldowns.get(bot.id, instanceId, model)),

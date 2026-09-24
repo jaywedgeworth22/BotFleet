@@ -959,6 +959,30 @@ describe("unattendedModelDowngrade", () => {
     ).toEqual({ ...pro, model: "gemini-3.8-flash-high" });
   });
 
+  it("resolves downgrade families from the driver kind for custom instances", () => {
+    // An operator-added second Claude under an arbitrary id shares the
+    // claude family downgrade; a second Antigravity shares antigravity's.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "claude2", model: "claude-sonnet-4-5" },
+        { unattended: true, driverKind: "claudeAgent" },
+      ).model,
+    ).toBe("claude-haiku-4-5");
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "gravity", model: "gemini-3.1-pro-high" },
+        { unattended: true, driverKind: "antigravityAgent" },
+      ).model,
+    ).toBe("gemini-3.8-flash-high");
+    // An unknown driver kind with no instance-id match downgrades nothing.
+    expect(
+      unattendedModelDowngrade(
+        { instanceId: "mystery", model: "mystery-large" },
+        { unattended: true, driverKind: "mysteryDriver" },
+      ).model,
+    ).toBe("mystery-large");
+  });
+
   it("maps Antigravity Pro ids to Flash ids the catalog actually offers", () => {
     // gemini-3.1-flash-high/low do not exist on Antigravity — the rewrite
     // must land on an offered id or the unattended turn fails at turn start.
