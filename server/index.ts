@@ -3972,7 +3972,17 @@ try {
     // on the webhook-only listener (8800) because that is what the public
     // tunnel forwards to; the app server (8799) stays loopback-only.
     routes: {
-      "/api/webhooks/linq": (req, res) => readLinqWebhook(req, res, { getBots: () => store.bots.slice() }),
+      "/api/webhooks/linq": {
+        // Auth-first: the route verifies the HMAC before acquiring update
+        // admission (see readLinqWebhook), so the ingress handler must not
+        // admit it up front.
+        handler: (req, res) =>
+          readLinqWebhook(req, res, {
+            getBots: () => store.bots.slice(),
+            beginAdmission: beginUpdateAdmission,
+          }),
+        deferAdmission: true,
+      },
     },
   });
   console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
@@ -7263,7 +7273,8 @@ const server = createServer(async (req, res) => {
       }
       if (
         !process.env.BOTFLEET_LINQAPP_API_KEY?.trim() &&
-        !process.env.LINQ_API_TOKEN?.trim()
+        !process.env.LINQ_API_TOKEN?.trim() &&
+        !cfg.imessageLinq?.apiToken?.trim()
       ) {
         return json(res, 400, { ok: false, reason: "missing_token" });
       }

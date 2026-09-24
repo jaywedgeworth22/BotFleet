@@ -52,6 +52,10 @@ const linqEventSchema = z.union([linqReceivedSchema, linqLifecycleSchema]);
 /** Buffer the body as raw bytes.  Decoding per chunk would corrupt a
  *  multibyte UTF-8 character split across chunks, and the HMAC is over the
  *  exact bytes Linq sent, so decode only once, after the signature check. */
+// A slow POST must not be able to hold the request (and, pre-auth, the
+// process's update admission) open indefinitely.
+const LINQ_WEBHOOK_READ_TIMEOUT_MS = 30_000;
+
 function readRawBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -60,8 +64,10 @@ function readRawBody(req: IncomingMessage): Promise<Buffer> {
     const fail = (status: number, message: string) => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
       reject(Object.assign(new Error(message), { status }));
     };
+    const timer = setTimeout(() => fail(408, "Linq webhook body read timed out"), LINQ_WEBHOOK_READ_TIMEOUT_MS);
     req.on("data", (chunk: Buffer | string) => {
       if (done) return;
       const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
@@ -72,6 +78,7 @@ function readRawBody(req: IncomingMessage): Promise<Buffer> {
     req.on("end", () => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
       resolve(Buffer.concat(chunks));
     });
     req.on("error", () => fail(400, "Could not read Linq webhook body"));
@@ -112,6 +119,11 @@ export interface LinqWebhookOptions {
   /** Pull the active bots list.  Injected so this module can stay decoupled
    *  from `server/index.ts`'s singleton store. */
   getBots(): BotRecord[];
+  /** Acquire update admission AFTER the request is authenticated.  The route
+   *  is registered with `deferAdmission`, so the ingress handler does not
+   *  admit it up front: a slow unauthenticated POST must not be able to
+   *  hold update quiescing hostage. */
+  beginAdmission(): (() => void) | null;
 }
 
 export async function readLinqWebhook(
@@ -146,6 +158,28 @@ export async function readLinqWebhook(
     json(res, 401, { ok: false, reason: "bad_signature" });
     return;
   }
+  // Authenticated — only now take update admission.  A forged or stalled
+  // POST never reaches this point holding the process open against an
+  // update.
+  const release = options.beginAdmission();
+  if (!release) {
+    json(res, 503, { ok: false, reason: "quiescing_for_update" });
+    return;
+  }
+  try {
+    await readLinqWebhookAuthed(res, options, rawBody);
+  } finally {
+    release();
+  }
+}
+
+/** Parse and dispatch an already-authenticated Linq webhook body.  Runs
+ *  under update admission acquired by `readLinqWebhook`. */
+async function readLinqWebhookAuthed(
+  res: ServerResponse,
+  options: LinqWebhookOptions,
+  rawBody: Buffer,
+): Promise<void> {
   let parsedBody: unknown;
   try {
     parsedBody = parseJson(rawBody.toString("utf8")) as unknown;

@@ -76,6 +76,7 @@ async function run(body: string, headers: Record<string, string> = {}): Promise<
   } as unknown as Parameters<typeof readLinqWebhook>[1];
   await readLinqWebhook(makeReq(body, headers), res, {
     getBots: () => [{ id: "director", threadId: "thread" } as never],
+    beginAdmission: () => () => {},
   });
   return captured;
 }
@@ -208,7 +209,7 @@ describe("readLinqWebhook", () => {
       writeHead(s: number) { status = s; },
       end() { return res; },
     } as unknown as Parameters<typeof readLinqWebhook>[1];
-    await readLinqWebhook(req, res, { getBots: () => [] });
+    await readLinqWebhook(req, res, { getBots: () => [], beginAdmission: () => () => {} });
     expect(status).toBe(200);
     expect((dispatchCalls[0].msg as { text: string }).text).toBe("caf\u00e9 \u{1F600}");
   });

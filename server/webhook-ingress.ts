@@ -109,18 +109,31 @@ function eventName(req: IncomingMessage): string | undefined {
  * reading, signature checks, and the response. */
 export type WebhookIngressRoute = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 
+/** A fixed route that authenticates before it wants update admission.
+ *  The ingress handler runs `handler` WITHOUT acquiring admission first;
+ *  the handler must acquire (and release) it itself after auth succeeds,
+ *  so a slow or forged POST cannot hold update quiescing hostage. */
+export interface DeferredAdmissionRoute {
+  handler: WebhookIngressRoute;
+  deferAdmission: true;
+}
+
 export function createWebhookIngressHandler(
   manager: WebhookManager,
   beginAdmission: () => (() => void) | null = () => () => {},
-  routes: Readonly<Record<string, WebhookIngressRoute>> = {},
+  routes: Readonly<Record<string, WebhookIngressRoute | DeferredAdmissionRoute>> = {},
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const route = Object.prototype.hasOwnProperty.call(routes, url.pathname) ? routes[url.pathname] : undefined;
-    if (route) {
+    const entry = Object.prototype.hasOwnProperty.call(routes, url.pathname) ? routes[url.pathname] : undefined;
+    if (entry) {
       if (req.method !== "POST") return json(res, 405, { error: "Webhooks accept POST requests" });
-      const release = beginAdmission();
-      if (!release) return json(res, 503, { error: "BotFleet is quiescing for an update" });
+      const route = typeof entry === "function" ? entry : entry.handler;
+      // Auth-first routes acquire admission themselves after verifying the
+      // request; everyone else is admitted up front as before.
+      const deferAdmission = typeof entry !== "function" && entry.deferAdmission === true;
+      const release = deferAdmission ? null : beginAdmission();
+      if (!deferAdmission && !release) return json(res, 503, { error: "BotFleet is quiescing for an update" });
       try {
         await route(req, res);
       } catch (error) {
@@ -132,7 +145,7 @@ export function createWebhookIngressHandler(
         }
         if (!res.headersSent) json(res, 500, { error: "Webhook receiver failed" });
       } finally {
-        release();
+        release?.();
       }
       return;
     }
@@ -217,7 +230,7 @@ export async function listenWebhookIngress(
     host?: string;
     port: number;
     beginAdmission?: () => (() => void) | null;
-    routes?: Readonly<Record<string, WebhookIngressRoute>>;
+    routes?: Readonly<Record<string, WebhookIngressRoute | DeferredAdmissionRoute>>;
   },
 ): Promise<WebhookIngress> {
   const host = options.host ?? "127.0.0.1";

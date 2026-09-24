@@ -25,7 +25,6 @@ import {
   linqSendMessage,
   linqUploadBytes,
 } from "../linq/client.ts";
-import type { ImessageLinqConfig } from "../linq/types.ts";
 import { peekLinqChat } from "../linq/outbound.ts";
 import { resolveLinqBinding } from "../linq/dispatch.ts";
 import type { BotRecord } from "../store.ts";
@@ -52,16 +51,6 @@ const ok = (content: string, detail?: string): TurnToolOutcome =>
   detail ? { kind: "result", content, detail } : { kind: "result", content };
 const failed = (content: string, detail?: string): TurnToolOutcome =>
   detail ? { kind: "error", content, detail } : { kind: "error", content };
-
-function pickWorkspaceLinq(): ImessageLinqConfig | undefined {
-  const cfg = loadConfig();
-  if (!cfg.imessageLinq?.botNumber) return undefined;
-  return {
-    botNumber: cfg.imessageLinq.botNumber,
-    ignoredSenders: cfg.imessageLinq.ignoredSenders,
-    allowedSenders: cfg.imessageLinq.allowedSenders,
-  };
-}
 
 export function createLinqTools(
   ctx: LinqToolContext,
@@ -99,7 +88,10 @@ export function createLinqTools(
           "voice_disabled",
         );
       }
-      const binding = resolveLinqBinding(cfg, ctx.botId) ?? pickWorkspaceLinq();
+      // No workspace fallback: a bot the operator just moved off Linq
+      // must not keep sending voice on the shared number for the rest of
+      // this turn.
+      const binding = resolveLinqBinding(cfg, ctx.botId);
       if (!binding) {
         return failed(
           JSON.stringify({ error: "Linq transport is not enabled for this bot" }),
@@ -116,8 +108,11 @@ export function createLinqTools(
         const message = e instanceof Error ? e.message : String(e);
         return failed(JSON.stringify({ error: `TTS failed: ${message}` }), "tts_error");
       }
-      const filename = `voice-${Date.now()}.mp3`;
       const mimeType = synthesized.mime || "audio/mpeg";
+      // The filename extension must match the synthesized container: a
+      // system-TTS WAV named .mp3 breaks Linq's upload metadata / decoding.
+      const ext = mimeType === "audio/wav" ? "wav" : mimeType === "audio/pcm" ? "pcm" : "mp3";
+      const filename = `voice-${Date.now()}.${ext}`;
       let credentials: { uploadUrl: string; attachmentId: string; requiredHeaders: Record<string, string> };
       try {
         credentials = await linqGetUploadUrl(mimeType, filename, synthesized.bytes.byteLength);
