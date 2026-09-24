@@ -468,6 +468,18 @@ describe("WebhookManager", () => {
     });
     const dropNounResult = h.manager.receive(dropNounHook.endpointId, dropNounSecret, clauseWarning);
     expect(dropNounResult).toMatchObject({ duplicate: false });
+
+    // 11. "Ignore info and debug events, except warning events" carves warnings OUT of the ignore list
+    const { webhook: exceptHook, secret: exceptSecret } = h.manager.create({
+      name: "Warning Carve-out Triage",
+      prompt: "Ignore info and debug events, except warning events.",
+      botId: "maus-1",
+    });
+    const exceptWarningResult = h.manager.receive(exceptHook.endpointId, exceptSecret, clauseWarning);
+    expect(exceptWarningResult).toMatchObject({ duplicate: false });
+    expect(exceptWarningResult.runId).toBeDefined();
+    const exceptDebugResult = h.manager.receive(exceptHook.endpointId, exceptSecret, clauseDebug);
+    expect(exceptDebugResult).toMatchObject({ ignored: true });
     expect(dropNounResult.runId).toBeDefined();
   });
 });
