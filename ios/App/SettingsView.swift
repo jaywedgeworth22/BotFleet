@@ -302,18 +302,35 @@ struct SettingsView: View {
             Task { await saveProfile() }
         }
         .onChange(of: session.config?.profile?.name) { _, name in
-            savedProfileName = name ?? ""
-            if profileName != (name ?? "") { profileName = name ?? "" }
+            let server = name ?? ""
+            let previous = savedProfileName
+            savedProfileName = server
+            profileName = SettingsDraftPreservation.text(
+                draft: profileName,
+                previousSaved: previous,
+                server: server
+            )
         }
         .onChange(of: session.config?.profile?.email) { _, email in
-            savedProfileEmail = email ?? ""
-            if profileEmail != (email ?? "") { profileEmail = email ?? "" }
+            let server = email ?? ""
+            let previous = savedProfileEmail
+            savedProfileEmail = server
+            profileEmail = SettingsDraftPreservation.text(
+                draft: profileEmail,
+                previousSaved: previous,
+                server: server
+            )
         }
         .onChange(of: session.config?.rooms?.turnTimeoutMinutes) { _, minutes in
-            if let minutes { savedRoomTimeout = minutes }
-            if !savingRoomTimeout, let minutes {
-                roomTimeoutText = String(minutes)
-            }
+            guard let minutes else { return }
+            let previous = savedRoomTimeout
+            savedRoomTimeout = minutes
+            guard !savingRoomTimeout else { return }
+            roomTimeoutText = SettingsDraftPreservation.timeoutMinutes(
+                draft: roomTimeoutText,
+                previousSaved: previous,
+                server: minutes
+            )
         }
         .sheet(item: $engineSheet) { engine in
             EngineSetupSheet(instance: engine)
@@ -373,21 +390,44 @@ struct SettingsView: View {
     }
 
     private func loadSettingsExtras() async {
-        settingsLoaded = false
+        // Do not flip settingsLoaded false on every reload — that would re-open
+        // the placeholder-save hole while a refresh is in flight.  First open
+        // already starts with false; only set true after a successful seed.
         guard session.connection != nil else {
             engines = []
-            profileName = ""
-            profileEmail = ""
-            roomTimeoutText = "5"
+            // Leave drafts alone so typing during disconnect is not wiped.
             return
         }
         if let status = await session.configStatus() {
-            profileName = status.profile?.name ?? ""
-            profileEmail = status.profile?.email ?? ""
-            roomTimeoutText = String(status.rooms?.turnTimeoutMinutes ?? 5)
-            savedProfileName = profileName
-            savedProfileEmail = profileEmail
-            savedRoomTimeout = status.rooms?.turnTimeoutMinutes ?? 5
+            let serverName = status.profile?.name ?? ""
+            let serverEmail = status.profile?.email ?? ""
+            let serverTimeout = status.rooms?.turnTimeoutMinutes ?? 5
+
+            let previousName = savedProfileName
+            let previousEmail = savedProfileEmail
+            let previousTimeout = savedRoomTimeout
+
+            // Always refresh baselines from the server for dirty detection.
+            savedProfileName = serverName
+            savedProfileEmail = serverEmail
+            savedRoomTimeout = serverTimeout
+
+            // Only replace drafts that still match the previous baseline.
+            profileName = SettingsDraftPreservation.text(
+                draft: profileName,
+                previousSaved: previousName,
+                server: serverName
+            )
+            profileEmail = SettingsDraftPreservation.text(
+                draft: profileEmail,
+                previousSaved: previousEmail,
+                server: serverEmail
+            )
+            roomTimeoutText = SettingsDraftPreservation.timeoutMinutes(
+                draft: roomTimeoutText,
+                previousSaved: previousTimeout,
+                server: serverTimeout
+            )
             settingsLoaded = true
         }
         loadingEngines = true
