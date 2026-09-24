@@ -317,6 +317,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // Host-scope tagging mirrors claude.ts: when this turn mounts the real
       // Mac (not a VM), every card carries approvalScope so the harness's
       // local-computer-block backstop applies to remembered always-allows.
+      // Never resume this thread again: remembered here for this process,
+      // and announced so the harness drops the saved cursor durably.
+      const rejectThreadModel = (codexThreadId: string) => {
+        modelRejectedThreads.add(codexThreadId);
+        emit({ ...base(threadId, turnId), type: "session.invalidated", sessionId: codexThreadId, reason: "unknown_model" });
+      };
       const handleServerRequest = (msg: any) => {
         const method = msg.method as string;
         const params = msg.params ?? {};
@@ -506,7 +512,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const reason = t.error?.message ?? t.status ?? "failed";
             const unavailable = classifyError({ text: String(reason) }).reason === "unknown_model";
             const failureMessage = unavailable ? unknownModelMessage(turn.model, state.resumed, String(reason)) : reason;
-            if (t.status !== "completed" && unavailable && state.codexThreadId) modelRejectedThreads.add(state.codexThreadId);
+            if (t.status !== "completed" && unavailable && state.codexThreadId) rejectThreadModel(state.codexThreadId);
             if (t.status !== "completed" && unavailable) {
               emit({ ...base(threadId, turnId), type: "runtime.error", message: failureMessage });
             }
@@ -666,7 +672,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const needsAuth = /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(failureMessage);
         const verdict = classifyError(failure);
         if (verdict.reason === "unknown_model" && !resumeFailure && state.codexThreadId) {
-          modelRejectedThreads.add(state.codexThreadId);
+          rejectThreadModel(state.codexThreadId);
         }
         const message = resumeFailure
           ? failureMessage !== e.message ? `${e.message}  ${failureMessage}` : e.message
