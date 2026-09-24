@@ -31,7 +31,7 @@ import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { engineReachKnown, instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { ComputerImpactConfirmModal } from "./ComputerImpactConfirmModal";
 import { impactedBotsForProvider, revalidateImpact, type ImpactedBot } from "@/lib/computer-impact";
-import { applyDefaultsBody, providerControlsLocked, resolveWorkspaceProviders } from "@/lib/workspace-providers";
+import { applyDefaultsBody, providerControlsLocked, resolveWorkspaceProviders, staleProviderConfig } from "@/lib/workspace-providers";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   COMPUTER_PROVIDER_ORDER,
@@ -172,6 +172,10 @@ export function LocalComputerSection() {
           vpsMode: nextVpsMode,
           allowedComputers: allowedComputersFromProviders(nextProviders),
         },
+        // What this window showed.  The server refuses the save if the
+        // stored toggles have moved since, so a stale window cannot turn a
+        // provider back on that another window just turned off.
+        expectedComputerProviders: providers,
       };
       setSaving(true);
       setError(null);
@@ -187,11 +191,13 @@ export function LocalComputerSection() {
             });
             return;
           }
+          const stale = staleProviderConfig(e);
+          if (stale) dispatch({ type: "configStatus", config: stale });
           setError(e.message);
         })
         .finally(() => setSaving(false));
     },
-    [dispatch],
+    [dispatch, providers],
   );
 
   const handleProviderToggle = (provider: ComputerProviderId, next: boolean) => {
@@ -268,6 +274,11 @@ export function LocalComputerSection() {
         if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
           setPendingAck({ bots: e.body.needsAcknowledgement, request });
         } else {
+          // An acknowledged resubmit carries the same expected toggles, so
+          // it can go stale too; show the current state it was refused for.
+          setPendingAck(null);
+          const stale = staleProviderConfig(e);
+          if (stale) dispatch({ type: "configStatus", config: stale });
           setError(e.message);
         }
       })
