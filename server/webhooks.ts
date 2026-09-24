@@ -343,9 +343,17 @@ export function shouldIgnoreWebhookEvent(
       // Distinguish noun usages like "drop in warning", "drop of warning", or "recent drop of" from imperative drop commands.
       // Passive "ignored"/"dropped"/"excluded"/"skipped" count only after a be/get auxiliary ("warnings are ignored",
       // "assignments should be dropped"), so adjective uses like "handle dropped warnings" stay positive.
-      const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b)`;
-      // Positive handling/investigation verbs that govern events
-      const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
+      const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
+      const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
+      const handlingVerb = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)`;
+      const handlingGerundOrParticiple = `(?:investigating|investigated|acting(?:\\s+on)?|acted(?:\\s+on)?|handling|handled|processing|processed|triaging|triaged|fixing|fixed|resolving|resolved|watching|watched|monitoring|monitored|tracking|tracked|escalating|escalated|alerting|alerted|notifying|notified|keeping|kept|retaining|retained)`;
+      const allHandlingVerbs = `(?:${handlingVerb}|${handlingGerundOrParticiple})`;
+      const passiveAux = `(?:(?:to|be|get|have\\s+been)\\s+){1,2}`;
+      const negatedHandlingVerb = `(?:\\b${negativeWord}\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:not|never)\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b)`;
+
+      const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b|${negatedHandlingVerb})`;
+      // Positive handling/investigation verbs that govern events (must not be preceded by negation)
+      const contrastingVerb = `(?<!\\b(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop|quit|avoid)(?:\\s+\\w+){0,2}\\s+)\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
       const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
       // An exception word, contrast word (not), positive handling verb, or in-scope assertion stops exclusion scanning so exclusions bind to their target
       const exceptionBoundary = String.raw`\b(?:except|but|not(?!\s+in\s+scope\b)|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
@@ -415,11 +423,9 @@ export function shouldIgnoreWebhookEvent(
       );
       if (interveningPattern.test(prompt)) return false;
 
-      const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
       // "Don't just ignore", "do not ever ignore": up to two adverbs may sit
       // between the negation and the exclusion verb.  Closed list, so an
       // unrelated word in between never turns an exclusion into a negation.
-      const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
       const negationPattern = new RegExp(
         `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
           `|\\b${lvl}s?\\b[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +
@@ -459,8 +465,16 @@ export function shouldIgnoreWebhookEvent(
 
     if (action === "assigned" || action === "unassigned") {
       const isAssignmentExcluded = (): boolean => {
-        const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b)`;
-        const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
+        const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
+        const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
+        const handlingVerb = `(?:investigate|act(?:\\s+on)?|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)`;
+        const handlingGerundOrParticiple = `(?:investigating|investigated|acting(?:\\s+on)?|acted(?:\\s+on)?|handling|handled|processing|processed|triaging|triaged|fixing|fixed|resolving|resolved|watching|watched|monitoring|monitored|tracking|tracked|escalating|escalated|alerting|alerted|notifying|notified|keeping|kept|retaining|retained)`;
+        const allHandlingVerbs = `(?:${handlingVerb}|${handlingGerundOrParticiple})`;
+        const passiveAux = `(?:(?:to|be|get|have\\s+been)\\s+){1,2}`;
+        const negatedHandlingVerb = `(?:\\b${negativeWord}\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:not|never)\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b)`;
+
+        const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b|${negatedHandlingVerb})`;
+        const contrastingVerb = `(?<!\\b(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop|quit|avoid)(?:\\s+\\w+){0,2}\\s+)\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
         const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
         const exceptionBoundary = String.raw`\b(?:except|but|not(?!\s+in\s+scope\b)|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}|${inScopePhrase}`;
@@ -487,8 +501,6 @@ export function shouldIgnoreWebhookEvent(
         );
         if (interveningPattern.test(prompt)) return false;
 
-        const negativeWord = `(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop(?:\\s+to)?|quit|avoid)`;
-        const negationModifiers = `(?:(?:just|ever|simply|really|always|blindly)\\s+){0,2}`;
         const negationPattern = new RegExp(
           `(?:${negativeWord}\\s+${negationModifiers}${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
             `|${assignmentTarget}[^.;\\n]*?${negativeWord}\\s+[^.;\\n]*?${exclusionVerb}` +

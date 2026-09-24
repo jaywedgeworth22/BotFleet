@@ -1090,6 +1090,33 @@ describe("WebhookManager", () => {
       }
     }
 
+    // 47. Negated handling verbs ("Do not process warning events", "Never handle warnings")
+    // are treated as exclusions, while positive handling verbs ("Process warning events",
+    // "Handle warnings") retain them.
+    const negatedHandlingCases: Array<[string, boolean]> = [
+      ["Do not process warning events.", true],
+      ["Never handle warnings.", true],
+      ["Don't triage warning events.", true],
+      ["Warning events are not handled.", true],
+      ["Warning events should not be processed.", true],
+      ["Process warning events.", false],
+      ["Handle warnings.", false],
+    ];
+    for (const [prompt, ignored] of negatedHandlingCases) {
+      const { webhook: nhHook, secret: nhSecret } = h.manager.create({
+        name: `NegatedHandling ${prompt}`,
+        prompt,
+        botId: "maus-1",
+      });
+      const nhResult = h.manager.receive(nhHook.endpointId, nhSecret, clauseWarning);
+      if (ignored) {
+        expect(nhResult).toMatchObject({ ignored: true });
+      } else {
+        expect(nhResult.runId).toBeDefined();
+        expect(nhResult.ignored).toBeUndefined();
+      }
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
