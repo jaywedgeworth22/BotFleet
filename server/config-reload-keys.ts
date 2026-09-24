@@ -114,3 +114,20 @@ export function turnUsesComputerProvider(
   if (reaches("local")) held.add("localMac");
   return disabled.some((id) => held.has(id));
 }
+
+/** Whether a provider is closed to new use under the current settings, by
+ * either spelling: its Computer settings toggle is off, or the legacy
+ * `allowedComputers` allowlist excludes its destination.  Turn mounting
+ * already honors both (`resolveGrants` plus the per-provider filter), so the
+ * lifecycle routes that provision, wake, join or start a computer must too;
+ * otherwise an older client that narrows only the legacy field keeps a billed
+ * Box or VPS, or the Local VM, one click away. */
+export function computerProviderBlocked(
+  providers: ProviderFlags,
+  allowed: readonly Destination[] | null,
+  id: ComputerProviderId,
+): boolean {
+  if (!providerOn(providers, id)) return true;
+  const destination: Destination = id === "localVm" ? "vm" : id === "localMac" ? "local" : "cloud";
+  return allowed !== null && !allowed.includes(destination);
+}
