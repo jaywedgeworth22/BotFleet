@@ -1179,6 +1179,20 @@ describe("WebhookManager", () => {
     const normalWarningResult = h.manager.receive(assignScopeHook.endpointId, assignScopeSecret, clauseWarning);
     expect(normalWarningResult).toMatchObject({ ignored: true });
 
+    // 51. Adjective event labels ("Handle ignored warning events", "Triage excluded warning events")
+    // do not match the exclusion scan; warning deliveries are queued and processed.
+    for (const adjective of ["ignored", "excluded", "skipped"]) {
+      const { webhook: adjHook, secret: adjSecret } = h.manager.create({
+        name: `Adjective ${adjective}`,
+        prompt: `Handle ${adjective} warning events.`,
+        botId: "maus-1",
+      });
+      const adjResult = h.manager.receive(adjHook.endpointId, adjSecret, clauseWarning);
+      expect(adjResult).toMatchObject({ duplicate: false });
+      expect(adjResult.runId).toBeDefined();
+      expect(adjResult.ignored).toBeUndefined();
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });

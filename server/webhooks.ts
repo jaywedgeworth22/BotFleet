@@ -351,7 +351,8 @@ export function shouldIgnoreWebhookEvent(
       const passiveAux = `(?:(?:to|be|get|have\\s+been)\\s+){1,2}`;
       const negatedHandlingVerb = `(?:\\b${negativeWord}\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:not|never)\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b)`;
 
-      const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b|${negatedHandlingVerb})`;
+      const passiveExclusionAux = `(?:is|are|be|was|were|get|gets|got|(?:should|must|can|could|would|will)\\s+be)`;
+      const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring|exclude|excluding|skip|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b${passiveExclusionAux}\\s+(?:ignored|dropped|excluded|skipped)\\b|${negatedHandlingVerb})`;
       // Positive handling/investigation verbs that govern events (must not be preceded by negation)
       const contrastingVerb = `(?<!\\b(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop|quit|avoid)(?:\\s+\\w+){0,2}\\s+)\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
       const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
@@ -475,7 +476,8 @@ export function shouldIgnoreWebhookEvent(
         const passiveAux = `(?:(?:to|be|get|have\\s+been)\\s+){1,2}`;
         const negatedHandlingVerb = `(?:\\b${negativeWord}\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:not|never)\\s+${negationModifiers}(?:${passiveAux})?${allHandlingVerbs}\\b)`;
 
-        const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b|${negatedHandlingVerb})`;
+        const passiveExclusionAux = `(?:is|are|be|was|were|get|gets|got|(?:should|must|can|could|would|will)\\s+be)`;
+        const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring|exclude|excluding|skip|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b${passiveExclusionAux}\\s+(?:ignored|dropped|excluded|skipped)\\b|${negatedHandlingVerb})`;
         const contrastingVerb = `(?<!\\b(?:[a-z]+n't|cannot|do\\s+not|never|not|no|neither|stop|quit|avoid)(?:\\s+\\w+){0,2}\\s+)\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
         const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
