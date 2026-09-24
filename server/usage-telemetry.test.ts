@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
 import { inferProject, inferProviderAndService, telemetry, UsageTelemetryManager, type UsageSettings } from "./telemetry.ts";
+import { ActiveTurnOwners } from "./turn-safety.ts";
 
 const ENV_KEYS = ["USAGE_MONITOR_INGEST_URL", "USAGE_MONITOR_INGEST_TOKEN", "USAGE_INGEST_TOKEN"] as const;
 const saved = new Map<string, string | undefined>();
@@ -497,5 +498,49 @@ describe("harness telemetry wiring", () => {
     expect(indexSource.match(/modelId:\s*actualSelection\.model\b/g)).toHaveLength(2);
     expect(indexSource).not.toMatch(/instanceId:\s*(?:bot|roomBot)\.modelSelection\.instanceId/);
     expect(indexSource).not.toMatch(/modelId:\s*(?:bot|roomBot)\.modelSelection\.model/);
+  });
+
+  it("passes settled latency to both 1:1 and room telemetry calls", () => {
+    expect(indexSource.match(/latencyMs:\s*settledOwner\?\.latencyMs/g)).toHaveLength(2);
+  });
+
+  it("posts elapsed dispatch time and failure status in the Usage Monitor payload", async () => {
+    let clock = 100;
+    const owners = new ActiveTurnOwners(() => clock);
+    const selection = { instanceId: "claude", model: "sonnet" };
+    owners.claim("thread", { botId: "bot", selection, fallbackPolicy: selection });
+    clock += 1_234;
+    const settled = owners.settle("thread", "claude");
+    const manager = new UsageTelemetryManager({ enableOutbox: false });
+    manager.configure(() => ({ ingestUrl: "https://usage.example.com", ingestToken: "test-token" }));
+    const post = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      received: 1,
+      persisted: 1,
+      duplicates: 0,
+      pruned: 0,
+      rejected: 0,
+    }), { status: 200 }));
+    try {
+      manager.trackTurn({
+        botId: "bot",
+        botName: "Scout",
+        threadId: "thread",
+        instanceId: selection.instanceId,
+        modelId: selection.model,
+        inputTokens: 12,
+        latencyMs: settled?.latencyMs,
+        success: false,
+        roomId: "room",
+        roomName: "Research",
+      });
+      await vi.waitFor(() => expect(manager.getStatus().totalSent).toBe(1));
+      const [, init] = post.mock.calls[0]!;
+      const batch = JSON.parse(String(init?.body));
+      expect(batch.events[0].metadata).toMatchObject({ latencyMs: 1_234, success: false, roomId: "room" });
+    } finally {
+      post.mockRestore();
+      await manager.dispose();
+    }
+    expect(owners.settle("thread", "claude")).toBeUndefined();
   });
 });
