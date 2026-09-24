@@ -259,4 +259,79 @@ describe("WebhookManager", () => {
     }
     expect(() => h.manager.receive(webhook.endpointId, secret, { payload: { overflow: true }, eventName: "push" })).toThrow("rate limit");
   });
+
+  it("pre-filters out-of-scope Sentry warnings and pending GitHub compile runs at ingress", () => {
+    const h = harness();
+    const { webhook: sentryHook, secret: sentrySecret } = h.manager.create({
+      name: "Sentry Incident Webhook → Fixer",
+      prompt: "OUT OF SCOPE (stay silent): info/debug/low/warning-only; Safari noise. Act on errors.",
+      botId: "maus-1",
+    });
+
+    // 1. Sentry warning should be ignored without queueing a run
+    const warningEvent = {
+      payload: {
+        action: "unresolved",
+        data: {
+          issue: {
+            id: "100",
+            shortId: "ST-1",
+            title: "Non-critical warning",
+            level: "warning",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    };
+    const warningResult = h.manager.receive(sentryHook.endpointId, sentrySecret, warningEvent);
+    expect(warningResult).toMatchObject({ ignored: true, duplicate: false });
+    expect(h.queued).toHaveLength(0);
+    expect(h.manager.listAttempts().at(-1)).toMatchObject({
+      outcome: "ignored",
+      reason: expect.stringContaining("level 'warning'"),
+    });
+
+    // 2. Sentry error should be accepted and queued
+    const errorEvent = {
+      payload: {
+        action: "unresolved",
+        data: {
+          issue: {
+            id: "101",
+            shortId: "ST-2",
+            title: "Fatal crash in payment loop",
+            level: "error",
+            project: { slug: "socratic-trade" },
+          },
+        },
+      },
+    };
+    const errorResult = h.manager.receive(sentryHook.endpointId, sentrySecret, errorEvent);
+    expect(errorResult).toMatchObject({ duplicate: false });
+    expect(errorResult.runId).toBeDefined();
+    expect(h.queued).toHaveLength(1);
+
+    // 3. Compile gates webhook should ignore workflow_run requested
+    const { webhook: compileHook, secret: compileSecret } = h.manager.create({
+      name: "Compile gates GitHub",
+      prompt: "You are Compiler (BotFleet BF-COMPILER). Own COMPILE GATES only.",
+      botId: "maus-1",
+    });
+
+    const requestedEvent = {
+      eventName: "workflow_run",
+      payload: {
+        action: "requested",
+        workflow_run: { id: 12345, status: "queued" },
+        repository: { full_name: "jaywedgeworth22/Socratic.Trade", name: "Socratic.Trade" },
+      },
+    };
+    const requestedResult = h.manager.receive(compileHook.endpointId, compileSecret, requestedEvent);
+    expect(requestedResult).toMatchObject({ ignored: true });
+    expect(h.queued).toHaveLength(1); // Still 1 from before
+    expect(h.manager.listAttempts().at(-1)).toMatchObject({
+      outcome: "ignored",
+      reason: expect.stringContaining("action 'requested' ignored"),
+    });
+  });
 });

@@ -7,7 +7,12 @@ import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import type { RoutineRunOn } from "./routines.ts";
 import { parseJson, schemaIssue, type JsonValue } from "./schema.ts";
-import { serializeWebhookPayload } from "./webhook-payload.ts";
+import {
+  asRecord,
+  isSentryWebhookPayload,
+  pickStr,
+  serializeWebhookPayload,
+} from "./webhook-payload.ts";
 
 export interface WebhookTrigger {
   id: string;
@@ -306,9 +311,67 @@ function taskFromPayload(payload: JsonValue): string {
   return task.trim().slice(0, 20_000);
 }
 
-function asRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return value as Record<string, JsonValue>;
+export interface IngressIgnoreDecision {
+  ignore: boolean;
+  reason?: string;
+}
+
+export function shouldIgnoreWebhookEvent(
+  trigger: { prompt?: string; name?: string },
+  event: WebhookEvent,
+): IngressIgnoreDecision {
+  const payload = event.payload;
+  const prompt = trigger.prompt ?? "";
+  const name = trigger.name ?? "";
+
+  // 1. Sentry Ingress Pre-Filter
+  if (isSentryWebhookPayload(payload) || /\bsentry\b/i.test(name)) {
+    const root = asRecord(payload);
+    const data = asRecord(root?.data) ?? root;
+    const issue = asRecord(data?.issue);
+    const ev = asRecord(data?.event);
+    const level = pickStr(issue, "level") ?? pickStr(ev, "level") ?? pickStr(root, "level");
+    const action = pickStr(root, "action");
+
+    if (/\b(out of scope|stay silent|ignore).*?\b(warning|info|debug)\b/i.test(prompt)) {
+      if (level === "warning" || level === "info" || level === "debug") {
+        return {
+          ignore: true,
+          reason: `Sentry level '${level}' is marked out of scope by trigger instructions`,
+        };
+      }
+    }
+
+    if (action === "assigned" || action === "unassigned") {
+      if (
+        /\b(incident|alerts?|fatal|error|breakage)\b/i.test(name) ||
+        /\b(incident|fatal|broken|crash)\b/i.test(prompt)
+      ) {
+        return {
+          ignore: true,
+          reason: `Sentry action '${action}' is an issue assignment update, not a runtime incident`,
+        };
+      }
+    }
+  }
+
+  // 2. GitHub Compile Gates Pre-Filter
+  if (/\bcompile[\s-]*gates?\b/i.test(name) || /\b(own compile gates|bf-compiler)\b/i.test(prompt)) {
+    const eventName = event.eventName;
+    const root = asRecord(payload);
+    const action = pickStr(root, "action");
+
+    if (eventName === "workflow_run" || eventName === "check_run") {
+      if (action === "requested" || action === "in_progress") {
+        return {
+          ignore: true,
+          reason: `GitHub ${eventName} action '${action}' ignored: compile gates wait for concluded failure or merged PR`,
+        };
+      }
+    }
+  }
+
+  return { ignore: false };
 }
 
 /** Sentry issue-webhook project slug, when the payload carries one. */
@@ -554,6 +617,19 @@ export class WebhookManager {
         statusCode: 202,
         deliveryId,
         reason: event.eventName ? `Event type “${event.eventName}” is not enabled` : "Event type is missing",
+      });
+      this.save();
+      return { deliveryId, duplicate: false, ignored: true };
+    }
+
+    const ignoreDecision = shouldIgnoreWebhookEvent(trigger, event);
+    if (ignoreDecision.ignore) {
+      const deliveryId = String(event.deliveryId ?? "").trim().slice(0, 200) || randomUUID();
+      this.appendAttempt(trigger, event, {
+        outcome: "ignored",
+        statusCode: 202,
+        deliveryId,
+        reason: ignoreDecision.reason ?? "Ignored by trigger ingress filter",
       });
       this.save();
       return { deliveryId, duplicate: false, ignored: true };

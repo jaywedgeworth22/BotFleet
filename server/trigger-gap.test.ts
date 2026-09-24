@@ -132,4 +132,20 @@ describe("foldPrompts", () => {
     expect(folded).toContain("third-");
     expect(folded).not.toContain("first-");
   });
+
+  it("deduplicates shared [USER-CONFIGURED WEBHOOK INSTRUCTIONS] to the top of the batch", () => {
+    const instructions = "[USER-CONFIGURED WEBHOOK INSTRUCTIONS]\nMonitor errors\n[/USER-CONFIGURED WEBHOOK INSTRUCTIONS]";
+    const p1 = `${instructions}\n\n[UNTRUSTED WEBHOOK EVENT DATA]\nerror 1\n[/UNTRUSTED WEBHOOK EVENT DATA]`;
+    const p2 = `${instructions}\n\n[UNTRUSTED WEBHOOK EVENT DATA]\nerror 2\n[/UNTRUSTED WEBHOOK EVENT DATA]`;
+    const folded = foldPrompts({
+      run: entry("a", p1),
+      folded: [entry("b", p2)],
+    });
+    expect(folded.split("[USER-CONFIGURED WEBHOOK INSTRUCTIONS]").length - 1).toBe(1);
+    expect(folded).toContain("2 deliveries arrived while this trigger was waiting");
+    expect(folded).toContain("--- Delivery 1 ---");
+    expect(folded).toContain("--- Delivery 2 ---");
+    expect(folded).toContain("error 1");
+    expect(folded).toContain("error 2");
+  });
 });

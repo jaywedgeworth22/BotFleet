@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "./schema.ts";
 import {
   isGithubWebhookPayload,
+  isPagerDutyWebhookPayload,
+  isSentryWebhookPayload,
   serializeWebhookPayload,
   slimWebhookPayload,
 } from "./webhook-payload.ts";
@@ -186,6 +188,88 @@ describe("slimWebhookPayload", () => {
       data: { issue: { title: "Cron failure", project: { slug: "fleet-infra" } } },
     };
     expect(isGithubWebhookPayload(payload)).toBe(false);
+    expect(isSentryWebhookPayload(payload)).toBe(true);
     expect(serializeWebhookPayload(payload)).toContain("fleet-infra");
+  });
+
+  it("slims a fat Sentry issue webhook and drops breadcrumbs and raw headers", () => {
+    const fatSentry = {
+      action: "unresolved",
+      installation: { uuid: "fb6490f9-7a4b-4a4a-a167-b48b1232d85f" },
+      actor: { type: "application", id: "sentry", name: "Sentry" },
+      data: {
+        issue: {
+          id: "7669443788",
+          shortId: "SOCRATIC-TRADE-1Y",
+          title: "robinhood-broker connection failed",
+          culprit: "src/broker/robinhood.ts in connect",
+          level: "warning",
+          status: "unresolved",
+          substatus: "regressed",
+          permalink: "https://jays-services.sentry.io/issues/7669443788/",
+          project: { id: "4511650513158144", name: "agentic-trading", slug: "socratic-trade", platform: "javascript-nextjs" },
+          count: "3",
+          userCount: 0,
+          firstSeen: "2026-08-13T07:38:38Z",
+          lastSeen: "2026-09-21T22:52:10Z",
+          priority: "medium",
+          seerFixabilityScore: 0.85,
+          breadcrumbs: Array.from({ length: 50 }, (_, i) => ({ timestamp: i, category: "xhr", message: "verbose log ".repeat(20) })),
+          request: { headers: { cookie: "secret=123", authorization: "Bearer xyz" }, env: { PATH: "/bin" } },
+        },
+      },
+    };
+    expect(isSentryWebhookPayload(fatSentry)).toBe(true);
+    expect(isGithubWebhookPayload(fatSentry)).toBe(false);
+
+    const slim = slimWebhookPayload(fatSentry) as Record<string, JsonValue>;
+    const issue = slim.issue as Record<string, JsonValue>;
+    expect(slim.action).toBe("unresolved");
+    expect(issue.shortId).toBe("SOCRATIC-TRADE-1Y");
+    expect(issue.title).toBe("robinhood-broker connection failed");
+    expect(issue.level).toBe("warning");
+    expect(issue.culprit).toBe("src/broker/robinhood.ts in connect");
+    expect((issue.project as Record<string, JsonValue>).slug).toBe("socratic-trade");
+    expect(issue.seerFixabilityScore).toBe(0.85);
+    expect(JSON.stringify(slim)).not.toContain("verbose log");
+    expect(JSON.stringify(slim)).not.toContain("authorization");
+    expect(JSON.stringify(slim)).not.toContain("cookie");
+    expect(serializeWebhookPayload(fatSentry).length).toBeLessThan(1_500);
+  });
+
+  it("slims a PagerDuty incident webhook and keeps essential incident fields", () => {
+    const fatPd = {
+      event: {
+        id: "01D8K47Y5Z",
+        event_type: "incident.triggered",
+        resource_type: "incident",
+        occurred_at: "2026-09-21T20:20:29Z",
+        data: {
+          id: "Q10L8B6ZWJNGYM",
+          number: 175,
+          title: "Recurring session/prompt timeout on BotFleet Compiler",
+          status: "triggered",
+          urgency: "high",
+          html_url: "https://jays-services.pagerduty.com/incidents/Q10L8B6ZWJNGYM",
+          service: { id: "PXYZ123", name: "BotFleet", summary: "BotFleet Service" },
+          assignees: [{ id: "P123", summary: "Jay Wedgeworth" }],
+          teams: [{ id: "T1", summary: "Fleet Ops", html_url: "https://example/team" }],
+          log_entries: [{ id: "L1", summary: "log details ".repeat(100) }],
+        },
+      },
+    };
+    expect(isPagerDutyWebhookPayload(fatPd)).toBe(true);
+    expect(isGithubWebhookPayload(fatPd)).toBe(false);
+
+    const slim = slimWebhookPayload(fatPd) as Record<string, JsonValue>;
+    const incident = slim.incident as Record<string, JsonValue>;
+    expect(slim.event_type).toBe("incident.triggered");
+    expect(incident.id).toBe("Q10L8B6ZWJNGYM");
+    expect(incident.incident_number).toBe(175);
+    expect(incident.urgency).toBe("high");
+    expect((incident.service as Record<string, JsonValue>).name).toBe("BotFleet");
+    expect(JSON.stringify(slim)).not.toContain("log details");
+    expect(JSON.stringify(slim)).not.toContain("Fleet Ops");
+    expect(serializeWebhookPayload(fatPd).length).toBeLessThan(1_000);
   });
 });

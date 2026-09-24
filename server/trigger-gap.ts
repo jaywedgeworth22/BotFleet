@@ -78,6 +78,20 @@ export function coalesce(candidates: readonly GapCandidate[], key: string): GapD
  * the 700 KB prompt that timed out Grok ACP and then failed Antigravity. */
 export const MAX_FOLD_CHARS = 64_000;
 
+interface ExtractedInstruction {
+  header?: string;
+  body: string;
+}
+
+function extractInstruction(prompt: string): ExtractedInstruction {
+  const trimmed = prompt.trim();
+  const match = trimmed.match(
+    /^(\[(?:USER-CONFIGURED WEBHOOK INSTRUCTIONS|DEFAULT WEBHOOK INSTRUCTIONS|AUTHENTICATED WEBHOOK TASK)\][\s\S]*?\[\/(?:USER-CONFIGURED WEBHOOK INSTRUCTIONS|DEFAULT WEBHOOK INSTRUCTIONS|AUTHENTICATED WEBHOOK TASK)\])\s*([\s\S]*)$/,
+  );
+  if (!match) return { body: trimmed };
+  return { header: match[1]!.trim(), body: match[2]!.trim() };
+}
+
 /** The one prompt a folded batch runs.
  *
  * Identical prompts are the common case — one webhook, one template — so
@@ -95,6 +109,34 @@ export function foldPrompts(decision: GapDecision): string {
       : `${distinct[0]}\n\n(${prompts.length} deliveries arrived while this trigger was waiting.  They are identical; handle them together.)`;
   }
   const header = `${prompts.length} deliveries arrived while this trigger was waiting.  Handle them together.`;
+
+  const parsed = distinct.map(extractInstruction);
+  const firstHeader = parsed[0]?.header;
+  const allShareHeader = Boolean(firstHeader) && parsed.every((p) => p.header === firstHeader);
+
+  if (allShareHeader && firstHeader) {
+    const bodies = parsed.map((p) => p.body);
+    const sections = bodies.map((body, index) => `--- Delivery ${index + 1} ---\n${body}`);
+    const full = [firstHeader, header, ...sections].join("\n\n");
+    if (full.length <= MAX_FOLD_CHARS) return full;
+    // Newest conclusions matter for compile-gate.  Keep from the end.
+    const omitted = "[Earlier deliveries omitted for length]";
+    const kept: string[] = [];
+    let used = firstHeader.length + 2 + header.length + 2 + omitted.length;
+    for (let i = sections.length - 1; i >= 0; i--) {
+      const extra = 2 + sections[i]!.length;
+      if (kept.length > 0 && used + extra > MAX_FOLD_CHARS) break;
+      if (kept.length === 0 && used + extra > MAX_FOLD_CHARS) {
+        const budget = Math.max(0, MAX_FOLD_CHARS - used - 2);
+        kept.unshift(sections[i]!.slice(0, budget));
+        break;
+      }
+      kept.unshift(sections[i]!);
+      used += extra;
+    }
+    return [firstHeader, header, omitted, ...kept].join("\n\n");
+  }
+
   const sections = distinct.map((prompt, index) => `--- ${index + 1} ---\n${prompt}`);
   const full = [header, ...sections].join("\n\n");
   if (full.length <= MAX_FOLD_CHARS) return full;
