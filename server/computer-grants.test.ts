@@ -687,4 +687,73 @@ describe("routine failure resiliency and unattended safety", () => {
     expect(result.mounts.map((m) => m.kind)).toEqual(["local"]);
     expect(notices).toContain("VPS computer not mounted: VPS container is stopped");
   });
+  it("fails clearly when an unattended cloud-only turn cannot reach the VPS", async () => {
+    const deps = makeBaseDeps();
+    deps.vps.vpsComputerAction = async () => {
+      throw new Error("Docker-over-SSH command timed out");
+    };
+
+    await expect(
+      resolveTurnComputerMounts({
+        bot: { id: "b1", name: "Routine", computers: ["cloud"], cloudBackend: "vps" },
+        cfg: {} as AppConfig,
+        engine: { driverKind: "claude", computerMcp: true, localComputerMcp: true, toolLoop: false },
+        threadId: "t1",
+        dispatchId: 1,
+        runOn: undefined,
+        unattended: true,
+        allowed: null,
+        deps,
+      }),
+    ).rejects.toThrow("Docker-over-SSH command timed out");
+  });
+
+  it("falls back to the host computer when the cloud box cannot be created", async () => {
+    for (const provisionFails of [true, false]) {
+      const notices: string[] = [];
+      const deps = makeBaseDeps(notices);
+      deps.box.boxConfigured = () => true;
+      deps.box.findBox = async () => null;
+      deps.box.provisionBox = async () => {
+        if (provisionFails) throw new Error("Box API returned 503");
+        return { boxId: "b1" };
+      };
+
+      const result = await resolveTurnComputerMounts({
+        bot: { id: "b1", name: "Compiler", computers: ["cloud", "local"], cloudBackend: "box" },
+        cfg: { box: { token: "t" } } as unknown as AppConfig,
+        engine: { driverKind: "claude", computerMcp: true, localComputerMcp: true, toolLoop: false },
+        threadId: "t1",
+        dispatchId: 1,
+        runOn: undefined,
+        allowed: null,
+        deps,
+      });
+
+      expect(result.mounts.map((m) => m.kind)).toEqual(["local"]);
+      expect(notices).toContain("cloud computer not mounted: the cloud computer could not be created or reached");
+    }
+  });
+
+  it("still fails a cloud-only box turn when the box cannot be created", async () => {
+    const deps = makeBaseDeps();
+    deps.box.boxConfigured = () => true;
+    deps.box.provisionBox = async () => {
+      throw new Error("Box API returned 503");
+    };
+
+    await expect(
+      resolveTurnComputerMounts({
+        bot: { id: "b1", name: "Compiler", computers: ["cloud"], cloudBackend: "box" },
+        cfg: { box: { token: "t" } } as unknown as AppConfig,
+        engine: { driverKind: "claude", computerMcp: true, localComputerMcp: true, toolLoop: false },
+        threadId: "t1",
+        dispatchId: 1,
+        runOn: undefined,
+        unattended: true,
+        allowed: null,
+        deps,
+      }),
+    ).rejects.toThrow("Box API returned 503");
+  });
 });
