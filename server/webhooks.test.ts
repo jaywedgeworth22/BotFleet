@@ -1012,6 +1012,20 @@ describe("WebhookManager", () => {
       expect(keepDebugResult).toMatchObject({ ignored: true });
     }
 
+    // 43. Adverbs between the negation and the exclusion verb ("Don't just
+    // ignore", "Do not ever ignore") still negate the exclusion.
+    for (const prompt of ["Don't just ignore warning events.", "Do not ever ignore warning events."]) {
+      const { webhook: modHook, secret: modSecret } = h.manager.create({
+        name: `Negated Modifier ${prompt}`,
+        prompt,
+        botId: "maus-1",
+      });
+      const modWarningResult = h.manager.receive(modHook.endpointId, modSecret, clauseWarning);
+      expect(modWarningResult).toMatchObject({ duplicate: false });
+      expect(modWarningResult.runId).toBeDefined();
+      expect(modWarningResult.ignored).toBeUndefined();
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
