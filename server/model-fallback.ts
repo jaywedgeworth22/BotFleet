@@ -9,6 +9,45 @@ import { dirname } from "node:path";
 import { writeFileAtomic } from "./atomic.ts";
 import type { ModelSelection, ProviderErrorCode } from "./contracts.ts";
 
+/** Downgrade the model for an unattended turn: explicit unattended turns
+ *  and fresh automation deliveries (webhook/resource triggers pass
+ *  automationSource, not unattended).  A caller-supplied modelSelection
+ *  is the caller's choice and is never downgraded.
+ *
+ *  Effort goes only to engines that offer it: stamping "low" on an
+ *  engine without effortLevels (Antigravity, some API drivers) trips the
+ *  turn-start capability check and 409s the whole unattended turn, so
+ *  the caller passes the target instance's supported levels. */
+export function unattendedModelDowngrade(
+  selection: ModelSelection,
+  opts: {
+    unattended?: boolean;
+    automationSource?: string;
+    hasExplicitSelection?: boolean;
+    effortLevels?: readonly string[];
+  },
+): ModelSelection {
+  if (opts.hasExplicitSelection) return selection;
+  const automated =
+    Boolean(opts.unattended) ||
+    opts.automationSource === "webhook" ||
+    opts.automationSource === "resource";
+  if (!automated) return selection;
+  let model = selection.model;
+  if (selection.instanceId === "gemini" || selection.instanceId === "antigravity") {
+    model = model.replace("-pro", "-flash");
+  } else if (selection.instanceId === "claude") {
+    if (model.includes("sonnet") || model.includes("opus")) {
+      // The driver's own current Haiku — claude-3-5-haiku-latest was a
+      // stale alias pinned before Haiku 4.5 shipped.
+      model = "claude-haiku-4-5";
+    }
+  }
+  return opts.effortLevels?.includes("low")
+    ? { ...selection, model, effort: "low" }
+    : { ...selection, model };
+}
+
 export interface FallbackScanMessage {
   role: string;
   kind: string;
