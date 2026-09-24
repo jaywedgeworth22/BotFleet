@@ -996,6 +996,22 @@ describe("WebhookManager", () => {
     const clauseInScopeDebugResult = h.manager.receive(clauseInScopeHook.endpointId, clauseInScopeSecret, clauseDebug);
     expect(clauseInScopeDebugResult).toMatchObject({ ignored: true });
 
+    // 42. "Ignore debug events, keep warning events" / "retain" are positive
+    // scope boundaries: warnings run, debug is ignored.
+    for (const verb of ["keep", "retain"]) {
+      const { webhook: keepHook, secret: keepSecret } = h.manager.create({
+        name: `Debug Ignorer Warning ${verb}`,
+        prompt: `Ignore debug events, ${verb} warning events.`,
+        botId: "maus-1",
+      });
+      const keepWarningResult = h.manager.receive(keepHook.endpointId, keepSecret, clauseWarning);
+      expect(keepWarningResult).toMatchObject({ duplicate: false });
+      expect(keepWarningResult.runId).toBeDefined();
+      expect(keepWarningResult.ignored).toBeUndefined();
+      const keepDebugResult = h.manager.receive(keepHook.endpointId, keepSecret, clauseDebug);
+      expect(keepDebugResult).toMatchObject({ ignored: true });
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
