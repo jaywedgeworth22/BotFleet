@@ -15,6 +15,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { parseJson } from "../schema.ts";
 import { handleLinqInbound } from "../linq/dispatch.ts";
+import { loadConfig } from "../config.ts";
 import type { BotRecord } from "../store.ts";
 
 const MAX_LINQ_WEBHOOK_BYTES = 512 * 1024;
@@ -126,7 +127,12 @@ export async function readLinqWebhook(
     json(res, status, { ok: false, reason: "bad_body" });
     return;
   }
-  const secret = process.env.LINQ_WEBHOOK_SECRET?.trim() || undefined;
+  // Env first; fall back to the resolved config, which carries the
+  // Infisical-mapped value after secret hydration.
+  const secret =
+    process.env.LINQ_WEBHOOK_SECRET?.trim() ||
+    loadConfig().imessageLinq?.webhookSecret?.trim() ||
+    undefined;
   const header = (req.headers["x-linq-signature"] as string | undefined) ?? undefined;
   const allowUnsigned = process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK?.trim() === "1";
   if (!secret) {

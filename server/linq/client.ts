@@ -16,6 +16,7 @@ import type {
   LinqSendResult,
   LinqUploadCredentials,
 } from "./types.ts";
+import { loadConfig } from "../config.ts";
 
 const DEFAULT_BASE_URL = "https://api.linqapp.com/api/partner/v3";
 
@@ -66,9 +67,13 @@ function readConfig() {
 export const LINQ_CONFIG = readConfig();
 
 function currentToken(): string {
+  // Env first (operator injection / packaged-app boot), then the resolved
+  // config: `imessageLinq.apiToken` carries the Infisical-resolved value
+  // after secret hydration, and env alone would leave it ignored.
   return (
     process.env.BOTFLEET_LINQAPP_API_KEY?.trim() ||
     process.env.LINQ_API_TOKEN?.trim() ||
+    loadConfig().imessageLinq?.apiToken?.trim() ||
     ""
   );
 }

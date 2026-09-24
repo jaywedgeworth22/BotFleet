@@ -31,10 +31,11 @@ export interface ResolvedLinqBinding {
  *  1. `cfg.botDefaults.imessagePerBot[botId]` — explicit operator choice.
  *  2. absent — the bot stays "off" (no surprise Linq activation).
  *
- *  We surface "linq" only when the workspace has a bot number AND the
- *  `BOTFLEET_LINQAPP_API_KEY` (or legacy `LINQ_API_TOKEN`) env var is set;
- *  either missing means the dispatcher
- *  logs and ignores.  Tokens are not stored on disk. */
+ *  We surface "linq" only when the workspace has a bot number AND a Linq
+ *  API token is available — env var, legacy env var, or the
+ *  Infisical-resolved `imessageLinq.apiToken` in the resolved config.
+ *  Either missing means the dispatcher logs and ignores.  Tokens are not
+ *  stored on disk. */
 export function resolveLinqBinding(
   cfg: ReturnType<typeof loadConfig>,
   botId: string,
@@ -48,10 +49,11 @@ export function resolveLinqBinding(
     "";
   const botNumber = linqSection?.botNumber?.trim() || envPhone;
   if (!botNumber) return null;
-  if (
-    !process.env.BOTFLEET_LINQAPP_API_KEY?.trim() &&
-    !process.env.LINQ_API_TOKEN?.trim()
-  ) {
+  const apiToken =
+    process.env.BOTFLEET_LINQAPP_API_KEY?.trim() ||
+    process.env.LINQ_API_TOKEN?.trim() ||
+    linqSection?.apiToken?.trim();
+  if (!apiToken) {
     return null;
   }
   return {
@@ -76,7 +78,13 @@ export function findBotForInbound(
     if (binding) bound.push({ bot, binding });
   }
   const wantedNumber = msg.toNumber?.trim();
-  if (wantedNumber) return bound.find((entry) => entry.binding.botNumber === wantedNumber) ?? null;
+  if (wantedNumber) {
+    const matches = bound.filter((entry) => entry.binding.botNumber === wantedNumber);
+    // One workspace number can be claimed by several Linq bots (hobby tier);
+    // an explicit `to` that matches more than one is ambiguous — drop the
+    // message rather than guess which bot should answer it.
+    return matches.length === 1 ? matches[0] : null;
+  }
   // `to` is optional on message.received.  With exactly one Linq-bound bot
   // there is only one place the message can go; with several we cannot tell.
   return bound.length === 1 ? bound[0] : null;

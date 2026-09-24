@@ -84,7 +84,8 @@ export interface ToolGateContext {
   /** The Linq partner-API is bound to this bot's phone number for this turn.
    *  When true, `send_voice_message` is offered; false/undefined removes it
    *  from the catalog entirely.  Set only when the operator opted this bot
-   *  into Linq AND has a workspace bot number configured. */
+   *  into Linq, has a workspace bot number configured, AND enabled voice
+   *  (`imessageLinq.allowVoiceByDefault`). */
   linq?: boolean;
 }
 
@@ -1041,7 +1042,7 @@ const LINQ_VOICE_MESSAGE: HarnessTool = {
       chat_id: {
         type: "string",
         description:
-          "The Linq chat id the inbound arrived on. Pass it back unchanged so the audio lands in the same thread that triggered the reply.",
+          "The Linq chat id the inbound arrived on. Pass it back unchanged so the audio lands in the same thread that triggered the reply. Omit it when the server already bound this turn to the inbound chat — the runtime fills it in from the turn's binding.",
       },
       text: {
         type: "string",
@@ -1054,7 +1055,7 @@ const LINQ_VOICE_MESSAGE: HarnessTool = {
           "Optional voice id override; defaults to the workspace's configured voice. Use the operator's chosen voice rather than picking freely — they curate this choice.",
       },
     },
-    required: ["chat_id", "text"],
+    required: ["text"],
   },
   surfaces: { mcp: false, http: true },
   gate: linqEnabled,

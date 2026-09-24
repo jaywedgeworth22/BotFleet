@@ -114,7 +114,7 @@ Manual smoke:
 1. Set `LINQ_API_TOKEN=test-token` in `.env.local`.
 2. Start the harness; navigate to Settings → Workspace → Integrations.
 3. Enter the bot's phone number, save, observe "Linq token detected."
-4. Run an ngrok tunnel: `ngrok http 8799`.
+4. Run an ngrok tunnel: `ngrok http 8800`.
 5. Point the Linq dashboard webhook at `${ngrok-url}/api/webhooks/linq`.
 6. Send a text to the configured number; expect the dispatched bot to
    answer (tagged `[to iMessage]` per the existing convention).

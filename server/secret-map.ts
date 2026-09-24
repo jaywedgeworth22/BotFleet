@@ -254,6 +254,16 @@ export const SECRET_FIELDS: readonly SecretFieldSpec[] = [
     reloadProviders: false,
   },
   {
+    id: "imessageLinq.webhookSecret",
+    label: "Linq webhook signing secret",
+    section: "imessageLinq",
+    path: ["webhookSecret"],
+    env: ["LINQ_WEBHOOK_SECRET"],
+    infisicalName: "LINQ_WEBHOOK_SECRET",
+    secret: true,
+    reloadProviders: false,
+  },
+  {
     id: "observability.sentryDsn",
     label: "Sentry DSN",
     section: "observability",

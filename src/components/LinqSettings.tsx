@@ -198,11 +198,11 @@ export function LinqSettings({ bots, config, onPatch }: LinqSettingsProps) {
       <div className="rounded-md border border-stroke/40 bg-canvas/40 p-3 text-[12px]">
         <header className="mb-2 flex items-center justify-between">
           <span className="font-semibold text-ink-primary">Per-bot transport</span>
-          <span className="text-ink-tertiary text-[11px]">Defaults to Off unless changed.</span>
+          <span className="text-ink-tertiary text-[11px]">Defaults to Mac Relay unless changed.</span>
         </header>
         <ul className="space-y-2">
           {bots.map((bot) => {
-            const choice = perBot[bot.id] ?? "off";
+            const choice = perBot[bot.id] ?? "mac-relay";
             return (
               <li key={bot.id} className="flex items-center justify-between gap-3 rounded border border-stroke/30 bg-canvas/60 px-3 py-2">
                 <div className="min-w-0">

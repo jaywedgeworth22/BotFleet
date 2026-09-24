@@ -301,7 +301,7 @@ import { readThreadEvents } from "./thread-events.ts";
 import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./webhook-ingress.ts";
 import { readLinqWebhook } from "./routes/linq-webhook.ts";
 import { resolveLinqBinding } from "./linq/dispatch.ts";
-import { deliverLinqOutboundIfNeeded, stopLinqTypingForThread } from "./linq/outbound.ts";
+import { deliverLinqOutboundIfNeeded, releaseLinqChat, stopLinqTypingForThread } from "./linq/outbound.ts";
 import { memberTurnSelection } from "./member-turn.ts";
 import { WebhookManager } from "./webhooks.ts";
 import { ResourceTriggerManager } from "./resource-triggers.ts";
@@ -1981,6 +1981,14 @@ bus.subscribe((event: RuntimeEvent) => {
     releaseLocalVmThread(event.threadId);
     releaseRoomComputerLease(event.threadId);
       void stopLinqTypingForThread(event.threadId);
+      // The originating turn has settled (success, failure, or untagged
+      // alike): drop its Linq binding so a later BotFleet-origin turn on
+      // this thread cannot deliver to the previous external caller.
+      // Overlapping inbounds on one thread remain a known residual race
+      // (tracked for turn-scoped correlation); the dispatch reads its
+      // binding synchronously at send time, so the release cannot interrupt
+      // a send already in flight.
+      releaseLinqChat(event.threadId);
   }
   broadcast({ kind: "runtime", event });
   const routineRun = routines?.handleRuntimeEvent(event) ?? null;
@@ -3504,12 +3512,16 @@ async function startTurn(
       // toolLoop eligibility.  Re-deriving that here would just risk the
       // two checks drifting apart.
       const hasPhone = usesDriverToolLoop && Boolean(integrations.phone);
-      // Linq transport gates `send_voice_message`.  The dispatch checks the
-      // bot's per-bot imessagePerBot choice AND the workspace's resolved
-      // Linq binding; both have to be true for the tool to surface.  Cost
-      // (hosted TTS) is the reason the gate is conservative.
+      // Linq transport gates `send_voice_message`.  The tool only surfaces
+      // when the bot opted into Linq AND the operator enabled voice
+      // (`imessageLinq.allowVoiceByDefault`) — the executor refuses
+      // otherwise, and advertising it anyway invites a wasted model round.
+      // Cost (hosted TTS) is the reason the gate is conservative.
       const linqBinding = resolveLinqBinding(cfg, bot.id);
-      const hasLinq = usesDriverToolLoop && Boolean(linqBinding);
+      const hasLinq =
+        usesDriverToolLoop &&
+        Boolean(linqBinding) &&
+        cfg.imessageLinq?.allowVoiceByDefault === true;
       // Workspace confinement for read_file/write_file/edit_file: when a
       // bot has a workspace but no This Computer grant, the file tools
       // are still advertised (they're useful) but every path is checked
@@ -5840,7 +5852,8 @@ function configStatus() {
     imessageLinq: {
       configured: Boolean(
         process.env.BOTFLEET_LINQAPP_API_KEY?.trim() ||
-          process.env.LINQ_API_TOKEN?.trim(),
+          process.env.LINQ_API_TOKEN?.trim() ||
+          cfg.imessageLinq?.apiToken?.trim(),
       ),
       botNumber: cfg.imessageLinq?.botNumber ?? "",
       perBot: cfg.botDefaults?.imessagePerBot ?? {},

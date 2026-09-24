@@ -298,9 +298,11 @@ const appConfigSchema = z.object({
     botNumber: optionalText,
     /** Partner API token. Prefer env/Infisical; kept optional on disk for sync only. */
     apiToken: optionalText,
-    /** Per-bot transport choice.  Absent means the bot defaults to "off";
-     *  setting this to "linq" routes that bot's inbound through Linq.
-     *  "mac-relay" is the existing python relay path; we surface it for
+    /** Webhook signing secret. Prefer env/Infisical; kept optional on disk for sync only. */
+    webhookSecret: optionalText,
+    /** Per-bot transport choice.  Absent means the bot defaults to
+     *  "mac-relay" (the existing python relay path); setting this to "linq"
+     *  routes that bot's inbound through Linq.  We surface "mac-relay" for
      *  completeness even though this lane adds no new behavior on that
      *  side. */
     perBot: z.record(z.string(), z.enum(["off", "mac-relay", "linq"])).optional(),
@@ -461,6 +463,7 @@ export interface AppConfig {
   imessageLinq?: {
     botNumber?: string;
     apiToken?: string;
+    webhookSecret?: string;
     ignoredSenders?: string[];
     allowedSenders?: string[];
     allowVoiceByDefault?: boolean;
@@ -1158,6 +1161,9 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   // for webhook outbound / voice upload; no spawned engine CLI should inherit it.
   "BOTFLEET_LINQAPP_API_KEY",
   "LINQ_API_TOKEN",
+  // Linq webhook signing secret: the harness holds it to verify inbound
+  // webhooks; no spawned engine CLI should inherit it.
+  "LINQ_WEBHOOK_SECRET",
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
