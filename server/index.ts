@@ -1965,7 +1965,10 @@ function turnComputerDeps(
 
 // A running VM may have survived an app/server restart. Start its idle
 // backstop even if nobody opens Settings or begins a turn this session.
-void (async () => {
+// Awaited before listen so an in-flight startup `inspect botfleet-computer`
+// cannot land after a lifecycle fixture snapshots the docker log while
+// mode cleanup holds the info gate (macOS CI flake on exact log equality).
+const localVmStartupProbe = (async () => {
   const targets = [SHARED_LOCAL_VM_TARGET];
   for (const target of targets) {
     const status = await containerComputerStatus(undefined, undefined, target).catch(() => null);
@@ -11604,6 +11607,9 @@ if (credentialFingerprint(cfg) !== loadedCredentialFingerprint) {
   });
 }
 
+// Drain the startup idle-backstop probe before accepting traffic so early
+// lifecycle routes (and their exclusion tests) never race its docker inspect.
+await localVmStartupProbe.catch(() => {});
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
 });
