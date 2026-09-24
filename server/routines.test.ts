@@ -800,6 +800,24 @@ describe("RoutineManager", () => {
     expect(activations).not.toContain("hidden-projects-thread");
   });
 
+  it("live server wiring: simple mode webhook wake reuses bot.threadId without minting", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "simple";
+    h.options.defaultThread = () => "primary-thread";
+    h.manager.enqueueWebhook({
+      webhookId: "hook-sentry",
+      webhookName: "Sentry",
+      prompt: "Handle issue",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d-live-1",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started).toEqual([{ botId: "maus-webhook", threadId: "primary-thread", prompt: "Handle issue" }]);
+    expect(h.taskTitles).toEqual([]);
+  });
+
   it("reuses the bot's existing thread instead of minting one when defaultThread is set", async () => {
     const h = harness();
     h.options.conversationMode = () => "projects";

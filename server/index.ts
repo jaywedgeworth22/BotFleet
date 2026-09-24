@@ -2989,8 +2989,20 @@ async function startTurn(
   }
 
   const fallbackPolicy = task.modelSelection ?? bot.modelSelection;
-  const selection = opts?.modelSelection
+  let selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
+
+  if (opts?.unattended && !opts?.modelSelection) {
+    let downgradedModel = selection.model;
+    if (selection.instanceId === "gemini" || selection.instanceId === "antigravity") {
+      downgradedModel = downgradedModel.replace("-pro", "-flash");
+    } else if (selection.instanceId === "claude") {
+      if (downgradedModel.includes("sonnet") || downgradedModel.includes("opus")) {
+        downgradedModel = "claude-3-5-haiku-latest";
+      }
+    }
+    selection = { ...selection, model: downgradedModel, effort: "low" };
+  }
   if (turnExternalCredentialPending(bot, selection.instanceId, opts?.runOn)) {
     throw externalCredentialPendingError(selection.instanceId);
   }

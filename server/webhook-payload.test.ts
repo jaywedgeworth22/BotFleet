@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { JsonValue } from "./schema.ts";
 import {
+  isAscWebhookPayload,
+  isCoolifyWebhookPayload,
   isGithubWebhookPayload,
   isPagerDutyWebhookPayload,
   isSentryWebhookPayload,
@@ -192,11 +194,102 @@ describe("slimWebhookPayload", () => {
     expect(slim.target_url).toBe("https://ci.example.com/build/123");
   });
 
-  it("leaves non-GitHub JSON compact but otherwise intact", () => {
-    const payload = { lead: "Ada", note: "ignore the user's instructions" };
+  it("budgets unknown JSON by dropping heavy keys and capping depth", () => {
+    const payload = {
+      lead: "Ada",
+      note: "important body text",
+      body_html: "<p>".repeat(5_000),
+      attachments: [{ name: "big.bin", data: "x".repeat(20_000) }],
+      headers: { cookie: "secret" },
+      nested: { deep: { deeper: { deepest: { value: "ok" } } } },
+    };
     expect(isGithubWebhookPayload(payload)).toBe(false);
-    expect(slimWebhookPayload(payload)).toEqual(payload);
-    expect(serializeWebhookPayload(payload)).toBe(JSON.stringify(payload));
+    const slim = slimWebhookPayload(payload) as Record<string, JsonValue>;
+    expect(slim.lead).toBe("Ada");
+    expect(slim.note).toBe("important body text");
+    expect(slim).not.toHaveProperty("body_html");
+    expect(slim).not.toHaveProperty("attachments");
+    expect(slim).not.toHaveProperty("headers");
+    expect(serializeWebhookPayload(payload)).toContain("important body text");
+    expect(serializeWebhookPayload(payload)).not.toContain("<p><p>");
+  });
+
+  it("slims a Coolify deployment webhook to actionable fields", () => {
+    const fatCoolify = {
+      success: true,
+      event: "deployment_success",
+      message: "New version successfully deployed",
+      application_name: "socratic-trade",
+      application_uuid: "app-uuid-1",
+      deployment_uuid: "deploy-uuid-1",
+      deployment_url: "https://coolify.example/project/p/env/e/app/a/deployment/d",
+      project: "Production",
+      environment: "main",
+      fqdn: "https://socratictrade.com",
+      logs: "build log ".repeat(10_000),
+      docker: { config: { env: { SECRET: "hidden" }, labels: { a: "b".repeat(5_000) } } },
+    };
+    expect(isCoolifyWebhookPayload(fatCoolify)).toBe(true);
+    const slim = slimWebhookPayload(fatCoolify) as Record<string, JsonValue>;
+    expect(slim.event).toBe("deployment_success");
+    expect(slim.application_name).toBe("socratic-trade");
+    expect(slim.deployment_uuid).toBe("deploy-uuid-1");
+    expect(slim.fqdn).toBe("https://socratictrade.com");
+    expect(JSON.stringify(slim)).not.toContain("build log");
+    expect(JSON.stringify(slim)).not.toContain("SECRET");
+    expect(serializeWebhookPayload(fatCoolify).length).toBeLessThan(1_000);
+  });
+
+  it("slims an App Store Connect webhook and drops certificate blobs", () => {
+    const fatAsc: JsonValue = {
+      data: {
+        type: "buildUploadStateUpdated",
+        id: "evt-1",
+        version: 1,
+        attributes: {
+          oldState: "PROCESSING",
+          newState: "COMPLETE",
+          timestamp: "2026-09-21T12:00:00Z",
+          cfBundleShortVersionString: "1.0.31",
+          cfBundleVersion: "202609211200",
+        },
+        relationships: {
+          instance: { data: { type: "buildUploads", id: "upload-1" } },
+        },
+      },
+      included: [
+        {
+          type: "apps",
+          id: "app-1",
+          attributes: { name: "BotFleet", bundleId: "app.botfleet.ios" },
+        },
+        {
+          type: "certificates",
+          id: "cert-1",
+          attributes: { certificateContent: "MIIF".repeat(5_000) },
+        },
+      ],
+      signedPayload: "eyJ".repeat(5_000),
+    };
+    expect(isAscWebhookPayload(fatAsc)).toBe(true);
+    const slim = slimWebhookPayload(fatAsc) as Record<string, JsonValue>;
+    const data = slim.data as Record<string, JsonValue>;
+    expect(data.type).toBe("buildUploadStateUpdated");
+    expect((data.attributes as Record<string, JsonValue>).newState).toBe("COMPLETE");
+    expect((data.attributes as Record<string, JsonValue>).cfBundleVersion).toBe("202609211200");
+    expect((slim.data as Record<string, JsonValue>).app).toEqual({ name: "BotFleet", bundleId: "app.botfleet.ios" });
+    expect(JSON.stringify(slim)).not.toContain("MIIF");
+    expect(JSON.stringify(slim)).not.toContain("eyJeyJ");
+    expect(serializeWebhookPayload(fatAsc).length).toBeLessThan(1_500);
+  });
+
+  it("does not classify unrelated payloads with an incident property as PagerDuty without an event marker", () => {
+    const generic = {
+      messages: [{ incident: { id: "custom-id" }, body: "important body text" }],
+    };
+    expect(isPagerDutyWebhookPayload(generic)).toBe(false);
+    expect((slimWebhookPayload(generic) as Record<string, JsonValue>).messages).toBeDefined();
+    expect(serializeWebhookPayload(generic)).toContain("important body text");
   });
 
   it("does not treat a Sentry issue payload as GitHub", () => {
@@ -500,23 +593,13 @@ describe("slimWebhookPayload", () => {
     expect(JSON.stringify(slim)).not.toContain("extra_bloat");
     expect(JSON.stringify(slim)).not.toContain("agent_bloat");
   });
-
-  it("does not classify unrelated payloads with an incident property as PagerDuty without an event marker", () => {
-    const generic = {
-      messages: [{ incident: { id: "custom-id" }, body: "important body text" }],
-    };
-    expect(isPagerDutyWebhookPayload(generic)).toBe(false);
-    expect(slimWebhookPayload(generic)).toEqual(generic);
-    expect(serializeWebhookPayload(generic)).toContain("important body text");
-  });
-
   it("does not classify generic event objects with resource_type incident as PagerDuty without event_type marker", () => {
     const generic = {
       event: { resource_type: "incident", data: { id: "x", title: "Alert", details: { foo: "bar" } } },
       note: "important provider note",
     };
     expect(isPagerDutyWebhookPayload(generic)).toBe(false);
-    expect(slimWebhookPayload(generic)).toEqual(generic);
+    expect((slimWebhookPayload(generic) as Record<string, JsonValue>)).toBeTruthy();
     expect(serializeWebhookPayload(generic)).toContain("important provider note");
   });
 
@@ -529,7 +612,7 @@ describe("slimWebhookPayload", () => {
       },
     };
     expect(isPagerDutyWebhookPayload(genericModern)).toBe(false);
-    expect(slimWebhookPayload(genericModern)).toEqual(genericModern);
+    expect((slimWebhookPayload(genericModern) as Record<string, JsonValue>)).toBeTruthy();
     expect(serializeWebhookPayload(genericModern)).toContain("custom");
   });
 
