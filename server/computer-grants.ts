@@ -20,6 +20,7 @@
 import { computerReach, type ComputerReach } from "./computer-capability.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 
+
 import type { AppConfig } from "./config.ts";
 
 /** One computer granted to a bot for one turn. Exactly one of `box` / `stdio`
@@ -660,9 +661,15 @@ async function resolveMounts<Lease>(
     if (unsupported && autoCloud) autoVpsProblem = unsupported;
     if (!unsupported) {
       vpsLease = deps.vpsLeases.claim(bot.id, threadId, dispatchId);
-      const remote = wantsCloudFiltered || bot.autoStartVps
-        ? await deps.vps.vpsComputerAction("provision", cfg, bot.id)
-        : await deps.vps.inspectVpsForAuto(cfg, bot.id);
+      let remote: RemoteComputerStatus | undefined;
+      try {
+        remote = wantsCloudFiltered || bot.autoStartVps
+          ? await deps.vps.vpsComputerAction("provision", cfg, bot.id)
+          : await deps.vps.inspectVpsForAuto(cfg, bot.id);
+      } catch (err) {
+        if (wantsCloudFiltered) throw err;
+        autoVpsProblem = err instanceof Error ? err.message : String(err);
+      }
       if (!(await deps.checkpoint())) return stopped();
       if (remote?.ready && remote.sshAlias) {
         const targetCfg = { ...cfg, vps: { sshAlias: remote.sshAlias } };
@@ -684,7 +691,9 @@ async function resolveMounts<Lease>(
         if (wantsCloudFiltered) {
           throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
         }
-        autoVpsProblem = remote?.problem ?? "the VPS computer could not be reached";
+        // Keep the caught SSH/timeout error when the lookup threw; the
+        // generic text is only for a lookup that returned no usable box.
+        autoVpsProblem = remote?.problem ?? autoVpsProblem ?? "the VPS computer could not be reached";
       }
     }
   }

@@ -1,4 +1,5 @@
-import type { CloudBackend, ModelSelection } from "./contracts.ts";
+import { EFFORT_LEVELS, type CloudBackend, type ModelSelection, type EffortLevel } from "./contracts.ts";
+import { modelEffortLevels } from "../src/lib/model-effort.ts";
 
 /** The bot's computer settings as they were when a turn was dispatched, which
  * is what that turn mounted.  A later bot edit changes the stored grants but
@@ -18,6 +19,10 @@ export interface TurnComputerInputs {
 
 export interface ActiveTurnOwner {
   dispatchId: number;
+  /** Monotonic dispatch time, including provider setup and retry backoff. */
+  startedAtMs: number;
+  /** Available only after this exact dispatch settles. */
+  latencyMs?: number;
   botId: string;
   selection: ModelSelection;
   fallbackPolicy: ModelSelection;
@@ -38,8 +43,13 @@ export class ActiveTurnOwners {
   private readonly byThread = new Map<string, Map<string, ActiveTurnOwner>>();
   private readonly latestDispatchByThread = new Map<string, number>();
   private nextDispatchId = 1;
+  private readonly now: () => number;
 
-  claim(threadId: string, owner: Omit<ActiveTurnOwner, "dispatchId">): ActiveTurnOwner {
+  constructor(now: () => number = () => performance.now()) {
+    this.now = now;
+  }
+
+  claim(threadId: string, owner: Omit<ActiveTurnOwner, "dispatchId" | "startedAtMs" | "latencyMs">): ActiveTurnOwner {
     let owners = this.byThread.get(threadId);
     if (!owners) {
       owners = new Map();
@@ -50,7 +60,7 @@ export class ActiveTurnOwners {
         `thread ${threadId} already has a live turn on provider instance ${owner.selection.instanceId}`,
       );
     }
-    const claimed = { ...owner, dispatchId: this.nextDispatchId++ };
+    const claimed = { ...owner, dispatchId: this.nextDispatchId++, startedAtMs: this.now() };
     owners.set(owner.selection.instanceId, claimed);
     this.latestDispatchByThread.set(threadId, claimed.dispatchId);
     return claimed;
@@ -130,6 +140,8 @@ export class ActiveTurnOwners {
   settle(threadId: string, providerInstanceId?: string): ActiveTurnOwner | undefined {
     const owner = this.forEvent(threadId, providerInstanceId);
     if (!owner) return undefined;
+    const elapsed = this.now() - owner.startedAtMs;
+    if (Number.isFinite(elapsed) && elapsed >= 0) owner.latencyMs = Math.round(elapsed);
     const owners = this.byThread.get(threadId)!;
     owners.delete(owner.selection.instanceId);
     if (owners.size === 0) this.byThread.delete(threadId);
@@ -279,7 +291,35 @@ export interface AutoFallbackCandidate {
       models?: Record<string, { capped: boolean }>;
     };
   };
-  models: { default: string };
+  driverKind?: string;
+  capabilities?: { effortLevels?: readonly string[] };
+  models: {
+    default: string;
+    options?: ReadonlyArray<{ id: string; effortLevels?: readonly EffortLevel[]; supportsEffort?: boolean }>;
+  };
+}
+
+/** Fit the failing dispatch's effort to what the fallback model offers.  The
+ * turn-start check 409s an effort the model does not list (max on a Codex
+ * model that tops out at xhigh), which would lose the turn the failover was
+ * meant to save.  Keep a supported effort as-is, otherwise step down to the
+ * highest offered level below it, otherwise send no effort. */
+function fallbackEffort(candidate: AutoFallbackCandidate, effort: EffortLevel | undefined): EffortLevel | undefined {
+  if (!effort) return undefined;
+  const model = candidate.models.default;
+  const allowed = modelEffortLevels(
+    {
+      driverKind: candidate.driverKind,
+      capabilities: { effortLevels: candidate.capabilities?.effortLevels as readonly EffortLevel[] | undefined },
+    },
+    candidate.models.options?.find((option) => option.id === model),
+    model,
+  );
+  if (allowed.includes(effort)) return effort;
+  const requested = EFFORT_LEVELS.indexOf(effort);
+  return [...allowed]
+    .filter((level) => EFFORT_LEVELS.indexOf(level) < requested)
+    .sort((a, b) => EFFORT_LEVELS.indexOf(b) - EFFORT_LEVELS.indexOf(a))[0];
 }
 
 /** Preserve the existing one-hop automatic failover while refusing candidates
@@ -289,6 +329,7 @@ export function eligibleAutoFallbackChain(
   input: {
     botId: string;
     currentInstanceId: string;
+    effort?: EffortLevel;
     isCooling: (botId: string, instanceId: string, model: string) => boolean;
     priority: readonly string[];
   },
@@ -316,7 +357,11 @@ export function eligibleAutoFallbackChain(
       return rank(a.candidate.instanceId) - rank(b.candidate.instanceId) || a.order - b.order;
     });
   const pick = viable[0]?.candidate;
-  return pick ? [{ instanceId: pick.instanceId, model: pick.models.default }] : [];
+  if (!pick) return [];
+  const selection: ModelSelection = { instanceId: pick.instanceId, model: pick.models.default };
+  const effort = fallbackEffort(pick, input.effort);
+  if (effort) selection.effort = effort;
+  return [selection];
 }
 
 export interface ThreadRuntimeInstance {

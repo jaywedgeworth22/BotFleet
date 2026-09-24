@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
 import { inferProject, inferProviderAndService, telemetry, UsageTelemetryManager, type UsageSettings } from "./telemetry.ts";
+import { ActiveTurnOwners } from "./turn-safety.ts";
 
 const ENV_KEYS = ["USAGE_MONITOR_INGEST_URL", "USAGE_MONITOR_INGEST_TOKEN", "USAGE_INGEST_TOKEN"] as const;
 const saved = new Map<string, string | undefined>();
@@ -447,6 +448,50 @@ describe("ingest acknowledgement accounting", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it.each([400, 409] as const)("quarantines receiver HTTP %i and sends a later turn", async (status) => {
+    const root = mkdtempSync(join(tmpdir(), "botfleet-telemetry-terminal-"));
+    const path = join(root, "outbox.json");
+    const manager = new UsageTelemetryManager({ enableOutbox: true, outboxPath: path });
+    const posted: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body));
+      posted.push(payload.events[0].eventId);
+      if (posted.length === 1) return new Response("private receiver detail", { status });
+      return new Response(JSON.stringify({
+        received: payload.events.length,
+        persisted: payload.events.length,
+        duplicates: 0,
+        pruned: 0,
+        rejected: 0,
+      }), { status: 202 });
+    }));
+    manager.configure(() => ({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" }));
+    try {
+      for (const threadId of ["poison-thread", "later-thread"]) {
+        manager.trackTurn({
+          botId: "bot_1", botName: "Scout", threadId, instanceId: "codex", modelId: "gpt-6-astra",
+          driverKind: "codex", inputTokens: 10, outputTokens: 4,
+        });
+      }
+      await vi.waitFor(() => expect(manager.getStatus()).toMatchObject({
+        queuedBatches: 0,
+        terminalQuarantinedBatches: 1,
+        lastTerminalStatus: status,
+        lastTerminalAt: expect.any(String),
+        totalSent: 1,
+      }));
+      expect(posted).toHaveLength(2);
+      const saved = JSON.parse(readFileSync(path, "utf8"));
+      expect(saved.terminalQuarantine[0].status).toBe(status);
+      expect(saved.terminalQuarantine[0].entry.batch.events[0].eventId).toBe(posted[0]);
+      expect(JSON.stringify(saved)).not.toContain("private receiver detail");
+      expect(JSON.stringify(saved)).not.toContain("tok_abc");
+    } finally {
+      await manager.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("never copies a non-2xx receiver body into status or logs", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
@@ -497,5 +542,49 @@ describe("harness telemetry wiring", () => {
     expect(indexSource.match(/modelId:\s*actualSelection\.model\b/g)).toHaveLength(2);
     expect(indexSource).not.toMatch(/instanceId:\s*(?:bot|roomBot)\.modelSelection\.instanceId/);
     expect(indexSource).not.toMatch(/modelId:\s*(?:bot|roomBot)\.modelSelection\.model/);
+  });
+
+  it("passes settled latency to both 1:1 and room telemetry calls", () => {
+    expect(indexSource.match(/latencyMs:\s*settledOwner\?\.latencyMs/g)).toHaveLength(2);
+  });
+
+  it("posts elapsed dispatch time and failure status in the Usage Monitor payload", async () => {
+    let clock = 100;
+    const owners = new ActiveTurnOwners(() => clock);
+    const selection = { instanceId: "claude", model: "sonnet" };
+    owners.claim("thread", { botId: "bot", selection, fallbackPolicy: selection });
+    clock += 1_234;
+    const settled = owners.settle("thread", "claude");
+    const manager = new UsageTelemetryManager({ enableOutbox: false });
+    manager.configure(() => ({ ingestUrl: "https://usage.example.com", ingestToken: "test-token" }));
+    const post = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      received: 1,
+      persisted: 1,
+      duplicates: 0,
+      pruned: 0,
+      rejected: 0,
+    }), { status: 200 }));
+    try {
+      manager.trackTurn({
+        botId: "bot",
+        botName: "Scout",
+        threadId: "thread",
+        instanceId: selection.instanceId,
+        modelId: selection.model,
+        inputTokens: 12,
+        latencyMs: settled?.latencyMs,
+        success: false,
+        roomId: "room",
+        roomName: "Research",
+      });
+      await vi.waitFor(() => expect(manager.getStatus().totalSent).toBe(1));
+      const [, init] = post.mock.calls[0]!;
+      const batch = JSON.parse(String(init?.body));
+      expect(batch.events[0].metadata).toMatchObject({ latencyMs: 1_234, success: false, roomId: "room" });
+    } finally {
+      post.mockRestore();
+      await manager.dispose();
+    }
+    expect(owners.settle("thread", "claude")).toBeUndefined();
   });
 });

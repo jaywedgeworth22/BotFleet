@@ -18,6 +18,7 @@ import { isIP } from "node:net";
 import { extname, join } from "node:path";
 
 import { z } from "zod";
+import { ScreenPollers } from "./screen-poller.ts";
 import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import { DEFAULT_ROOM_TERMINOLOGY, resolveRoomLabels } from "../shared/terminology.ts";
 import {
@@ -181,6 +182,7 @@ import {
   type CloudBackend,
   type InstanceConfigMap,
   type ModelSelection,
+  type EffortLevel,
   type ProviderInstance,
   type RequestOutcome,
   type RuntimeEvent,
@@ -248,7 +250,8 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
-import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
+import { fitListToBudget, serializedPreview } from "./serialized-preview.ts";
+import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
   ensureWorkspace,
@@ -1187,6 +1190,7 @@ interface SseClient {
    * while a bot works. A client that isn't showing the computer panel —
    * a phone on cellular, most of all — should not pay for them. */
   screens: boolean;
+  screenBotIds: Set<string> | null;
 }
 const sseClients = new Set<SseClient>();
 
@@ -1230,10 +1234,12 @@ function broadcast(payload: Record<string, unknown>) {
   if (replayBuffer.length > REPLAY_MAX) replayBuffer.shift();
   for (const client of [...sseClients]) {
     if (!wants(client, kind)) continue;
+    if (kind === "screen" && client.screenBotIds && !client.screenBotIds.has(String(payload.botId))) continue;
     try {
       client.res.write(frame);
     } catch {
       sseClients.delete(client);
+      screenPollers.viewerChanged();
     }
   }
 }
@@ -1590,7 +1596,7 @@ function releaseStalledTurnIfUnowned(
   }
   const bot = store.bot(turn.botId);
   if (!bot?.busy || (bot.inflightThreadId && bot.inflightThreadId !== turn.threadId)) return "release";
-  stopScreenPoller(bot.id);
+  screenPollers.stop(bot.id);
   const vpsLease = activeVpsThreads.forBot(bot.id);
   if (vpsLease?.threadId === turn.threadId && vpsLease.dispatchId === stalledDispatchId) {
     activeVpsThreads.release(vpsLease);
@@ -2034,7 +2040,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // with the agent for the box's command endpoint, so a bot grinding
         // through file edits must not trigger one per tool.
         if (bot && /computer|screenshot|click|type_text|press_key|scroll|open_url/i.test(toolName)) {
-          pokeScreenPoller(bot.id);
+          screenPollers.poke(bot.id);
         }
       }
       break;
@@ -2401,6 +2407,11 @@ bus.subscribe((event: RuntimeEvent) => {
           fallbackAttemptByTurn.delete(fallbackKey);
           pendingMemberFallback.delete(event.threadId);
           quotaCooldowns.clear(fallbackBot.id, actualSelection.instanceId, actualSelection.model);
+        } else if (
+          actualSelection.instanceId &&
+          (event.stopReason === "prompt_timeout" || event.stopReason === "resume_failed")
+        ) {
+          store.setResumeCursor(fallbackBot.id, actualSelection.instanceId, undefined, event.threadId);
         }
         if (quotaOrCap && textIsCandidateForQuota) {
           quotaCooldowns.record({
@@ -2423,7 +2434,7 @@ bus.subscribe((event: RuntimeEvent) => {
         let chain = configuredChain && configuredChain.length > 0 ? configuredChain : undefined;
         if (!chain && quotaOrCap) {
           deferredAutoFallback = true;
-          chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+          chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId, actualSelection.effort);
         }
         // A provider reload fences every dispatch, including a fallback to an
         // unrelated instance.  Keep this completion fold and its busy owner
@@ -2444,7 +2455,7 @@ bus.subscribe((event: RuntimeEvent) => {
               await waitForProviderReloads();
             }
             const refreshedAt = providerReloadGeneration;
-            chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+            chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId, actualSelection.effort);
             if (!providerReloadInProgress && providerReloadGeneration === refreshedAt) break;
           }
         }
@@ -2545,6 +2556,7 @@ bus.subscribe((event: RuntimeEvent) => {
           cachedInputTokens: tokens?.cachedInput,
           costUsd: event.cost ?? null,
           billingMode: event.billingMode,
+          latencyMs: settledOwner?.latencyMs,
           success: event.ok !== false,
         });
         // settled → idle; a setup failure already marked it dead, keep that
@@ -2588,7 +2600,7 @@ bus.subscribe((event: RuntimeEvent) => {
           // the screenshot-in-chat moment. One fresh capture first, so the
           // frame shows the turn's END state (the final tool's poke may
           // still be in flight).
-          void finalScreenFrame(bot.id).then((frame) => {
+          void screenPollers.final(bot.id).then((frame) => {
             // the bot may have been deleted while the capture ran
             if (frame && store.bot(bot.id)) {
               pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
@@ -2620,6 +2632,7 @@ bus.subscribe((event: RuntimeEvent) => {
             cachedInputTokens: tokens?.cachedInput,
             costUsd: event.cost ?? null,
             billingMode: event.billingMode,
+            latencyMs: settledOwner?.latencyMs,
             success: event.ok !== false,
             roomId: group.id,
             roomName: group.name,
@@ -2686,12 +2699,13 @@ bus.subscribe((event: RuntimeEvent) => {
  * instance (by fleet priority) is offered as a one-step chain. The caller
  * still runs it through selectTurnFallback, so the produced / quota /
  * stop-reason rules apply exactly as they do for a configured chain. */
-async function autoFallbackChain(botId: string, currentInstanceId: string): Promise<ModelSelection[]> {
+async function autoFallbackChain(botId: string, currentInstanceId: string, effort?: EffortLevel): Promise<ModelSelection[]> {
   try {
     const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
     return eligibleAutoFallbackChain(described, {
       botId,
       currentInstanceId,
+      effort,
       // The fleet ladder itself lives in model-fallback.ts so the ordering
       // is unit-testable without booting the server — minimax sits after
       // codex and ahead of openaiCompat, per the PR 10 owner decision.
@@ -2892,110 +2906,12 @@ function drainQueuedSends() {
   );
 }
 
-// ── live screen: poll the bot's computer while it works ───────────────
-// Frames stream to clients as SSE {kind:'screen'} (the "Bot's screen"
-// panel); the final frame is folded into the transcript on turn end.
-type Frame = { png: string; mime: string };
-const screenPollers = new Map<
-  string,
-  {
-    timer: ReturnType<typeof setInterval> | null;
-    capture: () => Promise<void>;
-    last: Frame | null;
-    /** Did this turn actually reach for the screen? A bot that merely HAS
-     * a computer would otherwise end every reply — a one-word "yes"
-     * included — with the same picture of an idle desktop. The flag lives
-     * on the poller entry, which is created and dropped per turn, so it
-     * cannot leak into a later one. */
-    touched: boolean;
-  }
->();
-
-/** The preview shares the box's single command endpoint with the agent's
- * own actions, so every frame we take is latency stolen from the work the
- * user is waiting on. Hence: a slow interval, a floor between captures,
- * and never two in flight. */
-const SCREEN_POLL_MS = 6000;
-const SCREEN_MIN_GAP_MS = 3000;
-
-/** `screenIsTheWork` starts the turn already counting as screen usage: a
- * boxAgent's whole session runs ON the box, so every tool it calls acts on
- * that screen even though none of them is named like a computer tool. */
-function startScreenPoller(
-  botId: string,
-  capture: () => Promise<{ png: string; format: string }>,
-  { screenIsTheWork = false } = {},
-) {
-  if (screenPollers.has(botId)) return;
-  // One capture at a time, shared by the interval, the pokes, and the
-  // turn-end grab: awaiting the in-flight promise (rather than dropping the
-  // call) is what lets the final frame be the settled one. The min-gap keeps
-  // a tool-heavy turn from spending the box's single command endpoint on
-  // previews the user isn't waiting for.
-  let current: Promise<void> | null = null;
-  let lastAt = 0;
-  const entry = {
-    timer: null as ReturnType<typeof setInterval> | null,
-    capture: (): Promise<void> => {
-      if (!current && Date.now() - lastAt < SCREEN_MIN_GAP_MS) return Promise.resolve();
-      current ??= (async () => {
-        try {
-          const { png, format } = await capture();
-          const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
-          entry.last = frame;
-          broadcast({ kind: "screen", botId, ...frame });
-        } catch {
-          /* box asleep or mid-command — try again next tick */
-        } finally {
-          lastAt = Date.now();
-          current = null;
-        }
-      })();
-      return current;
-    },
-    last: null as Frame | null,
-    touched: screenIsTheWork,
-  };
-  entry.timer = setInterval(() => void entry.capture(), SCREEN_POLL_MS);
-  screenPollers.set(botId, entry);
-}
-
-/** Event-driven refresh: capture NOW (the bot just acted on its screen)
- * instead of waiting for the next interval tick. Rate-limited inside
- * capture() — a tool-heavy turn used to fire one full REST chain per
- * completed tool, competing with the agent for the same endpoint. */
-function pokeScreenPoller(botId: string) {
-  const entry = screenPollers.get(botId);
-  if (!entry) return;
-  // the same signal, read twice: a completed computer tool is both the
-  // reason to refresh the preview NOW and the proof that this turn's
-  // final frame is worth settling into the transcript
-  entry.touched = true;
-  void entry.capture();
-}
-
-function stopScreenPoller(botId: string) {
-  const entry = screenPollers.get(botId);
-  if (!entry) return;
-  if (entry.timer) clearInterval(entry.timer);
-  screenPollers.delete(botId);
-}
-
-/** Turn end: stop polling, then take ONE last fresh frame (awaiting any
- * in-flight poke first) so the settled screenshot shows the screen's actual
- * end state, not the previous action's. A turn that never touched the
- * screen settles nothing — and skips the capture, which is one less
- * command on the box's single endpoint. Either way the poller is torn down
- * here, so no per-turn state survives the turn. */
-async function finalScreenFrame(botId: string): Promise<Frame | null> {
-  const entry = screenPollers.get(botId);
-  if (!entry) return null;
-  if (entry.timer) clearInterval(entry.timer);
-  screenPollers.delete(botId);
-  if (!entry.touched) return null;
-  await entry.capture();
-  return entry.last;
-}
+// ── live screen: capture only while a viewer watches ───────────────────
+const screenPollers = new ScreenPollers(
+  (botId) => [...sseClients].some((client) =>
+    !client.res.destroyed && client.screens && (!client.screenBotIds || client.screenBotIds.has(botId))),
+  (botId, frame) => broadcast({ kind: "screen", botId, ...frame }),
+);
 
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
 async function startTurn(
@@ -3215,6 +3131,9 @@ async function startTurn(
     // driver gets this for free by declaring it.
     replaysNatively: instance.adapter.capabilities.replaysTranscript === true,
   });
+  const driverTranscript = instance.adapter.capabilities.replaysTranscript === true
+    ? boundNativeTranscript(transcript)
+    : transcript;
 
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
@@ -3523,7 +3442,7 @@ async function startTurn(
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
         resumeCursor: resume ? task.resumeCursors[instanceId] : undefined,
-        transcript,
+        transcript: driverTranscript,
         // `buildTurnTools` only returns tool surfaces the harness can
         // actually execute in-process: agents, host computer, fleet
         // recall, phone, and github today.  Composio and real GUI/cloud
@@ -3642,7 +3561,7 @@ async function startTurn(
         activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId === dispatchOwner.dispatchId &&
         store.bot(bot.id)?.busy
       ) {
-        startScreenPoller(bot.id, previewCapture, { screenIsTheWork: instance.driverKind === "boxAgent" });
+        screenPollers.start(bot.id, previewCapture, instance.driverKind === "boxAgent");
       }
     } catch (e) {
       if (activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId !== dispatchOwner.dispatchId) return;
@@ -3812,18 +3731,59 @@ const routineRequests = new RoutineRequestService({
   cloudReady: cloudRoutineReadiness,
   canPersist: routineProposalPersistence,
 });
+/** Serialized byte budget for one list_routines response (50 KB target,
+ * with headroom for the tool wrapper). */
+const ROUTINE_LIST_BUDGET_BYTES = 48_000;
+/** Most routines one list_routines response returns; the rest are counted
+ * in routinesOmitted. */
+const ROUTINE_LIST_MAX_ROWS = 100;
 const ROUTINE_WEEKDAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
-const agentRoutine = (routine: ReturnType<RoutineManager["listRoutines"]>[number]) => {
+type ManagedRoutine = ReturnType<RoutineManager["listRoutines"]>[number];
+type AgentRoutineFields = {
+  id: string;
+  name: string;
+  nameTruncated?: true;
+  enabled: boolean;
+  runOn: ManagedRoutine["runOn"];
+  durationMinutes: number;
+  schedule:
+    | { type: "once"; at: string }
+    | { type: "weekly"; time: string; weekdays: (typeof ROUTINE_WEEKDAY_NAMES)[number][]; timeZone?: string };
+  nextRunAt: string | null;
+};
+type AgentRoutineSummary = AgentRoutineFields & {
+  instructionsPreview: string;
+  instructionsPreviewTruncated: boolean;
+};
+type AgentRoutineDetails = AgentRoutineFields & { instructions: string };
+function agentRoutine(routine: ManagedRoutine, includeInstructions: true): AgentRoutineDetails;
+function agentRoutine(routine: ManagedRoutine, includeInstructions?: false): AgentRoutineSummary;
+function agentRoutine(
+  routine: ManagedRoutine,
+  includeInstructions = false,
+): AgentRoutineSummary | AgentRoutineDetails {
   // Routines created in the calendar predate chat-card redaction and may
   // contain a credential in their instructions. The list result is handed
   // back to the model, so scrub the complete value before taking its preview.
   const safeInstructions = redactSecretsInText(routine.prompt);
   const safeName = redactSecretsInText(routine.name);
+  // Bound the preview by its serialized UTF-8 size, not UTF-16 units, so CJK
+  // or control-character instructions cannot push 100 previews past the list
+  // budget, and an emoji is never split at the cut.
+  const preview = includeInstructions ? undefined : serializedPreview(safeInstructions, 160);
+  // Names are capped at 80 characters on write, not 80 bytes: bound the list
+  // copy by serialized size too (the full name is in the routine_id lookup).
+  const name = includeInstructions ? { preview: safeName, truncated: false } : serializedPreview(safeName, 80);
   return {
     id: routine.id,
-    name: safeName,
-    instructions: safeInstructions.slice(0, 2_000),
-    instructionsTruncated: safeInstructions.length > 2_000,
+    name: name.preview,
+    ...(name.truncated ? { nameTruncated: true } : {}),
+    ...(includeInstructions
+      ? { instructions: safeInstructions }
+      : {
+          instructionsPreview: preview!.preview,
+          instructionsPreviewTruncated: preview!.truncated,
+        }),
     enabled: routine.enabled,
     runOn: routine.runOn,
     durationMinutes: routine.durationMinutes,
@@ -4130,14 +4090,14 @@ const groupQueues = new Map<string, Promise<void>>();
 const GROUP_CONTEXT_MESSAGES = 30;
 const MAX_GROUP_HOPS = 1;
 
-function serializeRoomContext(threadId: string, userName: string): string {
+function serializeRoomContext(threadId: string, userName: string, preserveNewest = true): string {
   const messages = store.messagesFor(threadId);
   const messagesById = new Map(messages.map((message) => [message.id, message]));
-  return messages
+  const lines = messages
     .filter((m) => m.kind === "text" && m.text)
     .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
-    .join("\n");
+    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`);
+  return boundRoomContextLines(lines, preserveNewest);
 }
 
 
@@ -4170,6 +4130,7 @@ export function executeListAgentsRequest(input: { selfId: string }): {
 export function executeListRoutinesRequest(input: {
   fromBotId: string;
   fromThreadId?: string;
+  routineId?: string;
 }): { status: number; body: Record<string, unknown> } {
   const from = store.bot(input.fromBotId);
   if (!from) return { status: 403, body: { error: "unknown sender" } };
@@ -4177,15 +4138,33 @@ export function executeListRoutinesRequest(input: {
   if (!connectorThread(from.id, fromThreadId)) {
     return { status: 403, body: { error: "source conversation does not belong to sender" } };
   }
+  const ownedRoutines = (routines?.listRoutines() ?? []).filter((routine) => routine.botId === from.id);
+  if (input.routineId) {
+    const routine = ownedRoutines.find((candidate) => candidate.id === input.routineId);
+    if (!routine) return { status: 404, body: { error: "routine not found" } };
+    return {
+      status: 200,
+      body: {
+        now: new Date().toISOString(),
+        timeZone: routineTimeZone(),
+        routine: agentRoutine(routine, true),
+      },
+    };
+  }
+  const envelope = { now: new Date().toISOString(), timeZone: routineTimeZone() };
   return {
     status: 200,
     body: {
-      now: new Date().toISOString(),
-      timeZone: routineTimeZone(),
-      routines: (routines?.listRoutines() ?? [])
-        .filter((routine) => routine.botId === from.id)
-        .slice(0, 100)
-        .map(agentRoutine),
+      ...envelope,
+      // The whole list, not just each field, stays inside the budget.
+      // Routines past the 100-row cap count as omitted too, so a capped
+      // list never reads as complete.
+      ...fitListToBudget(
+        envelope,
+        ownedRoutines.slice(0, ROUTINE_LIST_MAX_ROWS).map((routine) => agentRoutine(routine)),
+        ROUTINE_LIST_BUDGET_BYTES,
+        Math.max(0, ownedRoutines.length - ROUTINE_LIST_MAX_ROWS),
+      ),
     },
   };
 }
@@ -4817,7 +4796,7 @@ async function runGroupMemberTurn(
     .filter(Boolean)
     .join("\n");
 
-  const text = `${serializeRoomContext(threadId, userName)}\n\n(Reply to the conversation above as ${bot.name}.)${
+  const text = `${serializeRoomContext(threadId, userName, !cardContinuation)}\n\n(Reply to the conversation above as ${bot.name}.)${
     cardContinuation ? `\n\n${cardContinuation}` : ""
   }`;
 
@@ -6035,7 +6014,7 @@ function settleInterruptedBots(
     // lookup used to perform, one step earlier and one map less.
     const vmClaim = localVmThreadTargets.findByBot(b.id);
     if (vmClaim) releaseLocalVmThread(vmClaim.threadId, vmClaim.botId);
-    stopScreenPoller(b.id);
+    screenPollers.stop(b.id);
     activeVpsThreads.clearBot(b.id);
     finalizeDelegationWatch(
       inflight,
@@ -6886,9 +6865,11 @@ const server = createServer(async (req, res) => {
       }
       if (method === "GET" && path === "/api/internal/routines") {
         const fromThreadId = url.searchParams.get("fromThreadId");
+        const routineId = url.searchParams.get("routineId");
         const result = executeListRoutinesRequest({
           fromBotId: String(url.searchParams.get("fromBotId") ?? ""),
           ...(fromThreadId ? { fromThreadId } : {}),
+          ...(routineId ? { routineId } : {}),
         });
         return json(res, result.status, result.body);
       }
@@ -7191,7 +7172,11 @@ const server = createServer(async (req, res) => {
 
     // ── events stream ──
     if (method === "GET" && path === "/api/events") {
-      const client: SseClient = { res, screens: url.searchParams.get("screens") !== "off" };
+      const client: SseClient = {
+        res,
+        screens: url.searchParams.get("screens") === "on",
+        screenBotIds: url.searchParams.has("botId") ? new Set(url.searchParams.getAll("botId")) : null,
+      };
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
@@ -7226,6 +7211,7 @@ const server = createServer(async (req, res) => {
       }
 
       sseClients.add(client);
+      screenPollers.viewerChanged();
       const keepalive = setInterval(() => {
         try {
           res.write(": keepalive\n\n");
@@ -7234,6 +7220,7 @@ const server = createServer(async (req, res) => {
       req.on("close", () => {
         clearInterval(keepalive);
         sseClients.delete(client);
+        screenPollers.viewerChanged();
       });
       return;
     }
@@ -8684,7 +8671,7 @@ const server = createServer(async (req, res) => {
       try {
         // a running turn dies with its bot
         await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
-        stopScreenPoller(bot.id);
+        screenPollers.stop(bot.id);
         activeVpsThreads.clearBot(bot.id);
         routines!.disableForBot(bot.id);
         webhooks.disableForBot(bot.id);

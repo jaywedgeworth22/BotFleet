@@ -233,6 +233,33 @@ describe("the grant a turn resolves is the same on both lanes", () => {
     expect(released).toEqual([lease]);
   });
 
+  it("keeps the caught VPS error when an Auto lookup throws and nothing mounts", async () => {
+    // The auto lookup's SSH/timeout error used to be replaced by the generic
+    // "could not be reached" text in the no-mount branch.
+    const deps = stubDeps({
+      readHostConnection: () => null,
+      vps: {
+        vpsDriverError: () => null,
+        vpsComputerAction: async () => ({ ready: false }),
+        inspectVpsForAuto: async () => {
+          throw new Error("ssh: connect to host vps-1 port 22: Operation timed out");
+        },
+        vpsComputerMcp: () => ({ command: "", args: [], env: {} }),
+        vpsComputerScreenshot: async () => ({ png: "", format: "png" }),
+      },
+    });
+    const run = resolveTurnComputerMounts({
+      bot: { id: "bot-auto-vps", name: "Auto", cloudBackend: "vps" },
+      cfg: EMPTY_CONFIG,
+      engine: ACP_ENGINE,
+      threadId: "thread-auto-vps",
+      dispatchId: 1,
+      allowed: null,
+      deps,
+    });
+    await expect(run).rejects.toThrow("ssh: connect to host vps-1 port 22: Operation timed out");
+  });
+
   describe("per-provider toggles are enforced on the cloud backend a bot resolves to", () => {
     // The legacy allowlist only says "cloud", which cannot tell ASCII.dev Box
     // from the Self-Hosted VPS.  Turning one of them off must still keep bots

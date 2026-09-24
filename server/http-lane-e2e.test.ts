@@ -195,7 +195,7 @@ posixOnly("approvals reach an HTTP-lane bot", () => {
       }),
       { mode: 0o600 },
     );
-    const port = await freePortBlock([0]);
+    const port = await freePortBlock([0, 1]);
     base = `http://127.0.0.1:${port}`;
     child = spawnDetached(process.execPath, [join(SERVER_DIR, "index.ts")], {
       cwd: join(SERVER_DIR, ".."),
@@ -204,6 +204,7 @@ posixOnly("approvals reach an HTTP-lane bot", () => {
         HOME: home,
         USERPROFILE: home,
         OMB_PORT: String(port),
+        OMB_WEBHOOK_PORT: String(port + 1),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

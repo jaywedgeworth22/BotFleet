@@ -15,6 +15,7 @@ import { isQuotaOrCapText, parseQuotaResetTime } from "../model-fallback.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
+import { buildTurnEvents } from "../telemetry.ts";
 import {
   ANTIGRAVITY_COMPUTER_MCP_KEY,
   ANTIGRAVITY_HOST_CONTROL_NOTICE,
@@ -198,6 +199,38 @@ describe("Antigravity turns (fake CLI)", () => {
     // result.usage is the turn total (the per-step figures precede it)
     expect(done).toMatchObject({ type: "turn.completed", ok: true, usage: { input: 105, output: 20 } });
     expect(instance.adapter.hasSession("t-happy")).toBe(false);
+  });
+
+  it("carries cache reads through live and terminal usage without billing them twice", async () => {
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-cache", text: "hi" });
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+
+    const live = recorder.events.filter((e) => e.type === "thread.token-usage.updated");
+    expect(live).toHaveLength(2);
+    for (const event of live) {
+      expect(event).toMatchObject({ input: 105, output: 20, cachedInput: 5 });
+    }
+    expect(completed).toMatchObject({ usage: { input: 105, output: 20, cachedInput: 5 } });
+    if (completed.type !== "turn.completed") throw new Error("turn did not complete");
+
+    const events = buildTurnEvents({
+      botId: "bot-cache",
+      botName: "Cache test",
+      threadId: "t-cache",
+      instanceId: "antigravity",
+      modelId: "gemini-3.1-pro-high",
+      driverKind: "antigravityAgent",
+      inputTokens: completed.usage?.input,
+      outputTokens: completed.usage?.output,
+      cachedInputTokens: completed.usage?.cachedInput,
+    });
+    expect(events.map((event) => [event.metadata.tokenType, event.quantity])).toEqual([
+      ["input", 100],
+      ["cacheRead", 5],
+      ["output", 20],
+    ]);
+    expect(events.reduce((total, event) => total + event.quantity, 0)).toBe(125);
   });
 
   // The stuck-forever bug. Every one of these used to leave the turn
