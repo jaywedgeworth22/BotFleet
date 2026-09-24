@@ -600,23 +600,33 @@ export function isPagerDutyWebhookPayload(payload: JsonValue): boolean {
       if (
         isPagerDutyUrl(inc.html_url) ||
         isPagerDutyUrl(inc.url) ||
-        isPagerDutyUrl(pickStr(asRecord(inc.service), "html_url"))
+        isPagerDutyUrl(pickStr(asRecord(inc.service), "html_url")) ||
+        isPagerDutyUrl(pickStr(asRecord(inc.service), "url")) ||
+        isPagerDutyUrl(pickStr(asRecord(rec.webhook), "url"))
       ) {
         return true;
       }
-      if (eventName?.startsWith("incident.")) {
-        const hasLegacyMarker = Boolean(
-          inc.status !== undefined ||
-          inc.urgency !== undefined ||
-          inc.service !== undefined ||
-          inc.incident_number !== undefined ||
-          inc.incident_key !== undefined ||
-          rec.created_on !== undefined ||
-          inc.created_on !== undefined
-        );
-        if (hasLegacyMarker) return true;
-      }
-      return false;
+      const isPdEvent =
+        eventName === "incident.trigger" ||
+        eventName === "incident.acknowledge" ||
+        eventName === "incident.unacknowledge" ||
+        eventName === "incident.resolve" ||
+        eventName === "incident.assign" ||
+        eventName === "incident.escalate" ||
+        eventName === "incident.delegate";
+      if (!isPdEvent) return false;
+
+      const hasPdStatus = inc.status === "triggered" || inc.status === "acknowledged" || inc.status === "resolved";
+      const hasExclusiveField =
+        inc.incident_key !== undefined ||
+        Array.isArray(inc.teams) ||
+        Array.isArray(rec.log_entries) ||
+        rec.webhook !== undefined ||
+        inc.assigned_to_user !== undefined ||
+        inc.urgency === "high" ||
+        inc.urgency === "low";
+
+      return hasExclusiveField || hasPdStatus;
     });
   }
   return false;

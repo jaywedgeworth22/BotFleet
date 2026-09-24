@@ -341,9 +341,9 @@ export function shouldIgnoreWebhookEvent(
     const isLevelExcluded = (lvl: string): boolean => {
       // Find exclusion phrases, stopping at clause boundaries (;, \n, .)
       // Distinguish noun usages like "drop in warning", "drop of warning", or "recent drop of" from imperative drop commands.
-      // Passive "ignored"/"dropped" count only after a be/get auxiliary ("warnings are ignored",
+      // Passive "ignored"/"dropped"/"excluded"/"skipped" count only after a be/get auxiliary ("warnings are ignored",
       // "assignments should be dropped"), so adjective uses like "handle dropped warnings" stay positive.
-      const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped)\\b)`;
+      const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b)`;
       // Positive handling/investigation verbs that govern events
       const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
       const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;
@@ -459,7 +459,7 @@ export function shouldIgnoreWebhookEvent(
 
     if (action === "assigned" || action === "unassigned") {
       const isAssignmentExcluded = (): boolean => {
-        const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignoring)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped)\\b)`;
+        const exclusionVerb = `(?:\\b(?:out\\s+of|not\\s+in)\\s+scope\\b|\\bstay silent\\b|\\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping)\\b|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)\\bdrop\\b(?!s?\\s+(?:in|of)\\b)|\\b(?:is|are|be|was|were|get|gets|got)\\s+(?:ignored|dropped|excluded|skipped)\\b)`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify|keep|retain)\\b`;
         const assignmentTarget = `\\b(?:un-?assign(?:ed|ment|ee)?s?|re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const inScopePhrase = String.raw`(?<!\bnot\s+)\b(?:in\s+scope|tracked|monitored|included|allowed|handled|processed)\b`;

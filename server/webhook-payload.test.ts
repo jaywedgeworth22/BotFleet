@@ -654,6 +654,24 @@ describe("slimWebhookPayload", () => {
     expect(inc.created_on).toBe("2026-09-24T08:14:50Z");
     expect(inc.created_at).toBe("2026-09-24T08:14:50Z");
   });
+
+  it("does not classify custom messages payloads with generic status as PagerDuty", () => {
+    const customPayload = {
+      messages: [
+        {
+          event: "incident.created",
+          incident: {
+            id: "1",
+            status: "open",
+            details: { customField: "important-payload-data" },
+          },
+        },
+      ],
+    };
+    expect(isPagerDutyWebhookPayload(customPayload)).toBe(false);
+    expect(slimWebhookPayload(customPayload)).toEqual(customPayload);
+    expect(serializeWebhookPayload(customPayload)).toContain("important-payload-data");
+  });
 });
 
 

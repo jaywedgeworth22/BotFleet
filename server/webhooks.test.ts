@@ -1065,6 +1065,31 @@ describe("WebhookManager", () => {
       expect(nisResult).toMatchObject({ ignored: true });
     }
 
+    // 46. Explicit exclusion verbs ("Exclude warning events", "Skip warning events")
+    // ignore matching events while their negations preserve them.
+    const explicitExclusionCases: Array<[string, boolean]> = [
+      ["Exclude warning events.", true],
+      ["Skip warning events.", true],
+      ["Do not exclude warning events.", false],
+      ["Don't skip warning events.", false],
+      ["Warning events should be skipped.", true],
+      ["Warning events must not be excluded.", false],
+    ];
+    for (const [prompt, ignored] of explicitExclusionCases) {
+      const { webhook: exclHook, secret: exclSecret } = h.manager.create({
+        name: `Excl ${prompt}`,
+        prompt,
+        botId: "maus-1",
+      });
+      const exclResult = h.manager.receive(exclHook.endpointId, exclSecret, clauseWarning);
+      if (ignored) {
+        expect(exclResult).toMatchObject({ ignored: true });
+      } else {
+        expect(exclResult.runId).toBeDefined();
+        expect(exclResult.ignored).toBeUndefined();
+      }
+    }
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
