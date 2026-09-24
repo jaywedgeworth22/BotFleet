@@ -13,6 +13,7 @@ import { EngineCallout } from "./EngineCallout";
 import { formatDualQuotaBadge } from "@/lib/quota-display";
 import { cn } from "@/lib/cn";
 import { COMPACT_SQUARE } from "@/lib/compact-chip";
+import { modelEffortLevels } from "@/lib/model-effort";
 
 type ModelOption = InstanceInfo["models"]["options"][number];
 const COMPACT_MODEL_COUNT = 5;
@@ -194,12 +195,17 @@ export function ModelPicker({
   };
 
   const pick = (instance: InstanceInfo, model: string) => {
-    const sameInstance = instance.instanceId === selection.instanceId;
     const nextSelection: ModelSelection = {
       instanceId: instance.instanceId,
       model,
     };
-    if (sameInstance && selection.effort) nextSelection.effort = selection.effort;
+    if (selection.effort) {
+      const targetOption = instance.models.options.find((o) => o.id === model);
+      const allowed = modelEffortLevels(instance, targetOption, model);
+      if (allowed.includes(selection.effort)) {
+        nextSelection.effort = selection.effort;
+      }
+    }
     // Fleet Models passes onChange for the primary pill.  Keep that bot's
     // fallbacks so picking a new primary does not wipe the chain.
     if (selection.fallbacks?.length) nextSelection.fallbacks = selection.fallbacks;
@@ -284,7 +290,7 @@ export function ModelPicker({
       )}
       title={active ? `${active.displayName} · ${modelLabel(active, selection.model)}` : selection.model}
     >
-      {active && <ProviderMark driverKind={activeDriverKind!} size={14} />}
+      {active && <ProviderMark driverKind={activeDriverKind!} model={selection.model} size={14} />}
       <span className={cn("min-w-0 truncate", !contained && "max-w-[160px]", !contained && active && "@max-4xl/chathead:hidden")}>
         {modelLabel(active, selection.model)}
       </span>
@@ -404,7 +410,13 @@ export function ModelPicker({
                     </div>
                   )}
                   {["minimax", "claude", "grok", "codex", "antigravity", "cursorAgent", "deepseekAgent", "dshAgent", "antigravityAgent", "grokAgent", "claudeAgent"].includes(railInstance.driverKind) && (
-                    <EngineCallout driverKind={railInstance.driverKind} />
+                    // Keyed so switching rails remounts the callout and its
+                    // open state resets instead of carrying to the next engine.
+                    <EngineCallout
+                      key={railInstance.instanceId}
+                      driverKind={railInstance.driverKind}
+                      instanceId={railInstance.instanceId}
+                    />
                   )}
                   {railInstance.driverKind === "boxAgent" && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">

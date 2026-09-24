@@ -1,6 +1,9 @@
 // The registry's contract is forward/backward compatibility: a config
 // written by a newer or differently-built app must load as an
 // unavailable shadow, never crash the fleet. These tests pin that.
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setLastAntigravityQuotaSnapshot } from "../antigravity-quota.ts";
@@ -163,12 +166,36 @@ describe("ProviderRegistry", () => {
     expect(described.snapshot.reason).toContain("from-the-future");
     expect(described.displayName).toBe("Tomorrow");
     expect(described.models.options).toHaveLength(0);
+    // Enabled shadows still publish enabled: true so clients that filter on
+    // the flag do not treat a missing field as a special case.
+    expect(described.enabled).toBe(true);
     // The shadow ships a computerReach like every other row, and the picker
     // GATES destinations on that field now — so a row that shipped a
     // permissive reach would offer a destination no driver here can drive.
     // Derived from the all-false capabilities the shadow reports, not
     // hardcoded beside them.
     expect(described.computerReach).toEqual({ box: false, vps: false, vm: false, local: false });
+  });
+
+  it("preserves enabled: false on a disabled shadow so phone Settings can hide it", async () => {
+    // Mac-disabled engines with unknown/invalid config become shadows.  The
+    // shadow used to omit `enabled`, and iOS `isEnabled` treats missing as
+    // on — so the Engines strip showed engines the Mac had turned off.
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({
+      mutedMystery: { driver: "from-the-future", enabled: false, displayName: "Hidden" },
+      mutedBroken: { driver: "fake", enabled: false, config: { bad: true } },
+    });
+
+    const described = Object.fromEntries((await registry.describe()).map((d) => [d.instanceId, d]));
+    expect(described.mutedMystery.enabled).toBe(false);
+    expect(described.mutedMystery.snapshot.state).toBe("unavailable");
+    expect(described.mutedBroken.enabled).toBe(false);
+    expect(described.mutedBroken.snapshot).toMatchObject({
+      state: "unavailable",
+      reason: "fake: bad config",
+    });
   });
 
   it("still reaches its own box for a shadowed box-native engine", async () => {
@@ -861,6 +888,48 @@ describe("ProviderRegistry", () => {
       await registry.load({ minimax: { driver: "minimax" } });
       const [described] = await registry.describe();
       expect(described.snapshot.quota?.capped).toBe(false);
+    });
+
+    it("pre-populates describe memo from disk cache and updates it after fresh describe", async () => {
+      const fake = makeFakeDriver();
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ test: { driver: "fake" } });
+
+      const tmpDir = join(tmpdir(), `bf-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const cachePath = join(tmpDir, "engine-cache.json");
+
+      mkdirSync(tmpDir, { recursive: true });
+      const cachedSnapshot = [{
+        instanceId: "cached-instance",
+        driverKind: "fake",
+        displayName: "Cached",
+        enabled: true,
+        snapshot: { state: "available" } as const,
+        models: { default: "cached-m", options: [] },
+        capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
+        computerReach: { local: false, box: false, vps: false },
+        access: "subscription",
+        install: undefined,
+        cli: undefined,
+        cliDefault: undefined,
+        cliCandidates: [],
+        fullAuto: false,
+      }];
+      writeFileSync(cachePath, JSON.stringify(cachedSnapshot));
+
+      registry.setDiskCachePath(cachePath);
+      // Since maxAgeMs is large and cache is present, returns cached instances immediately
+      const instant = await registry.describe({ maxAgeMs: 60_000 });
+      expect(instant[0].instanceId).toBe("cached-instance");
+
+      // Describe fresh overwrites disk cache with the actual live engines
+      const fresh = await registry.describeFresh();
+      expect(fresh[0].instanceId).toBe("test");
+
+      const saved = JSON.parse(readFileSync(cachePath, "utf8"));
+      expect(saved[0].instanceId).toBe("test");
+
+      rmSync(tmpDir, { recursive: true, force: true });
     });
   });
 });

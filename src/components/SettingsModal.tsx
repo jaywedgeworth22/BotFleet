@@ -41,6 +41,7 @@ import { EnginesSettings } from "./EnginesSettings";
 import { FleetModelsSection } from "./FleetModelsSection";
 import { BotComputerDefaults } from "./BotComputerDefaults";
 import { LocalComputerSection } from "./LocalComputerSection";
+import { LocalVmRuntimeCard } from "./LocalVmRuntimeCard";
 import { CompanionSection } from "./CompanionSection";
 import { RemoteAccessSection } from "./RemoteAccessSection";
 import { Card } from "./SettingsPrimitives";
@@ -1195,8 +1196,9 @@ export function SettingsModal() {
 
             {section === "computers" && (
               <>
-                <BotComputerDefaults />
                 <LocalComputerSection />
+                <BotComputerDefaults />
+                <LocalVmRuntimeCard />
               </>
             )}
 

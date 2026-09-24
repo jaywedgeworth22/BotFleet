@@ -564,6 +564,12 @@ final class DecodingTests: XCTestCase {
 
         let config = try decode(ConfigStatus.self, "config")
         XCTAssertEqual(config.profile?.name, "Ada Lovelace")
+        XCTAssertEqual(config.profile?.email, "ada@example.com")
+        XCTAssertEqual(config.rooms?.turnTimeoutMinutes, 5)
+        XCTAssertEqual(config.features?.showToolCalls, true)
+        XCTAssertEqual(config.features?.summarizeToolCalls, true)
+        XCTAssertTrue(config.features?.showsToolCalls ?? false)
+        XCTAssertTrue(config.features?.summarizesToolCalls ?? false)
         XCTAssertEqual(config.box?.configured, false)
         XCTAssertNil(config.conversationMode)
         XCTAssertFalse(config.isProjectsMode)

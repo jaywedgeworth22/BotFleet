@@ -7,7 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
-import type { ModelCatalog } from "../contracts.ts";
+import { isEffortLevel, type EffortLevel, type ModelCatalog } from "../contracts.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
 import { mergeLocalInject } from "./local-inject.ts";
 
@@ -17,14 +17,14 @@ import { mergeLocalInject } from "./local-inject.ts";
  * every row is available for the current account or transport.
  */
 export const STATIC_CODEX_MODELS: ModelCatalog = {
-  default: "gpt-5.6-luna",
+  default: "gpt-6-luna",
   options: [
-    { id: "gpt-6-astra", label: "GPT-6 Astra" },
-    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-    { id: "gpt-5.5", label: "GPT-5.5" },
-    { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
+    { id: "gpt-6-astra", label: "GPT-6 Astra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+    { id: "gpt-6-sol", label: "GPT-6 Sol", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+    { id: "gpt-6-luna", label: "GPT-6 Luna", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+    { id: "gpt-5.5", label: "GPT-5.5", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+    { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
   ],
 };
 
@@ -60,6 +60,7 @@ interface CodexAppServerModel {
   displayName?: unknown;
   hidden?: unknown;
   isDefault?: unknown;
+  supportedReasoningEfforts?: unknown;
 }
 
 /** Ask the installed Codex CLI for the ChatGPT model catalog it can actually
@@ -153,9 +154,25 @@ export function readCodexAppServerModelCatalog(
         for (const row of models) {
           if (row.hidden === true || typeof row.id !== "string" || !MODEL_ID.test(row.id) || seen.has(row.id)) continue;
           seen.add(row.id);
+          let effortLevels: EffortLevel[] | undefined;
+          let supportsEffort: boolean | undefined;
+          if (Array.isArray(row.supportedReasoningEfforts)) {
+            const rawEfforts = row.supportedReasoningEfforts
+              .map((e) =>
+                typeof e === "string"
+                  ? e
+                  : typeof e === "object" && e
+                    ? ((e as { reasoningEffort?: unknown }).reasoningEffort as string)
+                    : null,
+              )
+              .filter(isEffortLevel);
+            effortLevels = rawEfforts;
+            supportsEffort = rawEfforts.length > 0;
+          }
           options.push({
             id: row.id,
             label: typeof row.displayName === "string" && row.displayName.trim() ? row.displayName : row.id,
+            ...(effortLevels !== undefined ? { effortLevels, supportsEffort } : {}),
           });
           if (row.isDefault === true) defaultModel = row.id;
         }

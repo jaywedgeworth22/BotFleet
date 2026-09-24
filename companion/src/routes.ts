@@ -90,6 +90,11 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // carries API keys — ever accepting a write from a device.
   { method: "PATCH", path: /^\/api\/terminology$/ },
   { method: "PATCH", path: /^\/api\/conversation-mode$/ },
+  // Display preferences only — never secrets. Mirrors terminology: each
+  // setting gets its own narrow route so /api/config stays write-closed.
+  { method: "PATCH", path: /^\/api\/features$/ },
+  { method: "PATCH", path: /^\/api\/room-turn-timeout$/ },
+  { method: "PATCH", path: /^\/api\/profile$/ },
   { method: "GET", path: /^\/api\/events$/ },
   { method: "GET", path: /^\/api\/instances$/ },
   // Sidecar-owned, authenticated endpoint metadata. The proxy terminates it

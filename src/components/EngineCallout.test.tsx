@@ -1,7 +1,8 @@
-// EngineCallout shape tests — every known engine renders the headline,
-// at least one paragraph of prose, and the registry's pricing pill.
-// Replaces the legacy MiniMaxCallout.test.ts; the new copy is shared
-// across all engines so the matrix and the callout cannot drift.
+// EngineCallout shape tests — every known engine renders the headline
+// behind a collapsed "Why this engine?" disclosure by default, and the
+// registry pricing pill when expanded.  Replaces the legacy
+// MiniMaxCallout.test.ts; the new copy is shared across all engines so
+// the matrix and the callout cannot drift.
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -33,25 +34,57 @@ function decodeHtmlEntities(text: string): string {
 }
 
 describe("EngineCallout", () => {
-  it("renders for every engine id in the registry", () => {
+  it("renders collapsed by default for every engine id in the registry", () => {
     for (const id of ENGINE_DISPLAY_ORDER) {
       const entry = ENGINE_CAPABILITIES[id];
       const html = renderToStaticMarkup(createElement(EngineCallout, { engineId: id }));
       expect(html).toContain("Why this engine?");
       const decoded = decodeHtmlEntities(html);
       expect(decoded).toContain(entry.whyThisEngine.headline);
-      // At least one paragraph of prose — the legacy MiniMaxCallout
-      // test pinned the same invariant.
-      expect(html).toMatch(/<p/);
+      // Collapsed: summary only — no prose paragraphs, no pricing line.
+      // Avoid /<p/ — Lucide's <path> would falsely match.
+      expect(html).not.toMatch(/<p[\s>]/);
+      expect(html).not.toContain("Pricing:");
+      expect(html).toContain('aria-expanded="false"');
+      // No dangling reference: the detail region is not rendered collapsed.
+      expect(html).not.toContain("aria-controls");
     }
   });
 
-  it("renders the pricing mode label", () => {
-    const html = renderToStaticMarkup(createElement(EngineCallout, { engineId: "minimax" }));
+  it("expands to show prose and pricing when defaultOpen is set", () => {
+    const entry = ENGINE_CAPABILITIES.minimax;
+    const html = renderToStaticMarkup(
+      createElement(EngineCallout, { engineId: "minimax", defaultOpen: true }),
+    );
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toMatch(/<p[\s>]/);
     expect(html).toContain("Pricing:");
     // MiniMax's Token Plan subscription must show; the API block is
     // present in the registry but not as the primary label.
     expect(html).toContain("Subscription + API");
+    const decoded = decodeHtmlEntities(html);
+    expect(decoded).toContain(entry.whyThisEngine.prose[0]);
+  });
+
+  it("uses a unique aria-controls id per instanceId", () => {
+    const a = renderToStaticMarkup(
+      createElement(EngineCallout, {
+        engineId: "minimax",
+        instanceId: "mm-a",
+        defaultOpen: true,
+      }),
+    );
+    const b = renderToStaticMarkup(
+      createElement(EngineCallout, {
+        engineId: "minimax",
+        instanceId: "mm-b",
+        defaultOpen: true,
+      }),
+    );
+    expect(a).toContain('aria-controls="engine-callout-detail-mm-a"');
+    expect(a).toContain('id="engine-callout-detail-mm-a"');
+    expect(b).toContain("engine-callout-detail-mm-b");
+    expect(a).not.toContain("engine-callout-detail-mm-b");
   });
 
   it("resolves driver-kind ids via engineIdFromDriverKind", () => {

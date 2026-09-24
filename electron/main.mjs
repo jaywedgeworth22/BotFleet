@@ -374,6 +374,85 @@ async function secureWorkspaceConfig({ strict = false } = {}) {
 /** Upgrade encrypted custom-engine keys created before config carried the
  * nonsecret external-storage marker.  This runs before attach-or-spawn, so a
  * fresh standalone harness can gate those exact engines from its first turn. */
+/** Mirrors `DEFAULT_VPS_MODE` in shared/local-auto-consent.ts: per-bot is
+ * the only VPS mode the runtime implements. */
+const DEFAULT_VPS_MODE = "per-bot";
+
+/** Migrate the legacy `botDefaults.allowedComputers` shape onto the new
+ * per-provider `botDefaults.computerProviders` + `vpsMode` fields the
+ * redesigned Computer settings UI writes.  Runs once at app launch
+ * through the same `updateConfigFile` lock used by every other config
+ * migration, so a save in flight from the harness is never overwritten
+ * with a snapshot read here.
+ *
+ * Idempotent: a config that already carries `computerProviders` is a
+ * no-op (the new UI is the only writer and the new field is the
+ * source of truth).  The cross-field invariant
+ * (`vpsMode === null` only legal when `selfHostedVps` is off) is
+ * repaired in place rather than refused — a single default is cheaper
+ * than a hard refusal at boot, and the schema only allows that exact
+ * combination on a config the operator wrote by hand. */
+function migrateComputerProviders({ strict = false } = {}) {
+  try {
+    updateConfigFile(desktopConfigPath(), (config) => {
+      if (!config?.botDefaults) return null;
+      const defaults = config.botDefaults;
+      // Already migrated: enforce the cross-field invariant and return
+      // null when nothing actually changed, so the file's mtime does
+      // not move on every boot.
+      if (defaults.computerProviders) {
+        const providers = defaults.computerProviders;
+        if (providers.selfHostedVps === true && defaults.vpsMode === null) {
+          defaults.vpsMode = DEFAULT_VPS_MODE;
+          return config;
+        }
+        if (providers.selfHostedVps !== true && defaults.vpsMode !== null && defaults.vpsMode !== undefined) {
+          defaults.vpsMode = null;
+          return config;
+        }
+        return null;
+      }
+      // Compute from the legacy `allowedComputers`.  Mirrors
+      // `migrateAllowedComputersToProviders` in shared/local-auto-consent.ts
+      // (this file cannot import TypeScript):
+      //   null / undefined -> every provider on (legacy "no allowlist")
+      //   []               -> every provider off (explicit deny-all)
+      //   [...]            -> each named destination's providers on
+      // The next provider save back-fills `allowedComputers` from this
+      // shape, so mapping [] to anything but all-off would silently
+      // re-enable cloud, and mapping null to anything but all-on would
+      // silently revoke Local VM and host grants.
+      const allowed = defaults.allowedComputers;
+      let providers = { asciiBox: false, selfHostedVps: false, localVm: false, localMac: false };
+      let vpsMode = null;
+      if (allowed === null || allowed === undefined) {
+        providers = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+        vpsMode = DEFAULT_VPS_MODE;
+      } else if (Array.isArray(allowed) && allowed.length > 0) {
+        for (const dest of allowed) {
+          if (dest === "cloud") {
+            providers.asciiBox = true;
+            providers.selfHostedVps = true;
+          } else if (dest === "vm") {
+            providers.localVm = true;
+          } else if (dest === "local") {
+            providers.localMac = true;
+          }
+        }
+        vpsMode = providers.selfHostedVps ? DEFAULT_VPS_MODE : null;
+      }
+      // Anything else (empty array, or a hand-edited non-array) stays
+      // all-off: an explicit deny-all is preserved, never widened.
+      defaults.computerProviders = providers;
+      defaults.vpsMode = vpsMode;
+      return config;
+    });
+  } catch (error) {
+    if (strict) throw error;
+    slog(`computer providers migration failed: ${error?.message ?? error}`);
+  }
+}
+
 function secureCredentialMarkers({ strict = false } = {}) {
   if (credentialStoreUnavailable) {
     if (strict) throw new Error("The operating-system credential store could not be read");
@@ -2134,6 +2213,12 @@ app.whenReady().then(async () => {
   if (app.isPackaged) {
     await secureComposioConfig();
     await secureWorkspaceConfig();
+    // Boot migration: rewrite the legacy `botDefaults.allowedComputers`
+    // onto the new `botDefaults.computerProviders` + `vpsMode` fields
+    // the redesigned Computer settings UI writes.  Runs after the
+    // credential sweep so the lock's serializer does not see the file
+    // mutated twice in quick succession on the same launch.
+    migrateComputerProviders();
     if (!secureCredentialMarkers().ok) {
       dialog.showErrorBox(
         "BotFleet could not protect saved custom-engine credentials",

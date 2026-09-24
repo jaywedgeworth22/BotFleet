@@ -2,8 +2,12 @@
 // (upstream rule): the React app dispatches typed commands over HTTP and
 // folds one SSE event stream; every provider process runs here.
 import {
+  COMPUTER_PROVIDER_LABEL,
+  hostAwareAllowedComputers,
   matchesLocalAutoConsent,
+  migrateAllowedComputersToProviders,
   requiresLocalAutoConsent,
+  type ComputerProviderId,
   type LocalAutoConsentCapability,
 } from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -118,7 +122,16 @@ import {
   type TurnComputerDeps,
   type TurnComputerMounts,
 } from "./computer-grants.ts";
+import {
+  computerProviderBlocked,
+  computerProvidersStale,
+  heldComputerProviders,
+  unacknowledgedImpact,
+  providerReloadKeys,
+  revokedTurnProviders,
+} from "./config-reload-keys.ts";
 import { computerReach } from "./computer-capability.ts";
+import { shouldMountLocalComputer } from "./local-routing.ts";
 import {
   ensureDirs,
   instanceConfigs,
@@ -162,8 +175,10 @@ import { findCliCandidates, resetPathCache } from "./env-path.ts";
 import { cliProbeEnvironment } from "./cli-probe-env.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
+import { modelEffortLevels } from "../src/lib/model-effort.ts";
 import {
   isEffortLevel,
+  type CloudBackend,
   type InstanceConfigMap,
   type ModelSelection,
   type ProviderInstance,
@@ -194,6 +209,7 @@ import {
   TurnOwnerClaims,
   type InterruptOutcome,
   type StalledReleaseDecision,
+  type TurnComputerInputs,
 } from "./turn-safety.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -383,6 +399,7 @@ telemetry.configure(() => ({
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
+registry.setDiskCachePath(join(DATA_DIR, "engine-cache.json"));
 // The credential fingerprint the provider fleet was actually BUILT with, kept
 // in step with every `registry.load` from here on.  `applyResolvedSecrets`
 // compares against this rather than against `cfg` at the top of its own call:
@@ -398,7 +415,7 @@ const instanceKeyOverrides = new Map<string, string>();
 // of seconds on a machine with many CLIs installed; doing it now means the
 // first client to ask — often the phone, which waits 20 s and no longer —
 // is answered from the memo instead of waiting for a cold probe.
-void registry.describe().catch(() => {});
+void registry.describe({ maxAgeMs: 15_000, staleWhileRevalidate: true }).catch(() => {});
 usageQuotaPoller.configure({
   settings: () => ({
     ingestUrl: usageIngestUrl(cfg),
@@ -646,7 +663,7 @@ async function defaultSelection(excludeInstanceId?: string) {
   // A bot being created can ride a probe taken moments ago; the engine rail
   // still refreshes on demand.
   const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
-  const available = described.filter(
+  const candidates = described.filter(
     (d) => d.snapshot.state === "available" && d.instanceId !== excludeInstanceId,
   );
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
@@ -654,8 +671,28 @@ async function defaultSelection(excludeInstanceId?: string) {
   // spawn ENOENT — the single worst first-run experience, and the one every
   // user with no CLIs used to get. An empty selection is honest: the UI shows
   // the setup path instead of a bot that cannot answer.
-  const pick = available.find((d) => d.driverKind === "antigravityAgent") ?? available.find((d) => d.driverKind === "grokAgent") ?? available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
-  return { instanceId: pick?.instanceId ?? "", model: pick?.models.default ?? "" };
+  const ordered = [
+    ...candidates.filter((d) => d.driverKind === "antigravityAgent"),
+    ...candidates.filter((d) => d.driverKind === "grokAgent"),
+    ...candidates.filter((d) => d.driverKind === "claudeAgent"),
+    ...candidates.filter(
+      (d) => d.driverKind !== "antigravityAgent" && d.driverKind !== "grokAgent" && d.driverKind !== "claudeAgent",
+    ),
+  ];
+
+  for (const pick of ordered) {
+    const liveInstance = registry.get(pick.instanceId);
+    if (!liveInstance || liveInstance.enabled === false) continue;
+    try {
+      const snap = await liveInstance.snapshot();
+      if (snap.state === "available") {
+        return { instanceId: pick.instanceId, model: pick.models.default };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return { instanceId: "", model: "" };
 }
 
 function checkedModelSelection(
@@ -724,9 +761,16 @@ function checkedModelSelection(
       };
     }
   }
-  const allowed: readonly string[] = target?.adapter.capabilities.effortLevels ?? [];
+  const targetOption = target?.models.options.find((option) => option.id === selection.model);
+  const allowed: readonly string[] = target
+    ? modelEffortLevels(
+        { driverKind: target.driverKind, capabilities: target.adapter.capabilities },
+        targetOption,
+        selection.model,
+      )
+    : [];
   if (target && selection.effort !== undefined && !allowed.includes(selection.effort)) {
-    return { ok: false, status: 400, error: `effort "${selection.effort}" is not offered by this bot's engine` };
+    return { ok: false, status: 400, error: `effort "${selection.effort}" is not offered by model "${selection.model}"` };
   }
   return { ok: true, selection };
 }
@@ -764,6 +808,60 @@ function botLocalAutoCapability(bot?: ComputerGrantSubject | null): LocalAutoCon
 }
 
 /** The destinations a bot holds right now, in either spelling. */
+/** True when a Computer provider is closed to new use: its toggle is off, or
+ * the legacy `allowedComputers` allowlist excludes its destination.  Same
+ * answer turn mounting gives (`server/computer-grants.ts`), so a lifecycle
+ * route cannot start what a turn would refuse to mount. */
+function computerProviderOff(config: typeof cfg, id: ComputerProviderId): boolean {
+  return computerProviderBlocked(config.botDefaults?.computerProviders, allowedBotComputers(config), id);
+}
+
+function localVmProviderOff(config: typeof cfg): boolean {
+  return computerProviderOff(config, "localVm");
+}
+
+/** Snapshot a bot's computer settings at dispatch, the inputs turn mounting
+ * reads, so a provider disable can tell what the running turn holds even
+ * after the bot is edited mid-turn.  Copied, never aliased. */
+function turnComputerInputs(
+  bot: ComputerGrantSubject & { cloudBackend?: CloudBackend },
+  runOn?: RoutineRunOn,
+): TurnComputerInputs {
+  const computers = storedComputerGrants(bot);
+  return {
+    computers: computers ? [...computers] : undefined,
+    cloudBackend: bot.cloudBackend,
+    ...(runOn ? { runOn } : {}),
+  };
+}
+
+/** The providers a turn's resolved computers hold, for `recordMounted`.
+ * Host tools count as This Computer even with no CUA mount: a tool-loop
+ * engine (MiniMax, Grok, OpenAI-compatible) on an explicit This Computer turn
+ * gets host bash and file tools through `hasHostComputer` alone, so turning
+ * This Computer off has to reach that turn too. */
+function mountedProviders(computers: {
+  mounts: readonly { kind: "box" | "vps" | "vm" | "local" }[];
+  hasHostComputer: boolean;
+}): NonNullable<TurnComputerInputs["mounted"]> {
+  const byKind = { box: "asciiBox", vps: "selfHostedVps", vm: "localVm", local: "localMac" } as const;
+  const held: NonNullable<TurnComputerInputs["mounted"]>[number][] = computers.mounts.map((mount) => byKind[mount.kind]);
+  if (computers.hasHostComputer) held.push("localMac");
+  return [...new Set(held)];
+}
+
+/** Whether the Auto This Computer fallback can mount for a turn on this
+ * engine, the way turn mounting decides it (`shouldMountLocalComputer`):
+ * macOS only, and only on an engine with local reach.  An engine missing from
+ * the registry counts as able, so an unknown never hides a live host mount. */
+function autoHostMounts(instanceId: string | undefined): boolean {
+  const instance = instanceId ? registry.get(instanceId) : undefined;
+  const providerSupportsLocal = instance
+    ? computerReach({ driverKind: instance.driverKind, capabilities: instance.adapter.capabilities }).local
+    : true;
+  return shouldMountLocalComputer({ requested: undefined, providerSupportsLocal });
+}
+
 function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
   return storedComputerGrants(bot) ?? [];
 }
@@ -787,6 +885,19 @@ function storedComputerGrants(
 
 const LOCAL_AUTO_ACK_ERROR =
   "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)";
+
+/** The allowlist exactly as `resolveGrants` enforces it for host control:
+ * the legacy `allowedComputers` array narrowed by the per-provider
+ * `computerProviders.localMac` toggle.  The consent guard has to read the
+ * same answer the runtime does.  Fed the legacy array alone, a save that
+ * only flipped "This Computer" back on (legacy allowlist unrestricted)
+ * looked like "no change" and silently handed host control back to every
+ * auto-approved Auto bot with no acknowledgement. */
+function consentAllowedComputers(
+  config: Pick<typeof cfg, "botDefaults">,
+): Array<"cloud" | "vm" | "local"> | null {
+  return hostAwareAllowedComputers(allowedBotComputers(config), config.botDefaults?.computerProviders);
+}
 
 /** "Auto on this Mac" hands a bot the user's real desktop session with no
  * per-tool approval, so creating that combination has to prove a human saw
@@ -1364,6 +1475,8 @@ type InterruptedTurn = {
   threadId: string;
   instanceId?: string;
   dispatchId?: number;
+  /** What the turn mounted from; see `TurnComputerInputs`. */
+  computerInputs?: TurnComputerInputs;
 };
 /** Room waiters receive the terminal event synchronously.  Automatic fallback
  * may need an async health probe, so they await this fold before deciding
@@ -2368,6 +2481,9 @@ bus.subscribe((event: RuntimeEvent) => {
           const { nextUsed, instanceId, model, effort } = next;
           fallbackAttemptByTurn.set(fallbackKey, nextUsed);
           fallbackSelection = { instanceId, model, effort };
+          store.patchBot(fallbackBot.id, { activeModelSelection: fallbackSelection });
+          store.patchTask(fallbackBot.id, event.threadId, { activeModelSelection: fallbackSelection });
+          broadcast({ kind: "bot", bot: wireBot(store.bot(fallbackBot.id)!) });
           const resetNote = quotaInfo.resetsAt
             ? ` · resets at ${new Date(quotaInfo.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
             : quotaInfo.rawTimeText
@@ -3002,14 +3118,51 @@ async function startTurn(
   // VPS-backed cloud keeps the bot's modelSelection — that is the engine that
   // actually runs on the VPS.
   const model = boxCloud ? instance.models.default : selection.model;
-  const effort = boxCloud ? undefined : selection.effort;
+  let effort = boxCloud ? undefined : selection.effort;
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
-  if (effort && !instance.adapter.capabilities.effortLevels?.includes(effort)) {
-    throw Object.assign(
-      new Error(`effort "${effort}" is not offered by this bot's engine — choose another level in settings`),
-      { status: 409 },
-    );
+  const targetOption = instance.models.options.find((o) => o.id === model);
+  const allowedEfforts = modelEffortLevels(
+    { driverKind: instance.driverKind, capabilities: instance.adapter.capabilities },
+    targetOption,
+    model,
+  );
+  if (effort && !allowedEfforts.includes(effort)) {
+    if (!allowedEfforts.length) {
+      // The model does not support effort at all (legacy stored configuration).
+      // Drop it and clear it from the owning selection (task, fallback, or bot)
+      // so the turn can proceed without bricking or clobbering an unrelated primary effort.
+      // Strip it from every entry of the owning chain that names this
+      // instance+model — primary and fallbacks alike.  A chain can list the
+      // same model twice (A -> B -> A), and matching only the first hit would
+      // clear the wrong entry and leave the stale effort on the one selected.
+      const matches = (s: ModelSelection) => s.instanceId === selection.instanceId && s.model === selection.model;
+      const stripChain = (chain: ModelSelection): ModelSelection | null => {
+        const primaryHit = matches(chain) && chain.effort !== undefined;
+        const fallbackHit = chain.fallbacks?.some((f) => matches(f) && f.effort !== undefined) ?? false;
+        if (!primaryHit && !fallbackHit) return null;
+        return {
+          ...chain,
+          ...(primaryHit ? { effort: undefined } : {}),
+          ...(fallbackHit
+            ? { fallbacks: chain.fallbacks!.map((f) => (matches(f) ? { ...f, effort: undefined } : f)) }
+            : {}),
+        };
+      };
+      if (task.modelSelection) {
+        const next = stripChain(task.modelSelection);
+        if (next) store.patchTask(bot.id, threadId, { modelSelection: next });
+      } else {
+        const next = stripChain(bot.modelSelection);
+        if (next) store.patchBot(bot.id, { modelSelection: next });
+      }
+      effort = undefined;
+    } else {
+      throw Object.assign(
+        new Error(`effort "${effort}" is not offered by model "${model}" — choose another level in settings`),
+        { status: 409 },
+      );
+    }
   }
 
   // an edit hands us its already-branched user message; a plain send appends.
@@ -3090,12 +3243,15 @@ async function startTurn(
   // busy flips immediately so the composer locks; the dispatch itself runs
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
+  const activeSelection: ModelSelection = { instanceId, model, effort };
   store.setActivity(bot.id, "working");
-  store.patchBot(bot.id, { unread: false, inflightThreadId: threadId });
+  store.patchBot(bot.id, { unread: false, inflightThreadId: threadId, activeModelSelection: activeSelection });
+  store.patchTask(bot.id, threadId, { activeModelSelection: activeSelection });
   const dispatchOwner = activeTurnOwners.claim(threadId, {
     botId: bot.id,
     selection: { instanceId, model, effort },
     fallbackPolicy,
+    computerInputs: turnComputerInputs(bot, opts?.runOn),
   });
   turnUsage.delete(threadId);
 
@@ -3105,6 +3261,12 @@ async function startTurn(
     const dispatchStillCurrent = (): boolean => {
       const owner = activeTurnOwners.forEvent(threadId, instanceId);
       if (owner?.dispatchId !== dispatchOwner.dispatchId) return false;
+      // A provider this turn holds was turned off before it reached the
+      // engine.  The interrupt had no session to reach, so stop here; the
+      // catch below unwinds the turn, since no turn.completed will follow.
+      if (owner.revoked) {
+        throw new Error("computer settings changed during turn setup");
+      }
       if (providerReloadInProgress) {
         throw new Error("provider settings changed during turn setup");
       }
@@ -3231,6 +3393,9 @@ async function startTurn(
       // so does the catch below.
       vpsLease = turnComputers.vpsLease;
       if (turnComputers.cancelled) return;
+      // What this turn really holds from here on; a provider disable judges
+      // the turn by it (see interruptTurnsUsingDisabledProviders).
+      activeTurnOwners.recordMounted(threadId, dispatchOwner.dispatchId, mountedProviders(turnComputers));
       const granted_mounts = turnComputers.mounts;
       const previewCapture = turnComputers.previewCapture;
       applyComputerMounts(integrations, granted_mounts);
@@ -4660,6 +4825,7 @@ async function runGroupMemberTurn(
     botId: bot.id,
     selection,
     fallbackPolicy: bot.modelSelection,
+    computerInputs: turnComputerInputs(bot),
   });
   /** Hand the room back when no turn.completed will do it.  Only use it while
    * this invocation still owns the room; otherwise it would emit a duplicate
@@ -4755,7 +4921,7 @@ async function runGroupMemberTurn(
         }),
         async () => {
           if (providerReloadInProgress) await waitForProviderReloads();
-          return !isCancelled?.();
+          return !isCancelled?.() && !activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId);
         },
       ),
     });
@@ -4801,6 +4967,30 @@ async function runGroupMemberTurn(
     releaseLocalVmThread(threadId, bot.id);
     activeTurnOwners.settle(threadId, instance.instanceId);
     releaseRoomSpeaker();
+    return false;
+  }
+  activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers));
+  // A provider this member holds was turned off during setup.  Same fence as
+  // the 1:1 lane's dispatchStillCurrent: the interrupt found no session, so
+  // unwind here instead of starting the turn with the revoked mount.  Nothing
+  // below awaits before sendTurn, so this is the last point it can land.
+  if (activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId)) {
+    const message = "computer settings changed during turn setup";
+    releaseRoomComputerLease(threadId, bot.id);
+    releaseLocalVmThread(threadId, bot.id);
+    activeTurnOwners.settle(threadId, instance.instanceId);
+    store.appendMessage(threadId, {
+      role: "bot",
+      kind: "activity",
+      from: { botId: bot.id, name: bot.name, color: bot.color },
+      tool: { name: `error: ${message}`, ok: false },
+    });
+    onDispatchError?.(message);
+    releaseRoomSpeaker();
+    drainQueuedSends();
+    drainRoomQueue();
+    drainConnectorResumes();
+    drainSecretResumes();
     return false;
   }
   // One function for both lanes, so the room cannot set `computers` without
@@ -5664,13 +5854,33 @@ function configStatus() {
     // What an unconfigured bot is given.  The client needs this to label a
     // bot's destination honestly: without it the panel shows "ASCII.dev Box"
     // for a bot the workspace default sends to a VPS.
+    // The platform of the machine this server runs on.  The Auto host
+    // fallback mounts only on macOS (server/local-routing.ts), and a client
+    // in a plain browser cannot tell what the harness runs on: without this
+    // the Computer settings matrix and the disable-impact list guessed
+    // "other" and dropped every Auto bot's This Computer grant.
+    host: { platform: process.platform },
     botDefaults: {
       computers: cfg.botDefaults?.computers ?? [],
       cloudBackend: cfg.botDefaults?.cloudBackend ?? "box",
       // null = every destination is allowed (the shipped default).  An array
       // narrows the operator-level allowlist; the empty array is a real,
-      // persisted "no destination at all".
+      // persisted "no destination at all".  Legacy input — the redesigned
+      // Computer settings UI reads `computerProviders` below and writes
+      // back through this field for the cut-over.
       allowedComputers: allowedBotComputers(cfg),
+      // Per-provider allowlist written by the redesigned Computer settings
+      // UI.  Surfaced for the new toggles + matrix; absent on installs that
+      // pre-date the migration (the client falls back to the legacy field).
+      computerProviders: cfg.botDefaults?.computerProviders
+        ? {
+            asciiBox: Boolean(cfg.botDefaults.computerProviders.asciiBox),
+            selfHostedVps: Boolean(cfg.botDefaults.computerProviders.selfHostedVps),
+            localVm: Boolean(cfg.botDefaults.computerProviders.localVm),
+            localMac: Boolean(cfg.botDefaults.computerProviders.localMac),
+          }
+        : undefined,
+      vpsMode: cfg.botDefaults?.vpsMode ?? null,
     },
     ingress: {
       publicUrl: cfg.ingress?.publicUrl || "",
@@ -5834,6 +6044,7 @@ function activeInterruptedTurns(instanceId?: string): InterruptedTurn[] {
         threadId,
         instanceId: owner?.selection.instanceId ?? completing?.instanceId,
         dispatchId: owner?.dispatchId ?? completing?.dispatchId,
+        computerInputs: owner?.computerInputs,
       };
     })
     .filter((turn) => !instanceId || turn.instanceId === instanceId);
@@ -5908,6 +6119,116 @@ function settleInterruptedBots(
     store.setActivity(b.id, "idle");
     store.patchBot(b.id, { inflightThreadId: undefined });
   }
+}
+
+/** Provider-policy keys `POST /api/bots/apply-defaults` refuses; they belong
+ * to `PUT /api/config` and its revocation gates. */
+const APPLY_DEFAULTS_POLICY_KEYS = ["computerProviders", "vpsMode", "allowedComputers"] as const;
+
+/** The providers a turn with these computer inputs can hold under one set of
+ * settings: `resolveGrants`, the cloud backend, then the per-provider filter,
+ * the same steps turn mounting takes. */
+function heldProvidersFor(
+  settings: typeof cfg,
+  inputs: TurnComputerInputs,
+  runOn: RoutineRunOn | undefined,
+  options: { autoHost: boolean },
+): ComputerProviderId[] {
+  const allowed = allowedBotComputers(settings);
+  const { granted, auto } = resolveGrants(
+    inputs.computers ? [...inputs.computers] : undefined,
+    runOn,
+    settings.botDefaults?.computers,
+    allowed,
+  );
+  const autoAllows = autoDestinations(allowed).filter((d) => d !== "local" || options.autoHost);
+  return heldComputerProviders(
+    {
+      granted,
+      auto,
+      autoAllows,
+      cloudBackend: resolveCloudBackend(inputs.cloudBackend, settings.botDefaults?.cloudBackend),
+    },
+    settings.botDefaults?.computerProviders,
+  );
+}
+
+/** The bots a provider-settings save takes a provider away from, judged on
+ * the server's own bots and automations at save time rather than on what the
+ * saving window last saw.  Mirrors the window's impact list
+ * (`impactedBotsForProvider`): a bot's own grant or Auto, plus the cloud
+ * destination an enabled cloud routine, webhook or resource trigger gives it
+ * whatever its computers say.  The Auto host fallback counts only on macOS,
+ * the one platform it mounts on. */
+function botsLosingProviders(before: typeof cfg, after: typeof cfg): Array<{ id: string; name: string }> {
+  const cloudAutomationBots = new Set<string>();
+  for (const list of [routines?.listRoutines() ?? [], webhooks.list(), resourceTriggers.list()]) {
+    for (const item of list) if (item.enabled && item.runOn === "cloud") cloudAutomationBots.add(item.botId);
+  }
+  return store.bots
+    .filter((bot) => {
+      const inputs = turnComputerInputs(bot);
+      const autoHost = autoHostMounts(bot.modelSelection.instanceId);
+      const runOns: Array<RoutineRunOn | undefined> = cloudAutomationBots.has(bot.id) ? [undefined, "cloud"] : [undefined];
+      return runOns.some((runOn) => revokedTurnProviders(
+        heldProvidersFor(before, inputs, runOn, { autoHost }),
+        heldProvidersFor(after, inputs, runOn, { autoHost }),
+      ).length > 0);
+    })
+    .map((bot) => ({ id: bot.id, name: bot.name }));
+}
+
+/** A `botDefaults` save does not rebuild the fleet (see
+ * CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD), but it can still take a mount away
+ * from a turn that is running: a provider toggled off, a destination dropped
+ * from the legacy allowlist, or a new workspace default or cloud backend that
+ * an Auto bot inherits.  So resolve each busy turn's providers under the
+ * settings before and after the save, the way turn mounting does, and
+ * interrupt exactly the turns that lost one.  Every other turn keeps running.
+ * The interrupt goes through the engine, so the turn settles through its
+ * normal terminal path. */
+async function interruptTurnsUsingDisabledProviders(
+  before: typeof cfg,
+  after: typeof cfg,
+): Promise<void> {
+  if (JSON.stringify(before.botDefaults ?? null) === JSON.stringify(after.botDefaults ?? null)) return;
+  await Promise.allSettled(activeInterruptedTurns().map(async (turn) => {
+    const bot = store.bot(turn.botId);
+    if (!bot) return;
+    const run = routines?.activeRunForBot(bot.id);
+    // Judge the turn by what it mounted, not by the bot's grants now: a turn
+    // that started on Cloud keeps its Box mount after the bot is switched to
+    // Local VM, and disabling Box must still reach it.  A turn with no
+    // snapshot (mid completion fold) falls back to the stored grants.
+    const inputs = turn.computerInputs ?? turnComputerInputs(bot);
+    // The destination the turn was dispatched to.  A cloud webhook or
+    // resource trigger has no active routine run, so the snapshot is the only
+    // record that it mounted the cloud computer.
+    const runOn = inputs.runOn ?? (run?.threadId === turn.threadId ? run.runOn : undefined);
+    // The Auto host fallback only counts where it can mount: macOS, on an
+    // engine with local reach.  Elsewhere it was never held, so turning This
+    // Computer off must not interrupt the turn.
+    const autoHost = autoHostMounts(turn.instanceId ?? bot.modelSelection.instanceId);
+    // Once its computers resolved, the turn holds exactly what it mounted:
+    // an Auto turn that fell back to This Computer because Box or the VPS was
+    // unavailable holds no cloud provider, so turning one off leaves it alone.
+    // Before that, judge by everything the grant could reach.
+    const holds = inputs.mounted ?? heldProvidersFor(before, inputs, runOn, { autoHost });
+    if (revokedTurnProviders(holds, heldProvidersFor(after, inputs, runOn, { autoHost })).length === 0) return;
+    // Latch the stop before anything is awaited, same as the full reload and
+    // the Stop button.  The driver may settle the turn the instant it is
+    // killed; without the latch an exit_before_result cancellation reads as
+    // an engine failure and model fallback replays the prompt elsewhere.
+    latchInterruptedTurns([turn]);
+    // A turn still in setup has no provider session, so the interrupt below
+    // is a no-op for it.  Fence the exact dispatch so its own pre-dispatch
+    // check fails instead of starting the turn with the revoked mount.
+    if (turn.dispatchId !== undefined) activeTurnOwners.revoke(turn.threadId, turn.dispatchId);
+    const instance = registry.get(turn.instanceId ?? bot.modelSelection.instanceId);
+    await instance?.adapter.interruptTurn(turn.threadId).catch((error: unknown) => {
+      console.error(`interrupt after computer settings change failed for thread ${turn.threadId}:`, error);
+    });
+  }));
 }
 
 async function runProviderReload() {
@@ -8186,6 +8507,7 @@ const server = createServer(async (req, res) => {
         );
         if (!checked.ok) return json(res, checked.status, { error: checked.error });
         parsed.patch.modelSelection = checked.selection;
+        parsed.patch.activeModelSelection = checked.selection;
       }
 
       const bot = store.patchBot(m[1], parsed.patch);
@@ -8296,7 +8618,10 @@ const server = createServer(async (req, res) => {
       for (const key of ["unread", "cloudBackend", "color", "mascotExpression", "pinned", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
-      if (normalizedSelection) patch.modelSelection = normalizedSelection;
+      if (normalizedSelection) {
+        patch.modelSelection = normalizedSelection;
+        patch.activeModelSelection = normalizedSelection;
+      }
       // one pinned message per thread; null/"" clears. The id is not
       // validated against the transcript here — a pin whose message was
       // edited to another branch or deleted simply resolves to nothing.
@@ -8374,8 +8699,8 @@ const server = createServer(async (req, res) => {
         {
           currentDefault: cfg.botDefaults?.computers,
           nextDefault: cfg.botDefaults?.computers,
-          currentAllowed: allowedBotComputers(cfg),
-          nextAllowed: allowedBotComputers(cfg),
+          currentAllowed: consentAllowedComputers(cfg),
+          nextAllowed: consentAllowedComputers(cfg),
         },
       );
       if (ackError) return json(res, 400, { error: ackError });
@@ -9183,6 +9508,14 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const action = z.enum(["pull", "run", "start", "stop", "remove"]).parse(m[1]);
+      // A Local VM turned off in Computer settings must not be started from
+      // the same page that turned it off.  Same rule as the cloud computer
+      // routes: stop and remove stay open because they only wind the VM down,
+      // and an install with no `computerProviders` yet defers to the legacy
+      // allowlist.
+      if ((action === "run" || action === "start") && localVmProviderOff(cfg)) {
+        return json(res, 409, { error: `${COMPUTER_PROVIDER_LABEL.localVm} is turned off in Computer settings` });
+      }
       if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(SHARED_LOCAL_VM_TARGET.key)) {
         return json(res, 409, { error: "another Local VM setup action is still running" });
       }
@@ -9297,6 +9630,10 @@ const server = createServer(async (req, res) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       const action = z.enum(["run", "stop", "remove"]).parse(m[2]);
+      // Same Local VM provider gate as the shared lifecycle route above.
+      if (action === "run" && localVmProviderOff(cfg)) {
+        return json(res, 409, { error: `${COMPUTER_PROVIDER_LABEL.localVm} is turned off in Computer settings` });
+      }
       const target = localVmTargetForBot(bot.id);
       if (target.key === SHARED_LOCAL_VM_TARGET.key) {
         return json(res, 409, { error: "Shared mode manages this desktop in App Settings → Local VM" });
@@ -9640,11 +9977,12 @@ const server = createServer(async (req, res) => {
 
     // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
-      // Rescan PATH first: this endpoint is how the app answers "what can I
-      // run?", and the interesting case is a CLI installed since launch.
+      // Rescan PATH when explicitly refreshed: this endpoint is how the app answers
+      // "what can I run?", and the interesting case is a CLI installed since launch.
       // Windows never pushes PATH changes into a live process, so without
       // this the answer is frozen at boot and "check again" is a no-op.
-      resetPathCache();
+      const fresh = url.searchParams.get("fresh") === "1";
+      if (fresh) resetPathCache();
       // describe() probes every CLI (--version, auth status, model
       // discovery), which costs real seconds on a machine with many engines
       // installed. The engine rail's passive refreshes (initial hydrate, the
@@ -9652,7 +9990,6 @@ const server = createServer(async (req, res) => {
       // ?fresh=1 — sent by the client's explicit "Check again"/"Refresh"
       // actions and right after a CLI/fullAuto override is saved — bypasses
       // it so the user's own action is never served a stale answer.
-      const fresh = url.searchParams.get("fresh") === "1";
       return json(res, 200, {
         instances: await registry.describe(
           fresh ? undefined : { maxAgeMs: 15_000, staleWhileRevalidate: true },
@@ -10152,6 +10489,75 @@ const server = createServer(async (req, res) => {
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
     }
+    // Feature toggles are not credentials, so the phone gets a narrow route
+    // rather than write access to /api/config (which carries API keys).
+    if (method === "PATCH" && path === "/api/features") {
+      const body = await readBody(req);
+      const featurePatch = {
+        ...(typeof body.showToolCalls === "boolean" ? { showToolCalls: body.showToolCalls } : {}),
+        ...(typeof body.summarizeToolCalls === "boolean" ? { summarizeToolCalls: body.summarizeToolCalls } : {}),
+      };
+      if (Object.keys(featurePatch).length === 0) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      const patch = parseConfigPatch({ features: featurePatch });
+      if (patch.features === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.features = { ...cfg.features, ...patch.features };
+      saveConfig({ features: cfg.features });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
+    // Channel turn length is a display preference, not a credential.
+    if (method === "PATCH" && path === "/api/room-turn-timeout") {
+      const body = await readBody(req);
+      if (
+        typeof body.turnTimeoutMinutes !== "number" ||
+        !Number.isInteger(body.turnTimeoutMinutes)
+      ) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      let patch;
+      try {
+        patch = parseConfigPatch({
+          rooms: { turnTimeoutMinutes: body.turnTimeoutMinutes },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid configuration";
+        return json(res, 400, { error: message });
+      }
+      if (patch.rooms?.turnTimeoutMinutes === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.rooms = { ...cfg.rooms, turnTimeoutMinutes: patch.rooms.turnTimeoutMinutes };
+      saveConfig({ rooms: cfg.rooms });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
+    // Profile name + email only. Skins stay on the Mac.
+    if (method === "PATCH" && path === "/api/profile") {
+      const body = await readBody(req);
+      const patch = parseConfigPatch({
+        profile: {
+          name: typeof body.name === "string" ? body.name : undefined,
+          email: typeof body.email === "string" ? body.email : undefined,
+        },
+      });
+      if (patch.profile === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.profile = {
+        name: patch.profile.name ?? cfg.profile?.name ?? "",
+        email: patch.profile.email ?? cfg.profile?.email ?? "",
+      };
+      saveConfig({ profile: cfg.profile });
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
     // ── apply workspace defaults to every bot ──────────────────────────
     // The "Set all bots to default" buttons on the Computers and Models
     // settings pages.  Both endpoints validate the workspace defaults first
@@ -10159,15 +10565,38 @@ const server = createServer(async (req, res) => {
     // bad input the same way, so the client cannot push a malformed default
     // into the store and then have it crash every bot.
     if (method === "POST" && path === "/api/bots/apply-defaults") {
+      const botTurnedOff = (bot: { computers?: readonly unknown[] }) =>
+        Array.isArray(bot.computers) && bot.computers.length === 0;
       const body = await readBody(req);
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
+      }
+      // Provider policy (the per-provider toggles, the VPS mode and the legacy
+      // allowlist) is not this route's to change.  PUT /api/config owns it,
+      // with the gates a revocation needs: the local-Auto consent check
+      // against the NEXT allowlist and the targeted interrupt of turns that
+      // hold a disabled provider.  Saving it here skipped both, so a stale
+      // window could turn host access back on unacknowledged, or leave a
+      // disabled provider's mounts running.  Refuse rather than drop it, so a
+      // caller that meant to change policy is told so.
+      if (
+        body.botDefaults && typeof body.botDefaults === "object" && !Array.isArray(body.botDefaults) &&
+        APPLY_DEFAULTS_POLICY_KEYS.some((key) => Object.hasOwn(body.botDefaults as object, key))
+      ) {
+        return json(res, 400, {
+          error: "apply-defaults changes computer defaults only; save provider settings through PUT /api/config",
+        });
       }
       const defaults = parseConfigPatch({ botDefaults: body.botDefaults ?? cfg.botDefaults });
       const incoming = defaults.botDefaults;
       if (!incoming) {
         return json(res, 400, { error: "botDefaults must include computers or cloudBackend" });
       }
+      // The backend this apply leaves in place.  Each bot's grant is resolved
+      // against it, not the one being replaced, so an atomic Box-to-VPS switch
+      // is filtered with the VPS toggle.  Provider toggles cannot change here
+      // (see above), so the stored ones are the next ones.
+      const nextCloudBackend = incoming.cloudBackend ?? cfg.botDefaults?.cloudBackend;
       const requested = incoming.computers;
       if (requested !== undefined) {
         if (!Array.isArray(requested)) {
@@ -10189,6 +10618,27 @@ const server = createServer(async (req, res) => {
       // what the operator asked for" comment there.
       const persisted = requested ?? cfg.botDefaults?.computers ?? [];
       const next = allowed === null ? persisted : persisted.filter((entry) => allowed.includes(entry));
+      // The legacy "cloud" destination collapses hosted Box and the
+      // self-hosted VPS into one entry, but the runtime (turnComputerMounts
+      // in computer-grants.ts) resolves each bot's real backend and drops
+      // the destination when that backend's provider toggle is off.  The
+      // apply has to store the same answer the runtime will compute: with
+      // Box off, writing ["cloud"] to a Box-backed bot stores a grant the
+      // operator disabled, which the bot's next turn silently strips again.
+      // The same per-provider rule covers the Local VM and This Computer
+      // legs.  A bot whose provider toggles disable every destination this
+      // apply would grant keeps its own choice — narrowing it to Off is the
+      // exact mistake the allowlist-emptied guard above refuses.
+      const providerGranted = (bot: { cloudBackend?: "box" | "vps" }): Array<"cloud" | "vm" | "local"> => {
+        const providers = cfg.botDefaults?.computerProviders;
+        if (!providers) return next;
+        const backend = resolveCloudBackend(bot.cloudBackend, nextCloudBackend);
+        return next.filter((entry) => {
+          if (entry === "cloud") return backend === "box" ? providers.asciiBox === true : providers.selfHostedVps === true;
+          if (entry === "vm") return providers.localVm === true;
+          return providers.localMac === true;
+        });
+      };
       const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
       const acknowledged = body.acknowledgeLocalAuto === true;
       // An empty filtered set is NOT a permission to clear every bot.  The
@@ -10222,14 +10672,18 @@ const server = createServer(async (req, res) => {
       // `resolveGrants` handed an already-unattended, already-autoApprove
       // bot host control the moment the operator later loosened the
       // allowlist again, with no acknowledgement ever having been asked.
+      // Off bots are never patched below, so they must not be asked about
+      // either: listing them in the consent warning names bots the apply
+      // will not touch.
       const pendingLocalAutoConsent = () => store.bots
         .filter(
           (bot) =>
+            !botTurnedOff(bot) &&
             localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, false, {
               currentDefault: cfg.botDefaults?.computers,
               nextDefault: cfg.botDefaults?.computers,
-              currentAllowed: allowedBotComputers(cfg),
-              nextAllowed: allowedBotComputers(cfg),
+              currentAllowed: consentAllowedComputers(cfg),
+              nextAllowed: consentAllowedComputers(cfg),
             }) !== null,
         )
         .map((bot) => ({ id: bot.id, name: bot.name }));
@@ -10248,15 +10702,25 @@ const server = createServer(async (req, res) => {
         // Concurrently: this is one operator action over a whole fleet, and a
         // driver that takes a second to answer a cancel would otherwise add
         // that second once per bot to a single click.
-        await Promise.allSettled(store.bots.map((bot) => interruptIfHostRevoked(bot, next)));
+        await Promise.allSettled(store.bots.filter((bot) => !botTurnedOff(bot)).map((bot) => {
+          const granted = providerGranted(bot);
+          return granted.length === 0 ? Promise.resolve() : interruptIfHostRevoked(bot, granted);
+        }));
         // Bots may have been created, renamed, or changed while cancellation
         // awaited a driver.  Recheck before any grant or default is persisted.
         const changedConsent = consentRequired();
         if (changedConsent) {
           return json(res, 409, { error: LOCAL_AUTO_ACK_ERROR, needsAcknowledgement: changedConsent });
         }
+        // Bots whose `computers` is the explicit empty array are
+        // deliberately turned off; the apply would silently undo that,
+        // so skip them.  Auto bots (`computers === undefined`) inherit
+        // the default on every run and ARE patched.
         for (const bot of store.bots) {
-          const patched = store.patchBot(bot.id, { computers: next });
+          if (botTurnedOff(bot)) continue;
+          const granted = providerGranted(bot);
+          if (granted.length === 0) continue;
+          const patched = store.patchBot(bot.id, { computers: granted });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
         }
       }
@@ -10265,7 +10729,14 @@ const server = createServer(async (req, res) => {
       // its current value into the stored default means re-enabling a
       // destination later silently fails to bring it back, because the
       // default it would have come from was overwritten on the way in.
-      cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming };
+      // Only the computer defaults: provider policy is refused above, and a
+      // body with no botDefaults falls back to the stored ones, which must not
+      // be re-saved as if this route had set them.
+      cfg.botDefaults = {
+        ...(cfg.botDefaults ?? {}),
+        ...(incoming.computers !== undefined ? { computers: incoming.computers } : {}),
+        ...(incoming.cloudBackend !== undefined ? { cloudBackend: incoming.cloudBackend } : {}),
+      };
       saveConfig({ botDefaults: cfg.botDefaults });
       const status = configStatus();
       broadcast({ kind: "config", ...status });
@@ -10371,9 +10842,17 @@ const server = createServer(async (req, res) => {
         // good change — and the bot would then be reported as "skipped" for a
         // reason that has nothing to do with what the operator asked for.
         // Moving engines drops an effort the new one does not offer.
-        if (primary && bot.modelSelection.instanceId !== next.instanceId && next.effort !== undefined) {
+        if (primary && next.effort !== undefined) {
           const target = registry.get(next.instanceId);
-          const offered: readonly string[] = target?.adapter.capabilities.effortLevels ?? [];
+          const targetModel = next.model ?? target?.models.default;
+          const targetOpt = target?.models.options.find((o) => o.id === targetModel);
+          const offered: readonly string[] = target
+            ? modelEffortLevels(
+                { driverKind: target.driverKind, capabilities: target.adapter.capabilities },
+                targetOpt,
+                targetModel,
+              )
+            : [];
           if (target && !offered.includes(next.effort)) delete next.effort;
         }
         // The per-bot gate, now given the bot it is about.  One refused bot
@@ -10389,7 +10868,7 @@ const server = createServer(async (req, res) => {
           skipped.push({ id: bot.id, name: bot.name, reason: gate.error });
           continue;
         }
-        const patched = store.patchBot(bot.id, { modelSelection: next });
+        const patched = store.patchBot(bot.id, { modelSelection: next, activeModelSelection: next });
         if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
       }
       for (const { bot } of updated) broadcast({ kind: "bot", bot });
@@ -10400,6 +10879,56 @@ const server = createServer(async (req, res) => {
       const patch = parseConfigPatch(body);
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      // The window confirmed a provider disable against its own copy of the
+      // bots and automations.  Another client can add a grant or a cloud
+      // automation after that check, so the impact is recomputed on the
+      // server's state and the save refused when it names a bot the confirm
+      // did not.  Run before anything is written, and again right before the
+      // save itself: bot and automation routes are not fenced by
+      // `providerConfigBusy`, and the credential checks below await.
+      const checksProviderImpact =
+        Boolean(patch.botDefaults?.computerProviders) && Object.hasOwn(body, "expectedComputerProviders");
+      const unseenProviderImpact = () => {
+        if (!checksProviderImpact) return null;
+        const unseen = unacknowledgedImpact(
+          body.acknowledgedImpact,
+          botsLosingProviders(cfg, { ...cfg, botDefaults: { ...cfg.botDefaults, ...patch.botDefaults } }),
+        );
+        return unseen.length > 0
+          ? {
+              error: "More bots use this provider than the list you confirmed.\u00a0 Review the new list and try again.",
+              code: "computer_impact_changed",
+              impacted: unseen,
+              config: configStatus(),
+            }
+          : null;
+      };
+      // Compare-and-swap for the provider toggles.  The section merge replaces
+      // `computerProviders` whole, so a window that saw an older state would
+      // write it back over a newer one.  A save that says what it saw is
+      // refused when that is no longer the truth, and gets the current config
+      // to show instead.  A save without `expectedComputerProviders` (an
+      // older client) is taken as before.
+      if (patch.botDefaults?.computerProviders && Object.hasOwn(body, "expectedComputerProviders")) {
+        const stored = cfg.botDefaults?.computerProviders;
+        const current = stored
+          ? {
+              asciiBox: stored.asciiBox === true,
+              selfHostedVps: stored.selfHostedVps === true,
+              localVm: stored.localVm === true,
+              localMac: stored.localMac === true,
+            }
+          : migrateAllowedComputersToProviders(allowedBotComputers(cfg)).providers;
+        if (computerProvidersStale(body.expectedComputerProviders, current)) {
+          return json(res, 409, {
+            error: "Provider settings changed in another window.\u00a0 Review them and try again.",
+            code: "computer_providers_stale",
+            config: configStatus(),
+          });
+        }
+        const refusal = unseenProviderImpact();
+        if (refusal) return json(res, 409, refusal);
+      }
       if (patch.vps !== undefined) {
         const currentAlias = vpsSshAlias(cfg);
         const nextAlias = vpsSshAlias({ ...cfg, vps: patch.vps });
@@ -10407,11 +10936,21 @@ const server = createServer(async (req, res) => {
         if (aliasError) return json(res, 409, { error: aliasError });
       }
       const currentDefaultComputers = cfg.botDefaults?.computers;
-      const currentAllowedComputers = allowedBotComputers(cfg);
+      const currentAllowedComputers = consentAllowedComputers(cfg);
       const nextDefaultComputers = patch.botDefaults?.computers ?? currentDefaultComputers;
-      const nextAllowedComputers = patch.botDefaults && Object.hasOwn(patch.botDefaults, "allowedComputers")
-        ? patch.botDefaults.allowedComputers ?? null
-        : currentAllowedComputers;
+      // Host availability after this save, the way the runtime will read it:
+      // the legacy allowlist AND the "This Computer" provider toggle.  The
+      // section merge replaces `computerProviders` whole, so the patch's
+      // object (when present) is the next state, not a delta.
+      const nextAllowedComputers = consentAllowedComputers({
+        botDefaults: {
+          ...cfg.botDefaults,
+          allowedComputers: patch.botDefaults && Object.hasOwn(patch.botDefaults, "allowedComputers")
+            ? patch.botDefaults.allowedComputers ?? null
+            : allowedBotComputers(cfg),
+          computerProviders: patch.botDefaults?.computerProviders ?? cfg.botDefaults?.computerProviders,
+        },
+      });
       const consentRelevantConfigSave =
         JSON.stringify(nextDefaultComputers) !== JSON.stringify(currentDefaultComputers) ||
         JSON.stringify(nextAllowedComputers) !== JSON.stringify(currentAllowedComputers);
@@ -10448,6 +10987,10 @@ const server = createServer(async (req, res) => {
       }
       providerConfigBusy = true;
       localAutoConsentConfigBusy = consentRelevantConfigSave;
+      // The settings the running turns resolved their computers under.  The
+      // save below replaces `cfg`'s top-level sections, so a shallow copy is
+      // a stable snapshot of them.
+      const configBeforeSave: typeof cfg = { ...cfg };
             try {
       // A project key is useful only if it can create/reuse the Session that
       // powers both the connections UI and the agent MCP. Validate it before
@@ -10606,6 +11149,11 @@ const server = createServer(async (req, res) => {
       if (changedConsent) {
         return json(res, 409, { error: LOCAL_AUTO_ACK_ERROR, needsAcknowledgement: changedConsent });
       }
+      // Same for the provider-disable impact: a grant or cloud automation
+      // added while the checks above awaited must be listed before it loses
+      // the provider.  Nothing is awaited from here to the save.
+      const lateImpact = unseenProviderImpact();
+      if (lateImpact) return json(res, 409, lateImpact);
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
       if (externalSecretStorage) {
         // The packaged Electron caller commits supplied credentials to the
@@ -10678,28 +11226,9 @@ const server = createServer(async (req, res) => {
       if (patch.observability !== undefined) {
         console.log(observabilityBootLine(await observability.apply()));
       }
-      // Provider keys change the fleet. Profile, voice, VPS, and room timeout
-      // changes do not rebuild it: no driver reads them, and they should not
-      // interrupt in-flight turns.  Terminology is only a display word, so
-      // renaming rooms must never kill a turn that is running.
-      const reloadKeys = Object.keys(patch).filter(
-        (key) =>
-          key !== "profile" &&
-          key !== "tts" &&
-          key !== "imageGen" &&
-          key !== "vps" &&
-          key !== "rooms" &&
-          key !== "localVm" &&
-          key !== "autoUpdate" &&
-          key !== "ingress" &&
-          key !== "usage" &&
-          key !== "observability" &&
-          key !== "infisical" &&
-          key !== "features" &&
-          key !== "terminology" &&
-          key !== "terminologyCustom" &&
-          key !== "conversationMode",
-      );
+      // Provider keys change the fleet; see CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD
+      // for the keys that must not interrupt in-flight turns.
+      const reloadKeys = providerReloadKeys(patch);
       if (reloadKeys.length > 0) {
         await reloadProviders();
         // The fleet has just been rebuilt on whatever `cfg` resolves to right
@@ -10711,6 +11240,11 @@ const server = createServer(async (req, res) => {
         // turns for nothing.  A save that reloads is the deliberate,
         // user-initiated rebuild the flag was waiting for.
         infisical.setPendingProviderReload(false);
+      } else {
+        // No rebuild, so no blanket interrupt: only the turns holding a
+        // provider this save turned off are stopped.  (A rebuild above has
+        // already interrupted every turn.)
+        await interruptTurnsUsingDisabledProviders(configBeforeSave, cfg);
       }
       const status = configStatus();
       broadcast({ kind: "config", ...status });
@@ -10990,6 +11524,22 @@ const server = createServer(async (req, res) => {
       // both backends — the Box branch runs commands too.
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
+      }
+      // A cloud provider turned off in Computer settings keeps every bot off
+      // it here too, not just in turns: opening the Computer panel must not
+      // provision, wake or join a billed Box (or a VPS) the operator turned
+      // off.  Sleep and remove stay open, because they only wind a computer
+      // down.  The legacy allowlist counts too, same as
+      // `server/computer-grants.ts`: an older client that removes "cloud"
+      // from `allowedComputers` closes both cloud backends here.
+      if (m[2] !== "sleep" && m[2] !== "remove") {
+        const backend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+        const providerId = backend === "vps" ? "selfHostedVps" : "asciiBox";
+        if (computerProviderOff(cfg, providerId)) {
+          return json(res, 409, {
+            error: `${COMPUTER_PROVIDER_LABEL[providerId]} is turned off in Computer settings`,
+          });
+        }
       }
       if (resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "vps") {
         if (m[2] === "exec") {

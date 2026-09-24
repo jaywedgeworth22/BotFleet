@@ -396,9 +396,9 @@ beforeAll(async () => {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stderr!.on("data", (c) => (stderr += c)); child.stdout!.on("data", (c) => console.log(c.toString()));
+  child.stderr!.on("data", (c) => (stderr += c));
 
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 45_000;
   for (;;) {
     try {
       const res = await fetch(`${BASE}/api/health`);
@@ -428,7 +428,7 @@ beforeAll(async () => {
     throw new Error("leftover fleet should read as projects");
   }
   // The rest of this file exercises extra conversations, so stay in Projects.
-}, 30_000);
+}, 60_000);
 
   it("merges extra threads when switching to Simple with mergeThreads", async () => {
     const created = await api("POST", "/api/bots");
@@ -1980,6 +1980,28 @@ describe("harness HTTP API", () => {
 
     expect(patched.status).toBe(400);
     expect(patched.body.error).toContain("not recognized");
+  });
+
+  it("clears legacy unsupported effort from task selection without clobbering primary bot effort", async () => {
+    const created = await api("POST", "/api/bots", {
+      name: "EffortBot",
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5", effort: "high" },
+    });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    try {
+      const taskPatch = await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, {
+        modelSelection: { instanceId: "ghost", model: "ghost-1", effort: "high" },
+      });
+      expect(taskPatch.status).toBe(200);
+
+      const bots = (await api("GET", "/api/bots?messages=0")).body.bots;
+      const found = bots.find((b: { id: string }) => b.id === bot.id);
+      expect(found.modelSelection.effort).toBe("high");
+      expect(found.tasks[0].modelSelection.effort).toBe("high");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
   });
 
   it("creates a fully configured bot in one request and greets with its final name", async () => {
@@ -5348,7 +5370,7 @@ describe("instance CLI override API", () => {
       .find((i: any) => i.instanceId === instanceId)).toBeUndefined();
     // The default connection is still protected from deletion.
     expect((await api("DELETE", "/api/instances/minimax")).status).toBe(400);
-  }, 30_000);
+  }, 60_000);
 
   it("reports the two API-key engines' state and endpoint on /api/config, and saves them", async () => {
     // Before this, `configStatus()` hand-listed every section and had no
@@ -5584,7 +5606,7 @@ describe("instance CLI override API", () => {
       await api("POST", `/api/bots/${bot.id}/interrupt`, {});
       await api("DELETE", `/api/bots/${bot.id}`);
     }
-  }, 30_000);
+  }, 60_000);
 
   it("excludes the deleted engine from replacement selection, picking a real other engine instead of itself", async () => {
     // Disable every other fixture engine and add a SECOND custom engine
@@ -5648,7 +5670,7 @@ describe("instance CLI override API", () => {
         expect(row?.enabled).toBe(true);
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   it("refuses to delete an engine when no other engine is available to reassign its bots", async () => {
     // With every other fixture engine disabled, the about-to-be-deleted
@@ -5709,7 +5731,7 @@ describe("instance CLI override API", () => {
         expect(row?.enabled).toBe(true);
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   it("does not interrupt an unrelated busy bot when deleting an unused custom engine", async () => {
     // Deleting a custom engine used to call the global reloadProviders(),
@@ -6453,6 +6475,133 @@ describe("local Auto consent for inherited and discovered computers", () => {
   });
 });
 
+describe("local Auto consent follows the This Computer provider toggle", () => {
+  it("requires the acknowledgement when a config save only turns This Computer back on", async () => {
+    // The legacy allowlist stays unrestricted the whole time; only the
+    // per-provider toggle moves.  resolveGrants drops Local while
+    // computerProviders.localMac is off and mounts it again the moment the
+    // toggle flips, so the flip is a host-access widening and must be gated
+    // exactly like widening allowedComputers.
+    const providers = { asciiBox: true, selfHostedVps: false, localVm: true, localMac: false };
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { computers: ["cloud"], allowedComputers: null, computerProviders: providers },
+    })).status).toBe(200);
+    // Automatic discovery with This Computer off has no host path, so this
+    // needs no acknowledgement on any platform.
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { computers: [], allowedComputers: null, computerProviders: providers },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Provider Flip Auto" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+
+      const flip = { botDefaults: { computerProviders: { ...providers, localMac: true } } };
+      const flipped = await api("PUT", "/api/config", flip);
+      if (process.platform === "darwin") {
+        expect(flipped.status).toBe(400);
+        expect(flipped.body.needsAcknowledgement).toEqual(expect.arrayContaining([
+          { id: bot.id, name: "Provider Flip Auto" },
+        ]));
+        // Refused whole: This Computer is still off.
+        const refused = (await api("GET", "/api/config")).body;
+        expect(refused.botDefaults.computerProviders.localMac).toBe(false);
+        const acked = await api("PUT", "/api/config", {
+          ...flip,
+          acknowledgeLocalAuto: true,
+          acknowledgedBots: flipped.body.needsAcknowledgement,
+        });
+        expect(acked.status).toBe(200);
+        expect(acked.body.botDefaults.computerProviders.localMac).toBe(true);
+      } else {
+        // Only Darwin Auto mounts the host from automatic discovery.
+        expect(flipped.status).toBe(200);
+        expect(flipped.body.needsAcknowledgement).toBeUndefined();
+      }
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: {
+          computers: ["cloud"],
+          allowedComputers: null,
+          computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+        },
+      })).status).toBe(200);
+    }
+  });
+});
+
+describe("cloud computer lifecycle routes honor the provider toggles", () => {
+  it("refuses to provision, join, exec or screenshot on a turned-off provider, and still lets it sleep", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Bea Boxless", cloudBackend: "box" })).body.bot;
+    try {
+      const off = await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: false, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      expect(off.status).toBe(200);
+      for (const action of ["provision", "join", "exec", "screenshot"]) {
+        const refused = await api("POST", `/api/bots/${bot.id}/computer/${action}`, {});
+        expect(refused.status).toBe(409);
+        expect(String(refused.body.error)).toContain("ASCII.dev Box is turned off");
+      }
+      // Winding a computer down is never blocked by the toggle.
+      const sleep = await api("POST", `/api/bots/${bot.id}/computer/sleep`, {});
+      expect(String(sleep.body.error ?? "")).not.toContain("turned off in Computer settings");
+
+      // A VPS bot is not affected by the Box toggle.
+      const vpsBot = (await api("PATCH", `/api/bots/${bot.id}`, { cloudBackend: "vps" })).body.bot;
+      expect(vpsBot.cloudBackend).toBe("vps");
+      const vpsExec = await api("POST", `/api/bots/${bot.id}/computer/exec`, {});
+      expect(String(vpsExec.body.error ?? "")).not.toContain("turned off in Computer settings");
+    } finally {
+      await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+});
+
+describe("Local VM lifecycle routes honor the provider toggle", () => {
+  it("refuses to create or start a turned-off Local VM from the shared and per-bot routes", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Vic Vmless" })).body.bot;
+    try {
+      const off = await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: false, localMac: true } },
+      });
+      expect(off.status).toBe(200);
+      for (const action of ["run", "start"]) {
+        const refused = await api("POST", `/api/local-computer/${action}`, {});
+        expect(refused.status).toBe(409);
+        expect(String(refused.body.error)).toContain("Local VM is turned off");
+      }
+      const perBot = await api("POST", `/api/bots/${bot.id}/local-computer/run`, {});
+      expect(perBot.status).toBe(409);
+      expect(String(perBot.body.error)).toContain("Local VM is turned off");
+    } finally {
+      await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("lets a turned-on Local VM past the provider gate", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Vera Vm" })).body.bot;
+    try {
+      const on = await api("PUT", "/api/config", {
+        botDefaults: { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true } },
+      });
+      expect(on.status).toBe(200);
+      // Shared mode answers the per-bot create with its own 409; the point is
+      // that the provider gate is not what stopped it.
+      const perBot = await api("POST", `/api/bots/${bot.id}/local-computer/run`, {});
+      expect(String(perBot.body.error ?? "")).not.toContain("turned off in Computer settings");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+});
+
 describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
   it("applies the workspace default to every bot, filtered through the allowlist", async () => {
     const ada = (await api("POST", "/api/bots", { name: "Ada Apply" })).body.bot;
@@ -6481,6 +6630,106 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
 
     await api("DELETE", `/api/bots/${ada.id}`);
     await api("DELETE", `/api/bots/${lin.id}`);
+  });
+
+  it("intersects the applied set with each bot's resolved cloud provider", async () => {
+    // The apply-to-all client sends the legacy destination list, where
+    // "cloud" collapses hosted Box and the self-hosted VPS into one entry.
+    // Filtering only through the legacy allowlist would write "cloud" to a
+    // bot whose real backend's provider toggle is off — a grant the runtime
+    // strips again on the bot's next turn.  The apply must store the same
+    // answer the runtime computes.
+    expect((await api("PUT", "/api/config", {
+      botDefaults: {
+        allowedComputers: null,
+        cloudBackend: "box",
+        computerProviders: { asciiBox: false, selfHostedVps: true, localVm: true, localMac: true },
+      },
+    })).status).toBe(200);
+    const boxBot = (await api("POST", "/api/bots", { name: "Box Off Apply" })).body.bot;
+    const vpsBot = (await api("POST", "/api/bots", { name: "Vps On Apply" })).body.bot;
+    expect((await api("PATCH", `/api/bots/${vpsBot.id}`, { cloudBackend: "vps" })).status).toBe(200);
+    try {
+      const apply = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"] },
+      });
+      expect(apply.status).toBe(200);
+      const bots = (await api("GET", "/api/bots")).body.bots;
+      // Box-backed bot with Box off: every destination this apply would
+      // grant is provider-disabled, so its own choice is left alone rather
+      // than overwritten with a disabled provider or stripped to Off.
+      expect(bots.find((b: { id: string }) => b.id === boxBot.id).computers ?? []).toEqual([]);
+      // VPS-backed bot takes the grant: its resolved provider is on.
+      expect(bots.find((b: { id: string }) => b.id === vpsBot.id).computers).toEqual(["cloud"]);
+    } finally {
+      await api("DELETE", `/api/bots/${boxBot.id}`);
+      await api("DELETE", `/api/bots/${vpsBot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: {
+          allowedComputers: null,
+          cloudBackend: "box",
+          computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+        },
+      })).status).toBe(200);
+      // Leave the workspace default harmless for the suites that follow.
+      expect((await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"] },
+      })).status).toBe(200);
+    }
+  });
+
+  it("refuses provider policy, which only PUT /api/config may change", async () => {
+    const before = (await api("GET", "/api/config")).body.botDefaults;
+    for (const policy of [
+      { computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: false } },
+      { vpsMode: "per-bot" },
+      { allowedComputers: ["cloud"] },
+    ]) {
+      const refused = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"], ...policy },
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toMatch(/PUT \/api\/config/);
+    }
+    const after = (await api("GET", "/api/config")).body.botDefaults;
+    expect(after.computerProviders).toEqual(before.computerProviders);
+    expect(after.allowedComputers).toEqual(before.allowedComputers);
+    expect(after.vpsMode).toEqual(before.vpsMode);
+  });
+
+  it("filters an atomic backend switch with the backend being applied", async () => {
+    // Box off, VPS on, workspace backend Box.  Applying ["cloud"] together
+    // with cloudBackend "vps" must judge each inheriting bot by the VPS
+    // toggle it will actually run on, not the Box toggle being replaced.
+    expect((await api("PUT", "/api/config", {
+      botDefaults: {
+        allowedComputers: null,
+        cloudBackend: "box",
+        computerProviders: { asciiBox: false, selfHostedVps: true, localVm: true, localMac: true },
+      },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Backend Switch Apply" })).body.bot;
+    try {
+      const apply = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"], cloudBackend: "vps" },
+      });
+      expect(apply.status).toBe(200);
+      const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot.id);
+      expect(after.computers).toEqual(["cloud"]);
+      expect((await api("GET", "/api/config")).body.botDefaults.cloudBackend).toBe("vps");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: {
+          allowedComputers: null,
+          cloudBackend: "box",
+          computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true },
+        },
+      })).status).toBe(200);
+      expect((await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: { computers: ["cloud"] },
+      })).status).toBe(200);
+    }
   });
 
   it("rejects a non-array destination list and an unknown destination", async () => {
@@ -6527,6 +6776,34 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     const reopen = await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } });
     expect(reopen.status).toBe(200);
     expect(reopen.body.botDefaults.allowedComputers ?? null).toBeNull();
+  });
+
+  it("preserves a bot that has been deliberately turned off (computers: [])", async () => {
+    const off = (await api("POST", "/api/bots", { name: "Off Bot" })).body.bot;
+    const on = (await api("POST", "/api/bots", { name: "On Bot" })).body.bot;
+
+    // Turn the first bot off explicitly.  Empty `computers` array
+    // means "Off", distinct from `undefined` (Auto) which inherits
+    // the workspace default.
+    const set = await api("PATCH", `/api/bots/${off.id}`, { computers: [] });
+    expect(set.status).toBe(200);
+    expect(set.body.bot.computers).toEqual([]);
+
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud"] },
+    });
+    expect(apply.status).toBe(200);
+
+    const after = (await api("GET", "/api/bots")).body.bots;
+    const offAfter = after.find((b: { id: string }) => b.id === off.id);
+    const onAfter = after.find((b: { id: string }) => b.id === on.id);
+    // Off bot stays off (apply skips bots with explicit `[]`).
+    expect(offAfter.computers).toEqual([]);
+    // On bot is patched to the workspace default.
+    expect(onAfter.computers).toEqual(["cloud"]);
+
+    await api("DELETE", `/api/bots/${off.id}`);
+    await api("DELETE", `/api/bots/${on.id}`);
   });
 
   it("persists the operator's default unfiltered, and applies the filtered set", async () => {

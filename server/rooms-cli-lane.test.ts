@@ -233,6 +233,99 @@ describe("the grant a turn resolves is the same on both lanes", () => {
     expect(released).toEqual([lease]);
   });
 
+  describe("per-provider toggles are enforced on the cloud backend a bot resolves to", () => {
+    // The legacy allowlist only says "cloud", which cannot tell ASCII.dev Box
+    // from the Self-Hosted VPS.  Turning one of them off must still keep bots
+    // off it at runtime, without taking the other one away.
+    const providers = (over: Partial<Record<"asciiBox" | "selfHostedVps" | "localVm" | "localMac", boolean>>) =>
+      ({
+        botDefaults: {
+          computerProviders: { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true, ...over },
+        },
+      }) as AppConfig;
+
+    it("mounts nothing for an explicit VPS bot when the VPS provider is off", async () => {
+      // stubDeps makes every VPS call throw, so reaching the VPS fails the test.
+      const deps = stubDeps();
+      const resolved = await resolveTurnComputerMounts({
+        bot: { id: "bot-vps-off", name: "Remote", computers: ["cloud"], cloudBackend: "vps" },
+        cfg: providers({ selfHostedVps: false }),
+        engine: ACP_ENGINE,
+        threadId: "thread-vps-off",
+        dispatchId: 1,
+        allowed: ["cloud", "vm", "local"],
+        deps,
+      });
+      expect(resolved.mounts).toEqual([]);
+    });
+
+    it("mounts nothing for an explicit Box bot when the Box provider is off, instead of provisioning", async () => {
+      const deps = stubDeps({
+        box: {
+          boxConfigured: () => true,
+          findBox: async () => {
+            throw new Error("the Box should not have been reached");
+          },
+          provisionBox: async () => {
+            throw new Error("the Box should not have been provisioned");
+          },
+          readyBox: async () => null,
+          screenshotBox: async () => ({ png: "", format: "png" }),
+        },
+      });
+      const resolved = await resolveTurnComputerMounts({
+        bot: { id: "bot-box-off", name: "Boxed", computers: ["cloud"], cloudBackend: "box" },
+        cfg: providers({ asciiBox: false }),
+        engine: ACP_ENGINE,
+        threadId: "thread-box-off",
+        dispatchId: 1,
+        allowed: null,
+        deps,
+      });
+      expect(resolved.mounts).toEqual([]);
+    });
+
+    it("still routes a VPS bot to the VPS when only the Box provider is off", async () => {
+      const deps = stubDeps({
+        vps: {
+          vpsDriverError: () => null,
+          vpsComputerAction: async () => {
+            throw new Error("reached the VPS");
+          },
+          inspectVpsForAuto: async () => ({ ready: false }),
+          vpsComputerMcp: () => ({ command: "", args: [], env: {} }),
+          vpsComputerScreenshot: async () => ({ png: "", format: "png" }),
+        },
+      });
+      await expect(
+        resolveTurnComputerMounts({
+          bot: { id: "bot-vps-on", name: "Remote", computers: ["cloud"], cloudBackend: "vps" },
+          cfg: providers({ asciiBox: false }),
+          engine: ACP_ENGINE,
+          threadId: "thread-vps-on",
+          dispatchId: 1,
+          allowed: null,
+          deps,
+        }),
+      ).rejects.toThrow("reached the VPS");
+    });
+
+    it("keeps an Auto bot's discovery off a disabled backend but leaves the host fallback", async () => {
+      // inspectVpsForAuto throws in stubDeps: auto must not look at the VPS.
+      const deps = stubDeps();
+      const resolved = await resolveTurnComputerMounts({
+        bot: { id: "bot-auto", name: "Auto", cloudBackend: "vps" },
+        cfg: providers({ selfHostedVps: false }),
+        engine: ACP_ENGINE,
+        threadId: "thread-auto",
+        dispatchId: 1,
+        allowed: null,
+        deps,
+      });
+      expect(resolved.mounts.map((m) => m.kind)).toEqual(["local"]);
+    });
+  });
+
   it("stops when a newer dispatch has taken the thread", async () => {
     const deps = stubDeps({ checkpoint: async () => false, acquireLocalVm: async () => HOST_STDIO });
     const resolved = await resolveTurnComputerMounts({

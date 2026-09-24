@@ -165,16 +165,19 @@ test("does not retry an idempotent upstream request after its downstream closes"
   const port = harness.address().port;
   const shim = await startUiShim({ uiDir: makeUiDir(), harnessPort: port });
   try {
-    await new Promise((resolve) => {
-      const request = http.get(`http://127.0.0.1:${shim.port}/api/slow`);
-      request.once("socket", () => {
-        setTimeout(() => {
-          request.destroy();
-          resolve();
-        }, 10);
-      });
-      request.on("error", () => {});
-    });
+    const request = http.get(`http://127.0.0.1:${shim.port}/api/slow`);
+    request.on("error", () => {});
+    // Close the downstream only once the shim has actually opened the
+    // upstream request.  Destroying it on a timer right after the socket is
+    // assigned races the request flush: on Windows loopback the downstream
+    // can be gone before the shim ever sees the request, which fails the
+    // assertion with 0 attempts instead of exercising the retry path.
+    const deadline = Date.now() + 5_000;
+    while (attempts === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(attempts, 1, "shim never opened the upstream request");
+    request.destroy();
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(attempts, 1);
   } finally {

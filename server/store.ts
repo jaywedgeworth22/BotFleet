@@ -254,6 +254,8 @@ export interface TaskRecord {
   /** Optional engine for this conversation.  Absent means the bot's own
    * modelSelection.  Used in Projects mode so a thread is not a named bot. */
   modelSelection?: ModelSelection;
+  /** The model selection that actually ran on the most recent turn (post-fallback). */
+  activeModelSelection?: ModelSelection;
   /** Stable identity for a webhook, resource trigger, or routine so a
    * re-fire appends here instead of minting another task.  Shape is
    * `webhook:<id>` or `routine:<id>` from `automationThreadKey`. */
@@ -490,6 +492,8 @@ export interface BotRecord {
   avatarCrop?: BotAvatarCrop;
   unread: boolean;
   modelSelection: ModelSelection;
+  /** The model selection that actually ran on the most recent turn (post-fallback). */
+  activeModelSelection?: ModelSelection;
   /** provider-native continuation per instance (e.g. claude session id) */
   resumeCursors: Record<string, unknown>;
   /** which computer the bot acts on: its cloud box, this Mac (local CUA),
@@ -1568,6 +1572,22 @@ export class Store {
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
+    // Only a real engine/model switch invalidates inheriting tasks' last-turn
+    // selection.  Effort- or fallback-only edits (e.g. startTurn stripping an
+    // unsupported effort) keep the same primary model and must not clear it.
+    const modelSwitched =
+      patch.modelSelection !== undefined &&
+      (patch.modelSelection?.instanceId !== bot.modelSelection?.instanceId ||
+        patch.modelSelection?.model !== bot.modelSelection?.model);
+    if (modelSwitched) {
+      if (bot.tasks) {
+        for (const task of bot.tasks) {
+          if (!task.modelSelection) {
+            delete task.activeModelSelection;
+          }
+        }
+      }
+    }
     Object.assign(bot, patch);
     this.saveBots();
     this.emit({ type: "bot", botId: id });
@@ -1836,7 +1856,11 @@ export class Store {
   patchTask(
     botId: string,
     threadId: string,
-    patch: { title?: string; modelSelection?: ModelSelection | null },
+    patch: {
+      title?: string;
+      modelSelection?: ModelSelection | null;
+      activeModelSelection?: ModelSelection | null;
+    },
   ): TaskRecord | null {
     const task = this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
     if (!task) return null;
@@ -1846,6 +1870,10 @@ export class Store {
     if (patch.modelSelection !== undefined) {
       if (patch.modelSelection === null) delete task.modelSelection;
       else task.modelSelection = patch.modelSelection;
+    }
+    if (patch.activeModelSelection !== undefined) {
+      if (patch.activeModelSelection === null) delete task.activeModelSelection;
+      else task.activeModelSelection = patch.activeModelSelection;
     }
     this.saveBots();
     this.emit({ type: "bot", botId });

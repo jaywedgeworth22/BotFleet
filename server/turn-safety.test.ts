@@ -27,6 +27,61 @@ const candidate = (
 });
 
 describe("active turn ownership", () => {
+  it("records what a live dispatch mounted, and nothing for a replaced one", () => {
+    const owners = new ActiveTurnOwners();
+    const selection = { instanceId: "primary", model: "m" };
+    const claimed = owners.claim("thread-1", {
+      botId: "bot-1",
+      selection,
+      fallbackPolicy: selection,
+      computerInputs: { computers: undefined, cloudBackend: "box" },
+    });
+    owners.recordMounted("thread-1", claimed.dispatchId + 1, ["asciiBox"]);
+    expect(owners.forBot("bot-1")?.computerInputs?.mounted).toBeUndefined();
+    owners.recordMounted("thread-1", claimed.dispatchId, ["localMac"]);
+    expect(owners.forBot("bot-1")?.computerInputs).toEqual({ computers: undefined, cloudBackend: "box", mounted: ["localMac"] });
+    owners.settle("thread-1", "primary");
+    owners.recordMounted("thread-1", claimed.dispatchId, ["asciiBox"]);
+    expect(owners.forBot("bot-1")).toBeUndefined();
+  });
+
+  it("fences only the exact dispatch whose computer access was revoked", () => {
+    const owners = new ActiveTurnOwners();
+    const selection = { instanceId: "primary", model: "m" };
+    const claimed = owners.claim("thread-1", { botId: "bot-1", selection, fallbackPolicy: selection });
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(false);
+    // A replaced or unknown dispatch is left alone.
+    expect(owners.revoke("thread-1", claimed.dispatchId + 1)).toBe(false);
+    expect(owners.revoke("thread-2", claimed.dispatchId)).toBe(false);
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(false);
+    expect(owners.revoke("thread-1", claimed.dispatchId)).toBe(true);
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(true);
+    // The owner is still there to settle; the fence is what its pre-dispatch
+    // check reads.
+    expect(owners.forEvent("thread-1", "primary")?.revoked).toBe(true);
+    owners.settle("thread-1", "primary");
+    expect(owners.isRevoked("thread-1", claimed.dispatchId)).toBe(false);
+    // A fresh dispatch on the same thread starts unfenced.
+    const next = owners.claim("thread-1", { botId: "bot-1", selection, fallbackPolicy: selection });
+    expect(owners.isRevoked("thread-1", next.dispatchId)).toBe(false);
+    expect(owners.revoke("thread-1", claimed.dispatchId)).toBe(false);
+  });
+
+  it("keeps the computer settings a turn was dispatched with, whatever the bot says later", () => {
+    const owners = new ActiveTurnOwners();
+    const selection = { instanceId: "primary", model: "m" };
+    const computers: ("cloud" | "vm" | "local")[] = ["cloud"];
+    owners.claim("thread-1", {
+      botId: "bot-1",
+      selection,
+      fallbackPolicy: selection,
+      computerInputs: { computers: [...computers], cloudBackend: "box" },
+    });
+    // The bot is switched to Local VM mid-turn; the live Box mount is not.
+    computers.splice(0, 1, "vm");
+    expect(owners.forBot("bot-1")?.computerInputs).toEqual({ computers: ["cloud"], cloudBackend: "box" });
+  });
+
   it("attributes a fallback completion to the dispatched override and preserves a newer owner", () => {
     const owners = new ActiveTurnOwners();
     const policy = {

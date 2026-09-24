@@ -5,12 +5,15 @@ import {
   cloudRunUsesBoxAgent,
   autoDestinations,
   resolveGrants,
+  resolveTurnComputerMounts,
   computerSystemPrompt,
   hostToolPrefix,
   nameMounts,
   turnComputerMounts,
   type ComputerMount,
+  type TurnComputerDeps,
 } from "./computer-grants.ts";
+import type { AppConfig } from "./config.ts";
 import { buildMcpServers } from "./drivers/pi.ts";
 import type { SendTurnInput } from "./contracts.ts";
 
@@ -427,5 +430,106 @@ describe("operator allowlist", () => {
       granted: [],
       auto: false,
     });
+  });
+});
+
+describe("per-provider gates (computerProviders)", () => {
+  // The legacy allowlist cannot say "Local VM off" or "This Computer off" —
+  // null means every destination is allowed — so the per-provider shape must
+  // intersect explicit grants and gate the Auto host fallback on its own.
+  const engine = { driverKind: "pi", computerMcp: true, localComputerMcp: true, toolLoop: false };
+  const cfgWith = (providers?: Record<string, boolean>) =>
+    ({ botDefaults: providers ? { computerProviders: providers } : {} }) as unknown as AppConfig;
+  const makeDeps = () =>
+    ({
+      hostPlatform: "darwin" as NodeJS.Platform,
+      readHostConnection: () => ({ command: "/bin/cua", args: ["mcp"], env: {} }),
+      acquireLocalVm: async () => ({ command: "/bin/vm", args: ["mcp"], env: {} }),
+      vps: {
+        vpsDriverError: () => "no vps",
+        vpsComputerAction: async () => ({}),
+        inspectVpsForAuto: async () => ({}),
+        vpsComputerMcp: () => ({ command: "/bin/vps", args: ["mcp"], env: {} }),
+        vpsComputerScreenshot: async () => ({ png: "", format: "png" }),
+      },
+      box: {
+        boxConfigured: () => false,
+        findBox: async () => null,
+        provisionBox: async () => ({ boxId: "b1" }),
+        readyBox: async () => null,
+        screenshotBox: async () => ({ png: "", format: "png" }),
+      },
+      vpsLeases: { claim: () => ({}), release: () => {} },
+      controlIntegration: () => ({ url: "http://localhost", token: "t" }),
+      broadcast: () => {},
+      notice: () => {},
+      checkpoint: async () => true,
+    }) satisfies TurnComputerDeps<object>;
+
+  it("mounts the Local VM and host unchanged when the per-provider shape is absent", async () => {
+    // Upgrade path: a config written before the toggles existed has no
+    // `computerProviders`, and the legacy allowlist alone decides.
+    const result = await resolveTurnComputerMounts({
+      bot: { id: "b1", name: "Bot", computers: ["vm", "local"] },
+      cfg: cfgWith(),
+      engine,
+      threadId: "t1",
+      dispatchId: 1,
+      allowed: null,
+      deps: makeDeps(),
+    });
+    expect(result.mounts.map((m) => m.kind)).toEqual(["vm", "local"]);
+    expect(result.hasHostComputer).toBe(true);
+  });
+
+  it("drops the Local VM leg when its provider is off, even with the legacy allowlist unrestricted", async () => {
+    let vmClaims = 0;
+    const deps = makeDeps();
+    deps.acquireLocalVm = async () => {
+      vmClaims++;
+      return { command: "/bin/vm", args: ["mcp"], env: {} };
+    };
+    const result = await resolveTurnComputerMounts({
+      bot: { id: "b1", name: "Bot", computers: ["vm"] },
+      cfg: cfgWith({ asciiBox: true, selfHostedVps: true, localVm: false, localMac: true }),
+      engine,
+      threadId: "t1",
+      dispatchId: 1,
+      allowed: null,
+      deps,
+    });
+    expect(result.mounts).toEqual([]);
+    expect(vmClaims).toBe(0);
+  });
+
+  it("drops the host leg when This Computer is off, even with the legacy allowlist unrestricted", async () => {
+    const result = await resolveTurnComputerMounts({
+      bot: { id: "b1", name: "Bot", computers: ["local"] },
+      cfg: cfgWith({ asciiBox: true, selfHostedVps: true, localVm: true, localMac: false }),
+      engine,
+      threadId: "t1",
+      dispatchId: 1,
+      allowed: null,
+      deps: makeDeps(),
+    });
+    expect(result.mounts).toEqual([]);
+    expect(result.hasHostComputer).toBe(false);
+  });
+
+  it("keeps the Auto fallback off the host when This Computer is off", async () => {
+    // An unconfigured bot never named the host, but Auto discovers it — so
+    // the toggle must gate the fallback too, or an explicit "off" mounts the
+    // desktop anyway.
+    const result = await resolveTurnComputerMounts({
+      bot: { id: "b1", name: "Bot" },
+      cfg: cfgWith({ asciiBox: true, selfHostedVps: true, localVm: true, localMac: false }),
+      engine,
+      threadId: "t1",
+      dispatchId: 1,
+      allowed: null,
+      deps: makeDeps(),
+    });
+    expect(result.mounts.map((m) => m.kind)).not.toContain("local");
+    expect(result.hasHostComputer).toBe(false);
   });
 });

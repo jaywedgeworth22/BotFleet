@@ -4,6 +4,8 @@
 // startup failure (that behavior is what makes settings forward/backward
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { usageQuotaPoller } from "../usage-quota.ts";
 import { windowHeadlines, windowsLabelFromHeadlines } from "../../src/lib/quota-display.ts";
 import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
@@ -178,6 +180,12 @@ export class ProviderRegistry {
     if (isFullAuto) this.fullAutoByInstance.set(instanceId, true);
     else this.fullAutoByInstance.delete(instanceId);
 
+    // Record enabled before any shadow/decode branch so a Mac-disabled
+    // engine that cannot load still describes with enabled: false.  Shadows
+    // used to omit the flag, and phones treat a missing enabled as on.
+    const enabled = entry.enabled !== false;
+    this.enabledByInstance.set(instanceId, enabled);
+
     const driver = this.driversByKind.get(entry.driver);
     if (!driver) {
       this.byId.set(instanceId, {
@@ -201,8 +209,6 @@ export class ProviderRegistry {
       const rawCli = cliOfRaw(entry.config);
       if (rawCli) this.cliByInstance.set(instanceId, rawCli);
       else this.cliByInstance.delete(instanceId);
-      const enabled = entry.enabled !== false;
-      this.enabledByInstance.set(instanceId, enabled);
       // Same inputs MinimaxDriver.create() below receives, resolved the
       // same way and at the same moment — retained here (rather than read
       // back off `live`, which exposes no such getter) so describeEntry's
@@ -306,6 +312,36 @@ export class ProviderRegistry {
    * moment ago. In-flight describes are shared too, so a burst of callers
    * spawns one probe per engine, not one per caller. */
   private lastDescribe: { at: number; result: Promise<DescribedInstance[]> } | null = null;
+  private diskCachePath: string | null = null;
+
+  setDiskCachePath(path: string | null): void {
+    this.diskCachePath = path;
+    if (path && existsSync(path)) {
+      try {
+        const raw = readFileSync(path, "utf8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          this.lastDescribe = {
+            at: Date.now(),
+            result: Promise.resolve(parsed as DescribedInstance[]),
+          };
+        }
+      } catch {
+        // Corrupt or unreadable cache — ignore and start fresh
+      }
+    }
+  }
+
+  private saveDiskCache(instances: DescribedInstance[]): void {
+    if (!this.diskCachePath) return;
+    try {
+      const dir = dirname(this.diskCachePath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(this.diskCachePath, JSON.stringify(instances, null, 2), "utf8");
+    } catch {
+      // Non-fatal if saving cache fails
+    }
+  }
 
   async describe(opts?: { maxAgeMs?: number; staleWhileRevalidate?: boolean }) {
     const maxAge = opts?.maxAgeMs ?? 0;
@@ -329,10 +365,13 @@ export class ProviderRegistry {
   private refreshDescribe(at: number) {
     const result = this.describeFresh();
     this.lastDescribe = { at, result };
-    // a failed probe must not be served from the memo
-    result.catch(() => {
-      if (this.lastDescribe?.result === result) this.lastDescribe = null;
-    });
+    void result
+      .then((instances) => {
+        this.saveDiskCache(instances);
+      })
+      .catch(() => {
+        if (this.lastDescribe?.result === result) this.lastDescribe = null;
+      });
     return result;
   }
 
@@ -340,9 +379,11 @@ export class ProviderRegistry {
     // Multiple instances may share a driver. Scan each default binary once
     // per response instead of repeating filesystem work for every row.
     const candidatesByName = new Map<string, string[]>();
-    return Promise.all(
+    const instances = await Promise.all(
       this.entries().map((entry) => this.describeEntry(entry, candidatesByName)),
     );
+    this.saveDiskCache(instances);
+    return instances;
   }
 
   private async describeEntry(
@@ -360,10 +401,12 @@ export class ProviderRegistry {
       return found;
     };
     if (entry.shadow) {
+      const enabled = this.enabledByInstance.get(entry.instanceId) ?? true;
       return {
         instanceId: entry.instanceId,
         driverKind: entry.shadow.driverKind,
         displayName: entry.shadow.displayName ?? entry.shadow.driverKind,
+        enabled,
         snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
         models: { default: "", options: [] },
         capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
@@ -662,6 +705,7 @@ export class ProviderRegistry {
             nextList.push(freshInfo);
           }
           this.lastDescribe = { at: Date.now(), result: Promise.resolve(nextList) };
+          this.saveDiskCache(nextList);
           return nextList;
         }
       } catch {

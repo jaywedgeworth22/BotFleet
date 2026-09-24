@@ -18,6 +18,7 @@ import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./Loc
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
 import { requiresLocalAutoConsent } from "../../shared/local-auto-consent";
+import { modelEffortLevels } from "@/lib/model-effort";
 
 function Field({
   label,
@@ -486,11 +487,11 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <div className="mt-3 text-[13px] leading-relaxed text-ink-secondary">
               {bot.chiefOfStaff && !canCoordinate
-                ? "This bot still holds the role, but its current engine cannot contact teammates. Choose a Claude or ACP engine to restore coordination."
+                ? "This bot still holds the role, but its current engine cannot contact teammates.  Choose a coordination-capable engine to restore coordination."
                 : bot.chiefOfStaff
                   ? `This is the primary contact for ${sectionName}. It can create and coordinate specialists in this section, then combine their work into one answer.`
                 : !canCoordinate
-                  ? "Choose a Claude or ACP engine to let this bot coordinate teammates."
+                  ? "Choose an engine that supports bot coordination to let this bot coordinate teammates."
                   : currentChief
                     ? `Make this bot the ${sectionName} Chief and hand the role over from ${currentChief.name}.`
                     : `Make this bot the primary contact for the ${sectionName} section.`}
@@ -621,43 +622,59 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 }}
                 className="mt-2 text-left text-[13px] text-blue-500 hover:underline"
               >
-                + Add Fallback Model
+                Add Fallback Model
               </button>
             )}
           </div>
 
-          {!!engine?.capabilities?.effortLevels?.length && (
-            <div className="rounded-xl bg-card p-4">
-              <div className="text-[15px] font-medium text-ink">Effort</div>
-              {/* Says what the app does, not what the engine ends up at:
-                  Codex applies a level to the whole thread and has no way to
-                  take one back, so "currently: engine default" was a promise
-                  we could not keep for a thread that had already been sent
-                  one. Sending nothing is true on every engine. */}
-              <div className="mt-0.5 text-[13px] text-ink-secondary">
-                How hard this bot thinks{bot.modelSelection.effort ? "" : " (Default: no level is sent)"}
-              </div>
-              <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
-                {([undefined, ...engine.capabilities.effortLevels] as const).map((level, i) => (
+          {(() => {
+            const selectedOpt = engine?.models.options.find((o) => o.id === bot.modelSelection.model);
+            const effortLevels = modelEffortLevels(engine, selectedOpt, bot.modelSelection.model);
+            if (!effortLevels.length && !bot.modelSelection.effort) return null;
+            return (
+              <div className="rounded-xl bg-card p-4">
+                <div className="text-[15px] font-medium text-ink">Reasoning</div>
+                {/* Says what the app does, not what the engine ends up at:
+                    Codex applies a level to the whole thread and has no way to
+                    take one back, so "currently: engine default" was a promise
+                    we could not keep for a thread that had already been sent
+                    one. Sending nothing is true on every engine. */}
+                <div className="mt-0.5 text-[13px] text-ink-secondary">
+                  {effortLevels.length
+                    ? "How hard this bot thinks."
+                    : "This model does not support reasoning effort."}
+                </div>
+                {effortLevels.length > 0 ? (
+                  <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
+                    {([undefined, ...effortLevels] as const).map((level, i) => (
+                      <button
+                        key={level ?? "default"}
+                        aria-pressed={bot.modelSelection.effort === level}
+                        onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: level } })}
+                        className={cn(
+                          "flex-1 py-1.5 text-[13px] capitalize",
+                          i > 0 && "border-l border-hairline/40",
+                          bot.modelSelection.effort === level
+                            ? "bg-control text-ink"
+                            : "text-ink-secondary hover:bg-control/60 hover:text-ink",
+                        )}
+                      >
+                        {/* the others capitalize cleanly; "xhigh" would read "X-High" */}
+                        {level === "xhigh" ? "X-High" : (level ?? "Default")}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
                   <button
-                    key={level ?? "default"}
-                    aria-pressed={bot.modelSelection.effort === level}
-                    onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: level } })}
-                    className={cn(
-                      "flex-1 py-1.5 text-[13px] capitalize",
-                      i > 0 && "border-l border-hairline/40",
-                      bot.modelSelection.effort === level
-                        ? "bg-control text-ink"
-                        : "text-ink-secondary hover:bg-control/60 hover:text-ink",
-                    )}
+                    onClick={() => patch({ modelSelection: { ...bot.modelSelection, effort: undefined } })}
+                    className="mt-3 rounded-lg border border-hairline/40 bg-control px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-control/80"
                   >
-                    {/* the others capitalize cleanly; "xhigh" would read "Xhigh" */}
-                    {level === "xhigh" ? "X-High" : (level ?? "Default")}
+                    Clear Saved Reasoning ({bot.modelSelection.effort})
                   </button>
-                ))}
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           <div className="rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">Computer</div>
@@ -677,7 +694,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 // exactly that for every bot inheriting a "vps" default.
                 ["cloud", cloudDestinationLabel(cloudBackend)],
                 ["vm", "Local VM"],
-                ["local", "This Computer"],
+                ["local", typeof window !== "undefined" && (window.ogb?.platform === "darwin" || (typeof navigator !== "undefined" && navigator.userAgent.includes("Mac"))) ? "This Mac" : "This Computer"],
                 ["off", "Off"],
               ] as const).map(([mode, label], i) => {
                 const blocked = destinationDisabled(mode);
