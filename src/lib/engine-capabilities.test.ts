@@ -164,3 +164,25 @@ describe("ENGINE_CAPABILITIES registry", () => {
     expect(capabilityCellLabel(undefined)).toBe("—");
   });
 });
+
+describe("ENGINE_CAPABILITIES user-facing copy", () => {
+  it("never names the account holder in any displayed string", () => {
+    // Every string in the registry reaches the UI (pricing notes, quota
+    // labels, callout prose), so a name in any of them is visible copy.
+    const strings: string[] = [];
+    const walk = (value: unknown) => {
+      if (typeof value === "string") strings.push(value);
+      else if (Array.isArray(value)) value.forEach(walk);
+      else if (value && typeof value === "object") Object.values(value).forEach(walk);
+    };
+    walk(ENGINE_CAPABILITIES);
+    expect(strings.filter((text) => /\bJay\b/.test(text))).toEqual([]);
+  });
+
+  it("shows the neutral Cursor Ultra note in the pricing table", () => {
+    // UsageSection renders `pricing.notes ?? subscription.notes`.
+    const pricing = ENGINE_CAPABILITIES.cursor.pricing;
+    const shown = pricing.notes ?? ("subscription" in pricing ? pricing.subscription.notes : undefined);
+    expect(shown).toContain("this seat's xAI SuperGrok Heavy subscription");
+  });
+});
