@@ -338,8 +338,13 @@ export function shouldIgnoreWebhookEvent(
       // Find exclusion phrases, stopping at clause boundaries (;, \n, .)
       // Distinguish noun usages like "drop in warning" or "a drop in" from imperative drop commands
       const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden)\\s+)drop(?!\\s+in\\b))`;
+      // An exception word carves the level OUT of the ignore list:
+      // "Ignore info and debug events, except warning events" must not drop
+      // warnings.  Commas are not boundaries, so stop the scan at the
+      // exception word itself.
+      const exceptionBoundary = String.raw`(?:except|but|other\s+than|apart\s+from|aside\s+from)`;
       const clausePattern = new RegExp(
-        `${exclusionVerb}[^.;\\n]*?\\b${lvl}\\b`,
+        `${exclusionVerb}(?:(?!\\b${exceptionBoundary}\\b)[^.;\\n])*?\\b${lvl}\\b`,
         "i",
       );
       if (!clausePattern.test(prompt)) return false;
