@@ -75,6 +75,47 @@ describe("capReplayedTranscript", () => {
     expect(out[1].toolResults?.[0]).toMatchObject({ id: "call-x", result: "hit-1" });
   });
 
+  it("never pairs an older tool RESULT with a newer tool CALL", () => {
+    // The byte cut lands on r1 (the result of an earlier call).  r1 must not
+    // be kept as a "partner" of the newer c2 call: that would open the
+    // transcript on an orphaned result, which the provider rejects.
+    const big = "Z".repeat(300);
+    const t: Transcript = [
+      assistant("a", [{ id: "c1", name: "n", arguments: "{}" }]),
+      user("", [{ id: "c1", result: big }]),
+      assistant("b", [{ id: "c2", name: "n", arguments: big }]),
+      user("", [{ id: "c2", result: "ok" }]),
+    ];
+    const out = capReplayedTranscript(t, { maxBytes: 400 });
+    expect(out[0].toolResults).toBeUndefined();
+    expect(out).toEqual(t.slice(2));
+  });
+
+  it("does not pair a call and result whose ids differ", () => {
+    const big = "Z".repeat(300);
+    const t: Transcript = [
+      user("start"),
+      assistant("a", [{ id: "c1", name: "n", arguments: big }]),
+      user("", [{ id: "other", result: "ok" }]),
+    ];
+    const out = capReplayedTranscript(t, { maxBytes: 100 });
+    // The mismatched call is not kept as a pair partner, and the lone
+    // result left at the front is skipped.
+    expect(out).toEqual([]);
+  });
+
+  it("skips a leading tool result when the entry cap cuts between a call and its result", () => {
+    const t: Transcript = [
+      user("q"),
+      assistant("calling", [{ id: "c1", name: "n", arguments: "{}" }]),
+      user("", [{ id: "c1", result: "r" }]),
+      assistant("done"),
+      user("next"),
+    ];
+    const out = capReplayedTranscript(t, { maxEntries: 3 });
+    expect(out).toEqual([assistant("done"), user("next")]);
+  });
+
   it("respects a custom maxEntries override", () => {
     const t: Transcript = Array.from({ length: 20 }, (_, i) => user(`t${i}`));
     const out = capReplayedTranscript(t, { maxEntries: 5 });
