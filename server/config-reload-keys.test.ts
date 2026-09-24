@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolveGrants } from "./computer-grants.ts";
+import { shouldMountLocalComputer } from "./local-routing.ts";
 import {
   CONFIG_KEYS_WITHOUT_PROVIDER_RELOAD,
   computerProviderBlocked,
@@ -40,7 +42,7 @@ describe("providerReloadKeys", () => {
   });
 
   it("is the filter PUT /api/config uses", () => {
-    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(source).toContain("const reloadKeys = providerReloadKeys(patch);");
   });
 });
@@ -127,7 +129,7 @@ describe("revokedComputerProviders", () => {
 });
 
 describe("PUT /api/config provider disable", () => {
-  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const helper = source.slice(
     source.indexOf("async function interruptTurnsUsingDisabledProviders("),
     source.indexOf("async function runProviderReload()"),
@@ -138,7 +140,10 @@ describe("PUT /api/config provider disable", () => {
   });
 
   it("compares each turn's providers before and after the whole botDefaults save", () => {
-    expect(helper).toContain("revokedTurnProviders(heldProvidersFor(before, inputs, runOn), heldProvidersFor(after, inputs, runOn))");
+    expect(helper).toContain(`revokedTurnProviders(
+      heldProvidersFor(before, inputs, runOn, { autoHost }),
+      heldProvidersFor(after, inputs, runOn, { autoHost }),
+    )`);
     // Every input turn mounting reads, from the settings being compared.
     const held = source.slice(source.indexOf("function heldProvidersFor("), source.indexOf("function botsLosingProviders("));
     expect(held).toContain("allowedBotComputers(settings)");
@@ -180,7 +185,7 @@ describe("computerProviderBlocked (lifecycle gates)", () => {
   });
 
   it("is what the cloud and Local VM lifecycle routes check", () => {
-    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(source).toContain("computerProviderBlocked(config.botDefaults?.computerProviders, allowedBotComputers(config), id)");
     expect(source).toContain("if (computerProviderOff(cfg, providerId)) {");
     expect(source).toContain('return computerProviderOff(config, "localVm");');
@@ -246,7 +251,7 @@ describe("computerProvidersStale (PUT /api/config compare-and-swap)", () => {
   });
 
   it("is checked by PUT /api/config before anything is saved", () => {
-    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     const route = source.slice(source.indexOf('path === "/api/config") {'));
     const cas = route.indexOf("computerProvidersStale(body.expectedComputerProviders, current)");
     expect(cas).toBeGreaterThan(0);
@@ -257,14 +262,14 @@ describe("computerProvidersStale (PUT /api/config compare-and-swap)", () => {
   it("keeps the two-space sentence gap in the stale-save error the window shows", () => {
     // The client puts this error in a plain <div>, where two ASCII spaces
     // collapse; the copy rule's NBSP + space pair survives.
-    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(source).toContain('"Provider settings changed in another window.\\u00a0 Review them and try again."');
     expect(source).not.toContain("another window. Review them");
   });
 });
 
 describe("provider disable impact is judged by the running turn and the server's state", () => {
-  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
   it("interrupts by what a turn mounted, not the bot's grants after a mid-turn edit", () => {
     // A turn started on Cloud keeps its Box mount after the bot is switched
@@ -281,7 +286,8 @@ describe("provider disable impact is judged by the running turn and the server's
     expect(fn).toContain("const inputs = turn.computerInputs ?? turnComputerInputs(bot);");
     expect(fn).not.toContain("storedComputerGrants(bot)");
     // Both dispatch paths snapshot the inputs when they claim the turn.
-    expect(source.match(/computerInputs: turnComputerInputs\(bot\),/g)?.length).toBe(2);
+    expect(source).toContain("computerInputs: turnComputerInputs(bot, opts?.runOn),");
+    expect(source).toContain("computerInputs: turnComputerInputs(bot),");
     expect(source).toContain("computerInputs: owner?.computerInputs,");
   });
 
@@ -309,5 +315,49 @@ describe("provider disable impact is judged by the running turn and the server's
     expect(fn).toContain("webhooks.list()");
     expect(fn).toContain("resourceTriggers.list()");
     expect(fn).toContain('item.enabled && item.runOn === "cloud"');
+  });
+});
+
+describe("targeted interrupts see what the turn could really mount", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const helper = source.slice(
+    source.indexOf("async function interruptTurnsUsingDisabledProviders("),
+    source.indexOf("async function runProviderReload()"),
+  );
+  const all = { asciiBox: true, selfHostedVps: true, localVm: true, localMac: true };
+
+  it("keeps the cloud mount a webhook or resource trigger dispatched, with the bot's computers off", () => {
+    // runOn "cloud" grants the cloud destination whatever the bot says; with
+    // no routine run to look it up from, only the dispatch snapshot knows.
+    const held = (runOn: "cloud" | undefined, providers: typeof all) => {
+      const { granted, auto } = resolveGrants([], runOn, undefined, null);
+      return heldComputerProviders({ granted, auto, autoAllows: [], cloudBackend: "box" }, providers);
+    };
+    expect(held(undefined, all)).toEqual([]);
+    expect(revokedTurnProviders(held("cloud", all), held("cloud", { ...all, asciiBox: false }))).toEqual(["asciiBox"]);
+    expect(source).toContain("computerInputs: turnComputerInputs(bot, opts?.runOn),");
+    expect(source).toContain("...(runOn ? { runOn } : {}),");
+    expect(helper).toContain("const runOn = inputs.runOn ?? (run?.threadId === turn.threadId ? run.runOn : undefined);");
+  });
+
+  it("does not count an Auto host fallback that cannot mount", () => {
+    expect(shouldMountLocalComputer({ requested: undefined, hostPlatform: "linux", providerSupportsLocal: true })).toBe(false);
+    expect(shouldMountLocalComputer({ requested: undefined, hostPlatform: "win32", providerSupportsLocal: true })).toBe(false);
+    expect(shouldMountLocalComputer({ requested: undefined, hostPlatform: "darwin", providerSupportsLocal: false })).toBe(false);
+    // Without the host in autoAllows, turning This Computer off takes nothing.
+    const auto = (autoAllows: ("cloud" | "vm" | "local")[], providers: typeof all) =>
+      heldComputerProviders({ granted: [], auto: true, autoAllows, cloudBackend: "box" }, providers);
+    expect(revokedTurnProviders(auto(["cloud"], all), auto(["cloud"], { ...all, localMac: false }))).toEqual([]);
+    expect(revokedTurnProviders(auto(["cloud", "local"], all), auto(["cloud", "local"], { ...all, localMac: false }))).toEqual(["localMac"]);
+    // Both callers decide it the way mounting does: platform and engine reach.
+    const reach = source.slice(source.indexOf("function autoHostMounts("), source.indexOf("function currentComputerGrants("));
+    expect(reach).toContain("computerReach({ driverKind: instance.driverKind, capabilities: instance.adapter.capabilities }).local");
+    expect(reach).toContain("shouldMountLocalComputer({ requested: undefined, providerSupportsLocal })");
+    expect(helper).toContain("const autoHost = autoHostMounts(turn.instanceId ?? bot.modelSelection.instanceId);");
+    const impact = source.slice(source.indexOf("function botsLosingProviders("), source.indexOf("/** A `botDefaults` save does not rebuild"));
+    expect(impact).toContain("const autoHost = autoHostMounts(bot.modelSelection.instanceId);");
+    expect(impact).not.toContain("process.platform");
+    // No caller can leave it out and fall back to "the host is reachable".
+    expect(source).toContain("options: { autoHost: boolean },");
   });
 });
