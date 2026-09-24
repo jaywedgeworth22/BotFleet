@@ -257,6 +257,14 @@ describe("list_routines", () => {
     });
   });
 
+  it("keeps the omitted-routine count so a trimmed list does not read as complete", async () => {
+    const body = { now: "2026-09-24T20:00:00.000Z", timeZone: "America/Chicago", routines: [{ id: "r1" }], routinesOmitted: 4 };
+    const tools = createAgentTools(deps({ executeListRoutinesRequest: () => ({ status: 200, body }) }));
+    const outcome = await tools.list_routines(call("list_routines"), ctx(), runtime);
+    expect(JSON.parse(outcome.content)).toEqual(body);
+    expect(outcome.detail).toBe("1 routine (+4 omitted)");
+  });
+
   it("hands the endpoint's refusal to the model rather than an empty list", async () => {
     const tools = createAgentTools(
       deps({
