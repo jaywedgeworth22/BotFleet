@@ -151,7 +151,7 @@ describe("LocalComputerSection before the automations hydrate", () => {
 
   it("is wired to the store's hydration status", async () => {
     const { readFileSync } = await import("node:fs");
-    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(source).toContain("providerControlsLocked(state.config, saving, state.hydration.status)");
   });
 });
@@ -212,7 +212,7 @@ describe("revalidateImpact (disable confirm)", () => {
 
   it("is what the confirm handler runs before saving", async () => {
     const { readFileSync } = await import("node:fs");
-    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     const confirm = source.slice(source.lastIndexOf("<ComputerImpactConfirmModal"), source.lastIndexOf("<LocalComputerAutoWarning"));
     const check = confirm.indexOf("revalidateImpact(impact.impacted, botsUsingProvider(impact.provider))");
     expect(check).toBeGreaterThan(0);
@@ -241,7 +241,7 @@ describe("Apply new default to all", () => {
 describe("provider toggle saves say what they saw", () => {
   it("sends the shown toggles with every provider save", async () => {
     const { readFileSync } = await import("node:fs");
-    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(source).toContain("expectedComputerProviders: providers,");
   });
 
@@ -281,11 +281,11 @@ describe("Auto host fallback follows the server's platform", () => {
 
   it("is carried on the config status and its SSE frame", async () => {
     const { readFileSync } = await import("node:fs");
-    const server = readFileSync(new URL("../../server/index.ts", import.meta.url), "utf8");
+    const server = readFileSync(new URL("../../server/index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(server).toContain("host: { platform: process.platform },");
     const { configStatusFromFrame } = await import("../state/store");
     expect(configStatusFromFrame({ host: { platform: "darwin" } } as any).host).toEqual({ platform: "darwin" });
-    const section = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    const section = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(section).toContain("autoHostPlatform(state.config, capabilities.host.platform)");
   });
 });
@@ -293,7 +293,7 @@ describe("Auto host fallback follows the server's platform", () => {
 describe("server-checked disable impact", () => {
   it("sends the confirmed bots with every provider save", async () => {
     const { readFileSync } = await import("node:fs");
-    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../components/LocalComputerSection.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(source).toContain("acknowledgedImpact: [...acknowledgedImpact],");
     expect(source).toContain("impact.impacted.map((bot) => bot.id),");
   });
