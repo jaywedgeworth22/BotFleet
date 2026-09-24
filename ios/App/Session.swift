@@ -155,9 +155,20 @@ final class Session: ObservableObject {
     /// for the same attachment path.
     private var avatarFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
     private var avatarCacheGeneration = 0
-    /// Bumped on each feature PATCH so an older ConfigStatus response cannot
-    /// overwrite a newer toggle when URLSession completes out of order.
+    /// One-in-flight feature PATCH chain with latest-wins coalesce.  Rapid
+    /// toggle flips share pending field values so the server sees user order;
+    /// a generation guard alone only picked which response updated the UI.
+    private var featuresUpdateTail: Task<ConfigStatus?, Never>?
     private var featuresUpdateGeneration = 0
+    private var pendingFeaturesShowToolCalls: Bool?
+    private var pendingFeaturesSummarizeToolCalls: Bool?
+    /// Same serialize + coalesce pattern for profile name/email autosaves.
+    private var profileUpdateTail: Task<ConfigStatus?, Never>?
+    private var profileUpdateGeneration = 0
+    private var pendingProfileName: String?
+    private var pendingProfileEmail: String?
+    private var pendingProfileHasName = false
+    private var pendingProfileHasEmail = false
     /// A saved connection exists, but its token could not be read yet. Keeps
     /// "the keychain is locked" from being mistaken for "not paired".
     private var restorePending = false
@@ -1595,23 +1606,41 @@ final class Session: ObservableObject {
 
     @MainActor
     func updateFeatures(showToolCalls: Bool? = nil, summarizeToolCalls: Bool? = nil) async -> ConfigStatus? {
-        guard let client else { return nil }
+        if let showToolCalls {
+            pendingFeaturesShowToolCalls = showToolCalls
+        }
+        if let summarizeToolCalls {
+            pendingFeaturesSummarizeToolCalls = summarizeToolCalls
+        }
         featuresUpdateGeneration += 1
         let generation = featuresUpdateGeneration
-        do {
-            let updated = try await client.updateFeatures(
-                showToolCalls: showToolCalls,
-                summarizeToolCalls: summarizeToolCalls
-            )
-            // Drop a stale response so rapid toggle flips cannot regress switches.
-            guard featuresUpdateGeneration == generation else { return updated }
-            self.config = updated
-            return updated
-        } catch {
-            guard featuresUpdateGeneration == generation else { return nil }
-            recordActionError(error)
-            return nil
+        let previous = featuresUpdateTail
+        let task = Task<ConfigStatus?, Never> { @MainActor in
+            _ = await previous?.value
+            // Latest-wins: a newer call already coalesced our fields into pending*.
+            guard self.featuresUpdateGeneration == generation else { return nil }
+            let show = self.pendingFeaturesShowToolCalls
+            let summarize = self.pendingFeaturesSummarizeToolCalls
+            self.pendingFeaturesShowToolCalls = nil
+            self.pendingFeaturesSummarizeToolCalls = nil
+            guard show != nil || summarize != nil else { return self.config }
+            guard let client = self.client else { return nil }
+            do {
+                let updated = try await client.updateFeatures(
+                    showToolCalls: show,
+                    summarizeToolCalls: summarize
+                )
+                guard self.featuresUpdateGeneration == generation else { return updated }
+                self.config = updated
+                return updated
+            } catch {
+                guard self.featuresUpdateGeneration == generation else { return nil }
+                self.recordActionError(error)
+                return nil
+            }
         }
+        featuresUpdateTail = task
+        return await task.value
     }
 
     @MainActor
@@ -1629,15 +1658,42 @@ final class Session: ObservableObject {
 
     @MainActor
     func updateProfile(name: String? = nil, email: String? = nil) async -> ConfigStatus? {
-        guard let client else { return nil }
-        do {
-            let updated = try await client.updateProfile(name: name, email: email)
-            self.config = updated
-            return updated
-        } catch {
-            recordActionError(error)
-            return nil
+        // nil means omit (dirty-only PATCH).  Only non-nil args join the coalesce.
+        if let name {
+            pendingProfileName = name
+            pendingProfileHasName = true
         }
+        if let email {
+            pendingProfileEmail = email
+            pendingProfileHasEmail = true
+        }
+        guard pendingProfileHasName || pendingProfileHasEmail else { return config }
+        profileUpdateGeneration += 1
+        let generation = profileUpdateGeneration
+        let previous = profileUpdateTail
+        let task = Task<ConfigStatus?, Never> { @MainActor in
+            _ = await previous?.value
+            guard self.profileUpdateGeneration == generation else { return nil }
+            let sendName = self.pendingProfileHasName ? self.pendingProfileName : nil
+            let sendEmail = self.pendingProfileHasEmail ? self.pendingProfileEmail : nil
+            self.pendingProfileHasName = false
+            self.pendingProfileHasEmail = false
+            self.pendingProfileName = nil
+            self.pendingProfileEmail = nil
+            guard let client = self.client else { return nil }
+            do {
+                let updated = try await client.updateProfile(name: sendName, email: sendEmail)
+                guard self.profileUpdateGeneration == generation else { return updated }
+                self.config = updated
+                return updated
+            } catch {
+                guard self.profileUpdateGeneration == generation else { return nil }
+                self.recordActionError(error)
+                return nil
+            }
+        }
+        profileUpdateTail = task
+        return await task.value
     }
 
     func instances() async -> [Instance] {

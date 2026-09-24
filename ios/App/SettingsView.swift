@@ -21,6 +21,7 @@ struct SettingsView: View {
     // saves only fire after a successful load, and only for fields that
     // differ from these, so placeholders never PATCH over real settings.
     @State private var settingsLoaded = false
+    @State private var settingsLoadFailed = false
     @State private var savedProfileName = ""
     @State private var savedProfileEmail = ""
     @State private var savedRoomTimeout = 5
@@ -205,14 +206,14 @@ struct SettingsView: View {
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 72)
-                            .disabled(savingRoomTimeout)
+                            .disabled(savingRoomTimeout || !settingsLoaded)
                             .onSubmit { Task { await saveRoomTimeout() } }
                         Text("min")
                             .foregroundStyle(.secondary)
                         Button("Save") {
                             Task { await saveRoomTimeout() }
                         }
-                        .disabled(savingRoomTimeout)
+                        .disabled(savingRoomTimeout || !settingsLoaded)
                     }
                     if !roomTimeoutError.isEmpty {
                         Text(roomTimeoutError)
@@ -230,6 +231,7 @@ struct SettingsView: View {
                         .textContentType(.name)
                         .autocorrectionDisabled()
                         .focused($focusedProfileField, equals: .name)
+                        .disabled(!settingsLoaded)
                         .onSubmit { focusedProfileField = nil }
                     TextField("Email", text: $profileEmail)
                         .textContentType(.emailAddress)
@@ -237,11 +239,28 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .focused($focusedProfileField, equals: .email)
+                        .disabled(!settingsLoaded)
                         .onSubmit { focusedProfileField = nil }
+                    if settingsLoadFailed && !settingsLoaded {
+                        HStack {
+                            Text("Could not load settings.")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                            Spacer()
+                            Button("Retry") {
+                                Task { await loadSettingsExtras() }
+                            }
+                            .font(.footnote)
+                        }
+                    }
                 } header: {
                     Text("You")
                 } footer: {
-                    Text("Shown in the sidebar.  Saved when you leave a field.")
+                    Text(
+                        settingsLoaded
+                            ? "Shown in the sidebar.  Saved when you leave a field."
+                            : "Settings load from your computer before you can edit name, email, or the channel turn timeout."
+                    )
                 }
 
                 Section {
@@ -429,6 +448,9 @@ struct SettingsView: View {
                 server: serverTimeout
             )
             settingsLoaded = true
+            settingsLoadFailed = false
+        } else if !settingsLoaded {
+            settingsLoadFailed = true
         }
         loadingEngines = true
         let fetched = await session.instances()
