@@ -96,3 +96,21 @@ export function staleProviderConfig(error: unknown): ConfigStatus | null {
   const config = body.config;
   return config && typeof config === "object" ? (config as ConfigStatus) : null;
 }
+
+/** The host platform the Auto This Computer fallback is judged against: the
+ * one the server reports, because that is where turns run.  A desktop app
+ * talking to its own server knows it locally too, so that is the fallback for
+ * an older server that does not report it.  A plain browser knows nothing
+ * ("other"), and guessing from it hid every Auto bot's host grant, so with
+ * neither source the answer is `undefined`, which keeps the matrix's
+ * optimistic default. */
+export function autoHostPlatform(
+  config: ConfigStatus | null | undefined,
+  clientPlatform: "darwin" | "linux" | "win32" | "other",
+): "darwin" | "linux" | "win32" | "other" | undefined {
+  const reported = config?.host?.platform;
+  if (typeof reported === "string" && reported) {
+    return reported === "darwin" || reported === "linux" || reported === "win32" ? reported : "other";
+  }
+  return clientPlatform === "other" ? undefined : clientPlatform;
+}
