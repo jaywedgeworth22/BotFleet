@@ -1,5 +1,6 @@
 import Foundation
 import Sentry
+import CompanionCore
 
 /// Native Sentry crash reporting and telemetry for BotFleet iOS Companion.
 enum SentryTelemetry {
@@ -25,6 +26,9 @@ enum SentryTelemetry {
             options.sessionReplay.maskAllText = true
             options.sessionReplay.maskAllImages = true
             options.beforeSend = { event in
+                if Self.isExpectedPairedGatewayOfflineResponse(event) {
+                    return nil
+                }
                 if let request = event.request, let url = request.url {
                     var sanitized = url
                     for param in ["token", "key", "secret", "auth", "password"] {
@@ -39,5 +43,20 @@ enum SentryTelemetry {
                 return event
             }
         }
+    }
+
+    private static func isExpectedPairedGatewayOfflineResponse(_ event: Event) -> Bool {
+        guard event.exceptions?.contains(where: { $0.type == "HTTPClientError" }) == true,
+              let response = event.context?["response"],
+              let statusCode = (response["status_code"] as? NSNumber)?.intValue
+        else { return false }
+
+        let pairedConnection = UserDefaults.standard.data(forKey: Session.connectionKey)
+            .flatMap { try? JSONDecoder().decode(Connection.self, from: $0) }
+        return CompanionGatewayFailurePolicy.shouldSuppress(
+            statusCode: statusCode,
+            requestURL: event.request?.url,
+            pairedConnection: pairedConnection
+        )
     }
 }
