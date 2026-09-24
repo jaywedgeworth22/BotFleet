@@ -530,6 +530,17 @@ describe("WebhookManager", () => {
     const condWarningResult = h.manager.receive(condHook.endpointId, condSecret, clauseWarning);
     expect(condWarningResult).toMatchObject({ duplicate: false });
     expect(condWarningResult.runId).toBeDefined();
+
+    // 17. "Ignore assignment updates unless assigned to the on-call engineer" is a
+    // conditional exclusion the payload cannot evaluate — keep assigned deliveries.
+    const { webhook: condAssignHook, secret: condAssignSecret } = h.manager.create({
+      name: "Conditional Assignment Handler",
+      prompt: "Ignore assignment updates unless assigned to the on-call engineer.",
+      botId: "maus-1",
+    });
+    const condAssignResult = h.manager.receive(condAssignHook.endpointId, condAssignSecret, assignEvent);
+    expect(condAssignResult).toMatchObject({ duplicate: false });
+    expect(condAssignResult.runId).toBeDefined();
     expect(dropNounResult.runId).toBeDefined();
   });
 });

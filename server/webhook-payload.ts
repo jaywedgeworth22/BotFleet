@@ -400,8 +400,8 @@ export function isSentryWebhookPayload(payload: JsonValue): boolean {
   }
   if (
     event &&
-    (pickStr(event, "event_id") !== undefined ||
-      (typeof event.url === "string" && event.url.includes("sentry.io")))
+    ((typeof event.url === "string" && event.url.includes("sentry.io")) ||
+      (typeof event.web_url === "string" && event.web_url.includes("sentry.io")))
   ) {
     return true;
   }

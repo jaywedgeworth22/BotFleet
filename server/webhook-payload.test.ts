@@ -205,6 +205,14 @@ describe("slimWebhookPayload", () => {
     };
     expect(isSentryWebhookPayload(culpritOnly)).toBe(false);
     expect(slimWebhookPayload(culpritOnly)).toEqual(culpritOnly);
+
+    // event_id is generic across event systems — without a sentry.io URL or
+    // Sentry actor/installation, it must not mark the payload as Sentry.
+    const eventIdOnly = {
+      event: { event_id: "12345", message: "Alert", details: { extra: "data" } },
+    };
+    expect(isSentryWebhookPayload(eventIdOnly)).toBe(false);
+    expect(slimWebhookPayload(eventIdOnly)).toEqual(eventIdOnly);
     expect(serializeWebhookPayload(generic)).toContain("foo");
   });
 

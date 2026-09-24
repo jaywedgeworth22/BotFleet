@@ -431,7 +431,22 @@ export function shouldIgnoreWebhookEvent(
           `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}|${assignmentTarget}[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb})`,
           "i",
         );
-        return !negationPattern.test(prompt);
+        if (negationPattern.test(prompt)) return false;
+
+        // A conditional carve-out ("ignore assignment updates unless assigned to
+        // the on-call engineer", "only if assigned to primary") qualifies the
+        // exclusion, and the payload carries nothing to evaluate the condition with.
+        // Conservative: keep the event rather than drop one the condition would have kept.
+        const conditional = `(?:unless|only\\s+(?:if|when)|if|when)`;
+        const conditionalGap = `(?:(?!${contrastingVerb})[^.;\\n])*?`;
+        const conditionalPattern = new RegExp(
+          `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}${conditionalGap}\\b${conditional}\\b` +
+            `|\\b${conditional}\\b${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}` +
+            `|${assignmentTarget}${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${conditional}\\b`,
+          "i",
+        );
+        if (conditionalPattern.test(prompt)) return false;
+        return true;
       };
 
       if (isAssignmentExcluded()) {
