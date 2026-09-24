@@ -416,6 +416,13 @@ export class RoutineManager {
     if (recovered.length > 0) {
       this.save();
       for (const run of recovered) if (!run.coalescedInto) this.options.onRunFailed?.(run);
+      // The check-in was opened by the process that died; close it here too,
+      // or Sentry only learns of the failure when the monitor times out.
+      // `this.options` is assigned first thing in the constructor, and the
+      // server applies its Sentry settings before building this manager.
+      for (const run of recovered) {
+        if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, false);
+      }
     }
   }
 
@@ -840,6 +847,9 @@ export class RoutineManager {
     run.finishedAt = this.now();
     this.save();
     this.emitRun(run);
+    // The later turn.completed cannot close the check-in: handleRuntimeEvent
+    // only matches running/waiting runs, and this one is now cancelled.
+    if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, false);
     if (run.threadId) await this.options.interruptTurn?.(run.botId, run.threadId, run.runOn ?? "maus").catch(() => {});
     queueMicrotask(() => void this.tick());
     return { ...run };
