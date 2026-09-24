@@ -395,3 +395,45 @@ describe("an Auto turn is judged by what it actually mounted", () => {
     expect(map).toContain('{ box: "asciiBox", vps: "selfHostedVps", vm: "localVm", local: "localMac" }');
   });
 });
+
+describe("a provider turned off before the turn reaches its engine", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+  it("fences the exact dispatch when revoking, since the interrupt has no session to reach", () => {
+    const helper = source.slice(
+      source.indexOf("async function interruptTurnsUsingDisabledProviders("),
+      source.indexOf("async function runProviderReload("),
+    );
+    const latch = helper.indexOf("latchInterruptedTurns([turn]);");
+    const fence = helper.indexOf("activeTurnOwners.revoke(turn.threadId, turn.dispatchId);");
+    const interrupt = helper.indexOf("adapter.interruptTurn(turn.threadId)");
+    expect(latch).toBeGreaterThan(-1);
+    expect(fence).toBeGreaterThan(latch);
+    expect(interrupt).toBeGreaterThan(fence);
+  });
+
+  it("stops a 1:1 turn at its pre-dispatch check", () => {
+    const check = source.slice(
+      source.indexOf("const dispatchStillCurrent = (): boolean => {"),
+      source.indexOf("if (providerReloadInProgress) {", source.indexOf("const dispatchStillCurrent = (): boolean => {")),
+    );
+    expect(check).toContain("if (owner.revoked) {");
+    expect(check).toContain('throw new Error("computer settings changed during turn setup");');
+  });
+
+  it("stops a room turn during setup and after its mounts resolve, before sendTurn", () => {
+    expect(source).toContain("return !isCancelled?.() && !activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId);");
+    const record = source.indexOf("activeTurnOwners.recordMounted(threadId, roomDispatch.dispatchId, mountedProviders(turnComputers.mounts));");
+    const fence = source.indexOf("if (activeTurnOwners.isRevoked(threadId, roomDispatch.dispatchId)) {", record);
+    const send = source.indexOf(".sendTurn({", record);
+    expect(record).toBeGreaterThan(-1);
+    expect(fence).toBeGreaterThan(record);
+    expect(send).toBeGreaterThan(fence);
+    // Nothing awaits between the fence and the dispatch.
+    expect(source.slice(fence, send)).not.toMatch(/\bawait\b(?! new Promise<"settled")/);
+    const unwind = source.slice(fence, source.indexOf("return false;", fence));
+    expect(unwind).toContain("activeTurnOwners.settle(threadId, instance.instanceId);");
+    expect(unwind).toContain("releaseRoomSpeaker();");
+    expect(unwind).toContain("drainRoomQueue();");
+  });
+});
