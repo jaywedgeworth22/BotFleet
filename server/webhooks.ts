@@ -379,9 +379,13 @@ export function shouldIgnoreWebhookEvent(
       );
       const otherLevels = ["error", "warning", "info", "debug"].filter((l) => l !== lvl);
       const otherLevelsPattern = `(?:${otherLevels.map((l) => `${l}s?`).join("|")})`;
+      // The trigger name is an instruction too: "Ignore warning events" with an
+      // empty prompt must be honored, same as the name checks below.
       const hasLevelExclusion =
         verbFirstPattern.test(prompt) ||
+        verbFirstPattern.test(name) ||
         targetFirstPattern.test(prompt) ||
+        targetFirstPattern.test(name) ||
         positiveScopeException.test(prompt) ||
         positiveScopeException.test(name) ||
         bareNegativePattern.test(prompt) ||
@@ -520,7 +524,7 @@ export function shouldIgnoreWebhookEvent(
           `|\\b${lvl}s?\\b${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${conditional}\\b`,
         "i",
       );
-      if (conditionalPattern.test(prompt)) return false;
+      if (conditionalPattern.test(prompt) || conditionalPattern.test(name)) return false;
       return true;
     };
 
@@ -566,7 +570,12 @@ export function shouldIgnoreWebhookEvent(
         );
         if (negatedTargetPattern.test(prompt) || negatedTargetPattern.test(name)) return true;
 
-        if (!verbFirstPattern.test(prompt) && !targetFirstPattern.test(prompt)) return false;
+        if (
+          !verbFirstPattern.test(prompt) &&
+          !targetFirstPattern.test(prompt) &&
+          !verbFirstPattern.test(name) &&
+          !targetFirstPattern.test(name)
+        ) return false;
 
         const positiveTargetsAssignment = new RegExp(
           `${contrastingVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?(?<!\\b(?:do\\s+not|don't|never|not|no|neither|without)\\s+(?:any\\s+)?)${assignmentTarget}` +
@@ -593,7 +602,7 @@ export function shouldIgnoreWebhookEvent(
             `|${assignmentTarget}${conditionalGap}${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?\\b${conditional}\\b`,
           "i",
         );
-        if (conditionalPattern.test(prompt)) return false;
+        if (conditionalPattern.test(prompt) || conditionalPattern.test(name)) return false;
         return true;
       };
 
