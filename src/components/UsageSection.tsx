@@ -1051,7 +1051,15 @@ export function UsageSection() {
                     bucketedOutput += bucketUsage.output;
                     bucketedCached += cachedInput(bucketUsage);
                     if ((bucketUsage.turns ?? 0) <= 0) continue;
-                    if (bucketEngine(bucketInstanceId, bucketUsage.engineId) !== id) continue;
+                    // Legacy buckets banked before engine metadata existed
+                    // carry no engineId; a deleted custom connection id
+                    // resolves to nothing, so fall back to the model map —
+                    // otherwise the usage is skipped here yet still
+                    // subtracted from the legacy remainder and vanishes.
+                    const resolvedBucketEngine = bucketUsage.engineId
+                      ? bucketEngine(bucketInstanceId, bucketUsage.engineId)
+                      : legacyEngine(bucketInstanceId, task.modelSelection?.model);
+                    if (resolvedBucketEngine !== id) continue;
                     tokensForEngine += bucketUsage.input + bucketUsage.output;
                     cachedForEngine += cachedInput(bucketUsage);
                     inputForEngine += bucketUsage.input;
@@ -1092,7 +1100,10 @@ export function UsageSection() {
               for (const [roomInstanceId, roomUsage] of Object.entries(bot.roomUsageByInstance ?? {})) {
                 if (roomUsage.lastAt < periodStartMs) continue;
                 if ((roomUsage.turns ?? 0) <= 0) continue;
-                if (bucketEngine(roomInstanceId, roomUsage.engineId) !== id) continue;
+                const resolvedRoomEngine = roomUsage.engineId
+                  ? bucketEngine(roomInstanceId, roomUsage.engineId)
+                  : legacyEngine(roomInstanceId, undefined);
+                if (resolvedRoomEngine !== id) continue;
                 tokensForEngine += roomUsage.input + roomUsage.output;
                 cachedForEngine += cachedInput(roomUsage);
                 inputForEngine += roomUsage.input;
@@ -1397,13 +1408,29 @@ function UsageRow({
     const ranModels = isRoomRow
       ? []
       : [...new Set(Object.values(task.usageByInstance ?? {}).flatMap((b) => Object.keys(b.byModel ?? {})))];
+    // A session that mostly ran before per-model banking exists has only
+    // its newest turns in byModel — labeling it by those alone would hide
+    // the model that produced the bulk of the usage, so when the banked
+    // turns do not cover the task total, keep the configured model too.
+    const bankedTurns = isRoomRow
+      ? 0
+      : Object.values(task.usageByInstance ?? {}).reduce(
+          (n, b) => n + Object.values(b.byModel ?? {}).reduce((m, mu) => m + (mu.turns ?? 0), 0),
+          0,
+        );
+    const configuredModel = task.modelSelection?.model ?? bot.modelSelection.model;
+    const labelModels = ranModels.length > 0
+      ? bankedTurns < (task.usage?.turns ?? 0) && configuredModel && !ranModels.includes(configuredModel)
+        ? [...ranModels, configuredModel]
+        : ranModels
+      : [];
     const model = isRoomRow
       ? task.modelSelection?.model || task.modelSelection?.instanceId || "room"
-      : ranModels.length > 0
-        ? ranModels.join(", ")
-        : task.modelSelection?.model ?? bot.modelSelection.model;
-    if (!isRoomRow && ranModels.length > 0) {
-      for (const m of ranModels) modelSet.add(m);
+      : labelModels.length > 0
+        ? labelModels.join(", ")
+        : configuredModel;
+    if (!isRoomRow && labelModels.length > 0) {
+      for (const m of labelModels) modelSet.add(m);
     } else if (model && !isRoomRow) {
       modelSet.add(model);
     }
