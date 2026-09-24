@@ -248,7 +248,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
-import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
+import { boundNativeTranscript, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
   ensureWorkspace,
@@ -3215,6 +3215,9 @@ async function startTurn(
     // driver gets this for free by declaring it.
     replaysNatively: instance.adapter.capabilities.replaysTranscript === true,
   });
+  const driverTranscript = instance.adapter.capabilities.replaysTranscript === true
+    ? boundNativeTranscript(transcript)
+    : transcript;
 
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
@@ -3523,7 +3526,7 @@ async function startTurn(
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
         resumeCursor: resume ? task.resumeCursors[instanceId] : undefined,
-        transcript,
+        transcript: driverTranscript,
         // `buildTurnTools` only returns tool surfaces the harness can
         // actually execute in-process: agents, host computer, fleet
         // recall, phone, and github today.  Composio and real GUI/cloud

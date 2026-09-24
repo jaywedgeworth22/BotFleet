@@ -1,11 +1,40 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
+import { boundNativeTranscript, buildTurnContext, engineIsFresh } from "./turn-context.ts";
 
 const transcript = [
   { role: "user" as const, text: "my dog is named Biscuit" },
   { role: "assistant" as const, text: "Noted — Biscuit." },
 ];
+
+describe("boundNativeTranscript", () => {
+  it("keeps ordinary replay unchanged", () => {
+    expect(boundNativeTranscript(transcript)).toBe(transcript);
+  });
+
+  it("keeps recent complete turns and marks older history as omitted", () => {
+    const history = [
+      { role: "user" as const, text: "old".repeat(50 * 1024) },
+      { role: "assistant" as const, text: "recent assistant" },
+      { role: "user" as const, text: "recent user" },
+    ];
+    const bounded = boundNativeTranscript(history);
+    expect(bounded.map((entry) => entry.text)).toEqual([
+      "[Earlier conversation omitted for length]",
+      "recent assistant",
+      "recent user",
+    ]);
+    expect(bounded[0].role).toBe("user");
+  });
+
+  it("clips one oversized newest turn at a UTF-8 boundary", () => {
+    const bounded = boundNativeTranscript([{ role: "assistant", text: "é".repeat(100 * 1024) }]);
+    expect(bounded).toHaveLength(2);
+    expect(bounded[1].text).not.toContain("\uFFFD");
+    expect(bounded[1].text.length).toBeLessThan(100 * 1024);
+    expect(Buffer.byteLength(bounded.map((entry) => entry.text).join(""), "utf8")).toBeLessThanOrEqual(128 * 1024);
+  });
+});
 
 describe("buildTurnContext", () => {
   it("passes text through untouched on a plain resumed turn", () => {

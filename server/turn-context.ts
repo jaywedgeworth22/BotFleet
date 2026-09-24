@@ -45,6 +45,36 @@ const FRESH_PREAMBLE =
   "[You are joining this conversation mid-thread (the user switched this bot over to you). The conversation so far:]";
 
 const MAX_REPLAY_BYTES = 128 * 1024;
+const OMITTED_HISTORY = "[Earlier conversation omitted for length]";
+
+/** Chat-completions drivers resend this history on every request and tool round.
+ * Keep its newest complete turns within a byte budget; one oversized newest
+ * turn is clipped so a single paste cannot defeat the limit. */
+export function boundNativeTranscript(
+  transcript: Array<{ role: "user" | "assistant"; text: string }>,
+): Array<{ role: "user" | "assistant"; text: string }> {
+  // Leave space for the notice and message framing in the provider payload.
+  const contentBudget = MAX_REPLAY_BYTES - Buffer.byteLength(OMITTED_HISTORY, "utf8") - 64;
+  const kept: typeof transcript = [];
+  let bytes = 0;
+  let omitted = false;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const entry = transcript[i];
+    const entryBytes = Buffer.byteLength(entry.text, "utf8");
+    if (bytes + entryBytes > contentBudget) {
+      omitted = true;
+      if (kept.length === 0) {
+        kept.unshift({ ...entry, text: clipUtf8(entry.text, contentBudget) });
+      }
+      break;
+    }
+    kept.unshift(entry);
+    bytes += entryBytes;
+  }
+  if (!omitted) return transcript;
+  kept.unshift({ role: "user", text: OMITTED_HISTORY });
+  return kept;
+}
 
 /** Clip a string to at most `maxBytes` of UTF-8 without splitting a character. */
 function clipUtf8(value: string, maxBytes: number): string {
@@ -91,7 +121,7 @@ export function buildTurnContext(input: TurnContextInput): {
   return {
     turnText: [
       preamble,
-      ...(truncated ? ["[Earlier conversation omitted for length]", ""] : [""]),
+      ...(truncated ? [OMITTED_HISTORY, ""] : [""]),
       ...lines,
       "",
       "[Now reply to the user's latest message:]",
