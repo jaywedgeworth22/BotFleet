@@ -941,6 +941,24 @@ describe("unattendedModelDowngrade", () => {
     ).toEqual(gemini);
   });
 
+  it("never downgrades onto a model that is itself in quota cooldown", () => {
+    const pro: ModelSelection = { instanceId: "antigravity", model: "gemini-3.1-pro-high" };
+    // Flash is cooling: keep the resolver-vetted Pro selection untouched.
+    expect(
+      unattendedModelDowngrade(pro, {
+        unattended: true,
+        isCooling: (_instanceId, model) => model === "gemini-3.8-flash-high",
+      }),
+    ).toEqual(pro);
+    // Flash is free: downgrade as usual.
+    expect(
+      unattendedModelDowngrade(pro, {
+        unattended: true,
+        isCooling: () => false,
+      }),
+    ).toEqual({ ...pro, model: "gemini-3.8-flash-high" });
+  });
+
   it("maps Antigravity Pro ids to Flash ids the catalog actually offers", () => {
     // gemini-3.1-flash-high/low do not exist on Antigravity — the rewrite
     // must land on an offered id or the unattended turn fails at turn start.
