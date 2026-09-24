@@ -1,4 +1,4 @@
-import type { CloudBackend, ModelSelection } from "./contracts.ts";
+import type { CloudBackend, ModelSelection, EffortLevel } from "./contracts.ts";
 
 /** The bot's computer settings as they were when a turn was dispatched, which
  * is what that turn mounted.  A later bot edit changes the stored grants but
@@ -289,6 +289,7 @@ export function eligibleAutoFallbackChain(
   input: {
     botId: string;
     currentInstanceId: string;
+    effort?: EffortLevel;
     isCooling: (botId: string, instanceId: string, model: string) => boolean;
     priority: readonly string[];
   },
@@ -316,7 +317,10 @@ export function eligibleAutoFallbackChain(
       return rank(a.candidate.instanceId) - rank(b.candidate.instanceId) || a.order - b.order;
     });
   const pick = viable[0]?.candidate;
-  return pick ? [{ instanceId: pick.instanceId, model: pick.models.default }] : [];
+  if (!pick) return [];
+  const selection: ModelSelection = { instanceId: pick.instanceId, model: pick.models.default };
+  if (input.effort) selection.effort = input.effort;
+  return [selection];
 }
 
 export interface ThreadRuntimeInstance {
