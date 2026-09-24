@@ -216,12 +216,14 @@ public struct CompanionState: Sendable {
             hasMore[room.threadId] = room.hasMore ?? false
         }
         // Drain or an idle send may have landed while we were disconnected.
-        // Retire chips whose queueId or text is now a real transcript row.
+        // Retire chips whose queueId is now a real transcript row; only idle
+        // (non-202) chips may also retire by text, as in
+        // `consumePendingMatchingText` — a busy line waits for its queueId.
         for (threadId, entries) in pendingQueued {
             let thread = messages[threadId] ?? []
             let landedIds = Set(thread.compactMap(\.queueId))
             let landedTexts = Set(thread.filter { $0.role == .user }.compactMap(\.text))
-            for entry in entries where landedIds.contains(entry.queueId) || landedTexts.contains(entry.text) {
+            for entry in entries where landedIds.contains(entry.queueId) || (!entry.queued && landedTexts.contains(entry.text)) {
                 consumePendingQueued(threadId: threadId, queueId: entry.queueId)
             }
         }
