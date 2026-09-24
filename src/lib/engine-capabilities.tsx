@@ -600,7 +600,7 @@ export function EngineCalloutBody(props: {
       className={className ?? "rounded-xl border border-hairline/30 bg-inset/30 p-3 text-[12.5px] leading-relaxed text-ink-secondary"}
     >
       <p className="mb-1.5 text-ink">
-        <strong>Why this engine?</strong> {entry.whyThisEngine.headline}
+        <strong>Why This Engine?</strong> {entry.whyThisEngine.headline}
       </p>
       {entry.whyThisEngine.prose.map((line, index) => (
         <p key={index} className="mb-1 last:mb-0">
