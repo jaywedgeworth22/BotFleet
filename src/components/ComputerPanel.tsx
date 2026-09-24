@@ -414,9 +414,21 @@ export function ComputerPanel({
     if (phase !== "ready" || viewerOpen || !pageVisible) return;
     setScreenStreamState("connecting");
     const stream = new EventSource(`/api/events?screens=on&botId=${encodeURIComponent(bot.id)}`);
-    stream.onopen = () => setScreenStreamState("connected");
-    stream.onerror = () => setScreenStreamState("failed");
+    let active = true;
+    let failed = false;
+    stream.onopen = () => {
+      if (!active) return;
+      failed = false;
+      setScreenStreamState("connected");
+    };
+    stream.onerror = () => {
+      if (!active) return;
+      if (!failed) setPolledFrame(null);
+      failed = true;
+      setScreenStreamState("failed");
+    };
     stream.onmessage = (event) => {
+      if (!active) return;
       try {
         const parsed = liveScreenFrame.safeParse(JSON.parse(event.data));
         if (parsed.success && parsed.data.botId === bot.id) {
@@ -427,7 +439,10 @@ export function ComputerPanel({
         // Ignore malformed frames; EventSource reconnects after a broken stream.
       }
     };
-    return () => stream.close();
+    return () => {
+      active = false;
+      stream.close();
+    };
   }, [phase, viewerOpen, pageVisible, bot.id, dispatch]);
   const inFlight = useRef(false);
   useEffect(() => {
@@ -508,9 +523,9 @@ export function ComputerPanel({
   }, [phase, isLinux, pageVisible, bot.busy]);
 
   const lastScreenMessage = [...bot.messages].reverse().find((m) => m.kind === "screen" && m.png);
+  const latestPreview = screenStreamState === "failed" ? polledFrame ?? live : live ?? polledFrame;
   const cloudFrame =
-    live ??
-    polledFrame ??
+    latestPreview ??
     (lastScreenMessage ? { png: lastScreenMessage.png!, mime: lastScreenMessage.mime ?? "image/png" } : null);
   const frameSrc =
     phase === "vm"

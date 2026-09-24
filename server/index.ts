@@ -1238,7 +1238,7 @@ function broadcast(payload: Record<string, unknown>) {
       client.res.write(frame);
     } catch {
       sseClients.delete(client);
-      if (kind === "screen") screenPollers.viewerChanged();
+      screenPollers.viewerChanged();
     }
   }
 }
@@ -2900,7 +2900,8 @@ function drainQueuedSends() {
 
 // ── live screen: capture only while a viewer watches ───────────────────
 const screenPollers = new ScreenPollers(
-  (botId) => [...sseClients].some((client) => client.screens && (!client.screenBotIds || client.screenBotIds.has(botId))),
+  (botId) => [...sseClients].some((client) =>
+    !client.res.destroyed && client.screens && (!client.screenBotIds || client.screenBotIds.has(botId))),
   (botId, frame) => broadcast({ kind: "screen", botId, ...frame }),
 );
 
