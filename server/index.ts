@@ -285,6 +285,7 @@ import { readThreadEvents } from "./thread-events.ts";
 import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./webhook-ingress.ts";
 import { readLinqWebhook } from "./routes/linq-webhook.ts";
 import { resolveLinqBinding } from "./linq/dispatch.ts";
+import { deliverLinqOutboundIfNeeded, stopLinqTypingForThread } from "./linq/outbound.ts";
 import { memberTurnSelection } from "./member-turn.ts";
 import { WebhookManager } from "./webhooks.ts";
 import { ResourceTriggerManager } from "./resource-triggers.ts";
@@ -1866,6 +1867,7 @@ bus.subscribe((event: RuntimeEvent) => {
     // dispatches themselves release their exact keys.
     releaseLocalVmThread(event.threadId);
     releaseRoomComputerLease(event.threadId);
+      void stopLinqTypingForThread(event.threadId);
   }
   broadcast({ kind: "runtime", event });
   const routineRun = routines?.handleRuntimeEvent(event) ?? null;
@@ -1888,6 +1890,14 @@ bus.subscribe((event: RuntimeEvent) => {
     case "item.completed":
       if (event.itemType === "assistant_text") {
         pushMessage({ role: "bot", kind: "text", text: event.text });
+        if (bot) {
+          void deliverLinqOutboundIfNeeded(event.threadId, bot.id, event.text).then((r) => {
+            if (r.sent) console.log(`[linq-outbound] delivered thread=${event.threadId}`);
+            else if (r.reason && r.reason !== "no_linq_chat" && r.reason !== "not_tagged" && r.reason !== "bot_not_linq") {
+              console.warn(`[linq-outbound] failed thread=${event.threadId}: ${r.reason}`);
+            }
+          });
+        }
         // kept so "finished" can say what it finished with, rather than
         // just that something ended
         lastReply.set(event.threadId, event.text);
@@ -6909,7 +6919,12 @@ const server = createServer(async (req, res) => {
     if (path === "/api/test/linq-self-message" && method === "POST") {
       const cfg = loadConfig();
       const workspace = cfg.imessageLinq;
-      if (!workspace?.botNumber) {
+      const botNumber =
+        workspace?.botNumber?.trim() ||
+        process.env.BOTFLEET_LINQAPP_PHONE_NUMBER?.trim() ||
+        process.env.LINQ_AGENT_BOT_NUMBERS?.split(",")[0]?.trim() ||
+        "";
+      if (!botNumber) {
         return json(res, 400, { ok: false, reason: "no_bot_number" });
       }
       if (
@@ -6921,11 +6936,15 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const text = typeof body?.text === "string" ? body.text : "Test from BotFleet";
       try {
-        const { linqSendMessage } = await import("./linq/client.ts");
-        const result = await linqSendMessage(`self:${workspace.botNumber}`, {
+        const { linqSendMessage, linqCreateChat } = await import("./linq/client.ts");
+        const chat = await linqCreateChat(botNumber);
+        if (!chat.id) {
+          return json(res, 502, { ok: false, reason: "chat_resolve_failed" });
+        }
+        const result = await linqSendMessage(chat.id, {
           text: `[BotFleet self-test] ${text}`,
         });
-        return json(res, 200, { ok: true, messageId: result.id });
+        return json(res, 200, { ok: true, messageId: result.id, chatId: chat.id });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         return json(res, 502, { ok: false, reason: "send_failed", message });
@@ -8718,6 +8737,15 @@ const server = createServer(async (req, res) => {
       const userAgent = Array.isArray(req.headers["user-agent"]) ? req.headers["user-agent"][0] : req.headers["user-agent"] ?? "unknown";
       const origin = req.headers.origin ?? "direct";
       const fromImessage = isImessageInboundSource(body.source, userAgent);
+      // Honor Off / Linq: Mac-relay posts (source=imessage) must not feed a bot
+      // whose operator-selected transport is off or linq.
+      if (fromImessage) {
+        const transport = loadConfig().botDefaults?.imessagePerBot?.[bot.id] ?? "off";
+        if (transport !== "mac-relay") {
+          console.warn(`[inbound-message] rejecting Mac-relay post for bot ${bot.name} (${bot.id}): imessagePerBot=${transport}`);
+          return json(res, 403, { error: "imessage_transport_disabled", transport });
+        }
+      }
       const text = fromImessage ? wrapImessageInbound(rawText) : rawText;
       console.log(`[inbound-message] bot=${bot.name} (${bot.id}) thread=${bot.threadId} origin=${origin} ua=${userAgent} imessage=${fromImessage} len=${text.length}`);
 

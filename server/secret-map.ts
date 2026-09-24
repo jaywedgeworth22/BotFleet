@@ -244,6 +244,16 @@ export const SECRET_FIELDS: readonly SecretFieldSpec[] = [
     reloadProviders: true,
   },
   {
+    id: "imessageLinq.apiToken",
+    label: "Linq API token",
+    section: "imessageLinq",
+    path: ["apiToken"],
+    env: ["BOTFLEET_LINQAPP_API_KEY", "LINQ_API_TOKEN"],
+    infisicalName: "LINQ_API_TOKEN",
+    secret: true,
+    reloadProviders: false,
+  },
+  {
     id: "observability.sentryDsn",
     label: "Sentry DSN",
     section: "observability",

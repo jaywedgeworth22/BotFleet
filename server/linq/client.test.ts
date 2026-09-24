@@ -245,4 +245,30 @@ describe("linq/client", () => {
     queueResponse(() => new Response(null, { status: 204 }));
     await linqUpdateChat("chat-u", { displayName: "Crew Renamed" });
   });
+
+  it("does not duplicate content-type when required_headers already has Content-Type", async () => {
+    const { linqUploadBytes } = await import("./client.ts");
+    const calls: Array<{ headers: Record<string, string> }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: any, init?: RequestInit) => {
+      const headers = Object.fromEntries(new Headers(init?.headers).entries());
+      calls.push({ headers });
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    try {
+      await linqUploadBytes(
+        "https://upload.example/put",
+        new Uint8Array([1, 2, 3]),
+        "audio/mpeg",
+        { "Content-Type": "audio/mpeg", "x-amz-acl": "private" },
+      );
+      expect(calls).toHaveLength(1);
+      const keys = Object.keys(calls[0].headers).filter((k) => k.toLowerCase() === "content-type");
+      expect(keys).toHaveLength(1);
+      expect(calls[0].headers[keys[0]]).toBe("audio/mpeg");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
 });

@@ -17,6 +17,7 @@ import {
   linqStartTyping,
   linqStopTyping,
 } from "./client.ts";
+import { rememberLinqChat } from "./outbound.ts";
 
 export interface ResolvedLinqBinding {
   botNumber: string;
@@ -41,7 +42,12 @@ export function resolveLinqBinding(
   const choice = cfg.botDefaults?.imessagePerBot?.[botId];
   if (choice !== "linq") return null;
   const linqSection = cfg.imessageLinq;
-  if (!linqSection?.botNumber) return null;
+  const envPhone =
+    process.env.BOTFLEET_LINQAPP_PHONE_NUMBER?.trim() ||
+    process.env.LINQ_AGENT_BOT_NUMBERS?.split(",")[0]?.trim() ||
+    "";
+  const botNumber = linqSection?.botNumber?.trim() || envPhone;
+  if (!botNumber) return null;
   if (
     !process.env.BOTFLEET_LINQAPP_API_KEY?.trim() &&
     !process.env.LINQ_API_TOKEN?.trim()
@@ -49,9 +55,9 @@ export function resolveLinqBinding(
     return null;
   }
   return {
-    botNumber: linqSection.botNumber,
-    allowedSenders: linqSection.allowedSenders ?? [],
-    ignoredSenders: linqSection.ignoredSenders ?? [],
+    botNumber,
+    allowedSenders: linqSection?.allowedSenders ?? [],
+    ignoredSenders: linqSection?.ignoredSenders ?? [],
   };
 }
 
@@ -102,6 +108,7 @@ export async function ingestInbound({
   chatId,
   text,
   media,
+  idempotencyKey,
   signal,
 }: {
   source: "imessage" | "linq";
@@ -109,22 +116,30 @@ export async function ingestInbound({
   chatId: string;
   text?: string;
   media?: string[];
+  idempotencyKey?: string;
   signal?: AbortSignal;
 }): Promise<{ dispatched: boolean; reason?: string }> {
   if (!text && (!media || media.length === 0)) {
     return { dispatched: false, reason: "empty" };
   }
+  // /api/bots/:id/messages requires nonempty text and ignores `media`, so
+  // fold attachment URLs into the prompt for media-only and captioned inbound.
+  const mediaLines = (media ?? []).filter(Boolean).map((url, i) => `[attachment ${i + 1}] ${url}`);
+  const combined = [text?.trim() || (mediaLines.length ? "(media attached)" : ""), ...mediaLines]
+    .filter(Boolean)
+    .join("\n");
   // Same resolution as server/index.ts's PORT so an OMB_PORT/OGB_PORT
   // override (tests, a second harness) dispatches to the right app server.
   const port = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
   const host = process.env.BOTFLEET_HOST ?? `127.0.0.1:${port}`;
   const url = `http://${host}/api/bots/${bot.id}/messages`;
   const body: Record<string, unknown> = {
-    text: wrapImessageInbound(text ?? ""),
+    text: wrapImessageInbound(combined),
     source,
     chatId,
   };
   if (media && media.length) body.media = media;
+  if (idempotencyKey) body.idempotencyKey = idempotencyKey;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -167,15 +182,25 @@ export async function handleLinqInbound(
     return { dispatched: false, reason: "sender_blocked" };
   }
   void linqMarkRead(msg.chatId).catch(() => undefined);
-  void linqStartTyping(msg.chatId).catch(() => undefined);
+  // Await start so stop cannot overtake it; leave typing up until outbound
+  // delivery (or failure) settles the turn — do not stop on the 202.
+  try {
+    await linqStartTyping(msg.chatId);
+  } catch {
+    /* typing is advisory */
+  }
+  rememberLinqChat(bot.bot.threadId, bot.bot.id, msg.chatId);
   const result = await ingestInbound({
     source: "linq",
     bot: bot.bot,
     chatId: msg.chatId,
     text: msg.text,
     media: msg.media?.map((m) => m.url).filter(Boolean) as string[] | undefined,
+    idempotencyKey: msg.messageId,
   });
-  void linqStopTyping(msg.chatId).catch(() => undefined);
+  if (!result.dispatched) {
+    void linqStopTyping(msg.chatId).catch(() => undefined);
+  }
   return result;
 }
 

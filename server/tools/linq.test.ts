@@ -124,4 +124,24 @@ describe("send_voice_message tool", () => {
     );
     expect(result.kind).toBe("error");
   });
+
+  it("refuses when allowVoiceByDefault is undefined (opt-in default)", async () => {
+    const result = await runExecute(
+      { chat_id: "chat-u", text: "hi" },
+      { botNumber: "+14158707772" },
+      undefined,
+    );
+    expect(result.kind).toBe("error");
+    expect(result.detail).toBe("voice_disabled");
+  });
+
+  it("allows voice when allowVoiceByDefault is true", async () => {
+    const result = await runExecute(
+      { chat_id: "chat-ok", text: "hi" },
+      { botNumber: "+14158707772" },
+      true,
+    );
+    expect(result.kind).toBe("result");
+  });
+
 });

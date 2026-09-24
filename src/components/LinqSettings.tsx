@@ -130,7 +130,7 @@ export function LinqSettings({ bots, config, onPatch }: LinqSettingsProps) {
         <div>
           <h3 className="text-sm font-semibold">Linq iMessage Transport</h3>
           <p className="text-[11.5px] text-ink-secondary">
-            Send and receive iMessage via the Linq partner API. Hobby tier is free for 20 contacts — sales-gated for higher volumes.
+            Send and receive iMessage via the Linq partner API.  Hobby tier is free for 20 contacts — sales-gated for higher volumes.
           </p>
           {!config?.imessageLinq?.configured ? (
             <p className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-amber">
@@ -140,7 +140,7 @@ export function LinqSettings({ bots, config, onPatch }: LinqSettingsProps) {
           ) : (
             <p className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-emerald">
               <Check className="h-3.5 w-3.5" />
-              Linq token detected. Outbound and webhook surface are live.
+              Linq token detected.  Outbound and webhook surface are live.
             </p>
           )}
         </div>
@@ -189,7 +189,7 @@ export function LinqSettings({ bots, config, onPatch }: LinqSettingsProps) {
         <span>
           <span className="text-ink-primary">Allow Linq bots to send voice messages.</span>
           <span className="ml-1 text-ink-secondary">
-            Off by default. When on, a bot may invoke <code>send_voice_message</code>{" "}
+            Off by default.  When on, a bot may invoke <code>send_voice_message</code>{" "}
             (hosted TTS → mp3 attachment over iMessage).
           </span>
         </span>
@@ -273,7 +273,7 @@ export function LinqSettings({ bots, config, onPatch }: LinqSettingsProps) {
 
       <p className="text-[11px] text-ink-tertiary">
         Tokens (<code>LINQ_API_TOKEN</code>, <code>LINQ_WEBHOOK_SECRET</code>) live in environment
-        variables — never on disk. Base URL defaults to <code>{DEFAULT_LINQ_BASE}</code>.
+        variables — never on disk.  Base URL defaults to <code>{DEFAULT_LINQ_BASE}</code>.
       </p>
 
       {/* Unused but referenced to silence TS6133 if the prop signature changes. */}
@@ -354,8 +354,8 @@ function LinqWebhookSetupInstructions() {
       </p>
       <p className="mt-1">
         Local dev: <code>ngrok http 8800</code>{" "}
-        (Cloudflare Tunnel works too). Then add the Linq partner
-        webhook URL on the dashboard. See{" "}
+        (Cloudflare Tunnel works too).  Then add the Linq partner
+        webhook URL on the dashboard.  See{" "}
         <a
           className="inline-flex items-center gap-0.5 text-accent underline"
           href="https://apidocs.linqapp.com"

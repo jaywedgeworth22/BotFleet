@@ -90,12 +90,9 @@ function json(res: ServerResponse, status: number, body: Record<string, unknown>
  *  publishes `X-Linq-Signature` as a hex digest; we verify with
  *  `timingSafeEqual` and bail out 401 when the digest does not match.
  *
- *  When the operator has no secret configured, the receiver logs a warning
- *  and accepts the call.  That matches Linq's trial tier behavior where
- *  signing is opt-in.  The audit doc tracks this as a hard follow-up to
- *  gate the secret behind a required-on-publish toggle. */
+ *  Fail closed when no secret is configured.  Local/dev unsigned delivery requires the explicit opt-out `LINQ_ALLOW_UNSIGNED_WEBHOOK=1`, which logs a loud warning. */
 function verifySignature(rawBody: Buffer, header: string | undefined, secret: string | undefined): boolean {
-  if (!secret) return true;
+  if (!secret) return false;
   if (!header) return false;
   const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   const got = header.trim().toLowerCase();
@@ -131,7 +128,15 @@ export async function readLinqWebhook(
   }
   const secret = process.env.LINQ_WEBHOOK_SECRET?.trim() || undefined;
   const header = (req.headers["x-linq-signature"] as string | undefined) ?? undefined;
-  if (!verifySignature(rawBody, header, secret)) {
+  const allowUnsigned = process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK?.trim() === "1";
+  if (!secret) {
+    if (!allowUnsigned) {
+      console.error("[linq-webhook] LINQ_WEBHOOK_SECRET is unset; refusing unsigned webhook (set LINQ_ALLOW_UNSIGNED_WEBHOOK=1 for local-only unsigned delivery)");
+      json(res, 503, { ok: false, reason: "webhook_secret_not_configured" });
+      return;
+    }
+    console.warn("[linq-webhook] LINQ_ALLOW_UNSIGNED_WEBHOOK=1 — accepting unsigned webhook (dev only)");
+  } else if (!verifySignature(rawBody, header, secret)) {
     json(res, 401, { ok: false, reason: "bad_signature" });
     return;
   }

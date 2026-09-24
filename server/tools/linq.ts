@@ -70,9 +70,14 @@ export function createLinqTools(
     async send_voice_message(call): Promise<TurnToolOutcome> {
       const chatId = String(call.arguments.chat_id ?? "").trim();
       const text = String(call.arguments.text ?? "").trim();
-      const voice = typeof call.arguments.voice === "string" && call.arguments.voice.trim()
+      const ttsCfg = loadConfig().tts;
+      const explicitVoice = typeof call.arguments.voice === "string" && call.arguments.voice.trim()
         ? call.arguments.voice.trim()
-        : (loadConfig().tts?.voice || DEFAULT_VOICE);
+        : undefined;
+      // MiniMax-specific default must not leak to ElevenLabs / system TTS.
+      const voice = explicitVoice
+        ?? ttsCfg?.voice
+        ?? ((ttsCfg?.provider === "minimax" || ttsCfg?.provider === undefined) ? DEFAULT_VOICE : undefined);
       if (!chatId || !text) {
         return failed(
           JSON.stringify({ error: "send_voice_message requires `chat_id` and `text`" }),
@@ -83,22 +88,17 @@ export function createLinqTools(
       // Linq binding.  When either is off, refuse with a typed error —
       // calling TTS without an active binding is a billable silent burn.
       const cfg = loadConfig();
-      if (cfg.imessageLinq?.allowVoiceByDefault !== true && cfg.botDefaults?.imessagePerBot?.[ctx.botId] !== "linq") {
-        // Allow ONLY when the bot is bound AND voice is allowed by workspace.
-        // We also accept the per-bot binding without a workspace-wide toggle
-        // because the per-bot dropdown is the operator's explicit consent.
+      if (cfg.imessageLinq?.allowVoiceByDefault !== true) {
+        return failed(
+          JSON.stringify({ error: "Voice messages are disabled in workspace settings (allowVoiceByDefault is off)" }),
+          "voice_disabled",
+        );
       }
       const binding = resolveLinqBinding(cfg, ctx.botId) ?? pickWorkspaceLinq();
       if (!binding) {
         return failed(
           JSON.stringify({ error: "Linq transport is not enabled for this bot" }),
           "linq_disabled",
-        );
-      }
-      if (cfg.imessageLinq?.allowVoiceByDefault === false) {
-        return failed(
-          JSON.stringify({ error: "Voice messages are disabled in workspace settings" }),
-          "voice_disabled",
         );
       }
       // `bot` only validates liveness; the executor doesn't need the record.

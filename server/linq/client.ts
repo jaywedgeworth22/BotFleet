@@ -301,6 +301,35 @@ interface ChatInfoRaw {
   service?: "iMessage" | "RCS" | "SMS" | "imessage" | "rcs" | "sms";
 }
 
+
+/** Create (or return) a 1:1 chat with the given E.164 phone number. */
+export async function linqCreateChat(
+  phoneNumber: string,
+  signal?: AbortSignal,
+): Promise<LinqChatInfo> {
+  const res = await call(
+    "POST",
+    "/v3/chats",
+    { participants: [{ phone_number: phoneNumber }] },
+    signal,
+  );
+  const json = (await ensureOk(res, "linq: createChat failed")) as {
+    id?: string;
+    chat_id?: string;
+    display_name?: string;
+    is_group?: boolean;
+    service?: string;
+    handles?: string[];
+  };
+  return {
+    id: json.id ?? json.chat_id ?? "",
+    displayName: json.display_name,
+    isGroup: Boolean(json.is_group),
+    service: (json.service as LinqChatInfo["service"]) ?? "unknown",
+    participants: json.handles ?? [phoneNumber],
+  };
+}
+
 export async function linqGetChat(chatId: string, signal?: AbortSignal): Promise<LinqChatInfo> {
   const res = await call("GET", `/v3/chats/${encodeURIComponent(chatId)}`, undefined, signal);
   const json = (await ensureOk(res, "linq: getChat failed")) as ChatInfoRaw;
@@ -349,10 +378,12 @@ export async function linqUploadBytes(
   requiredHeaders: Record<string, string>,
   signal?: AbortSignal,
 ): Promise<void> {
-  const headers: Record<string, string> = {
-    "content-type": mimeType,
-    ...requiredHeaders,
-  };
+  // If Linq's required_headers already carries Content-Type (any casing),
+  // do not also set content-type — fetch joins duplicates and breaks the
+  // presigned signature.
+  const headers: Record<string, string> = { ...requiredHeaders };
+  const hasContentType = Object.keys(headers).some((k) => k.toLowerCase() === "content-type");
+  if (!hasContentType) headers["content-type"] = mimeType;
   const res = await fetch(uploadUrl, {
     method: "PUT",
     headers,

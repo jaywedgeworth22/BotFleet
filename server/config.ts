@@ -266,6 +266,8 @@ const appConfigSchema = z.object({
      *  — typically the Director bot's number.  Formatted E.164.  Stored
      *  because operators want to see the number they bound. */
     botNumber: optionalText,
+    /** Partner API token. Prefer env/Infisical; kept optional on disk for sync only. */
+    apiToken: optionalText,
     /** Per-bot transport choice.  Absent means the bot defaults to "off";
      *  setting this to "linq" routes that bot's inbound through Linq.
      *  "mac-relay" is the existing python relay path; we surface it for
@@ -412,6 +414,7 @@ export interface AppConfig {
    *  come from `process.env` (the runtime secret layer). */
   imessageLinq?: {
     botNumber?: string;
+    apiToken?: string;
     ignoredSenders?: string[];
     allowedSenders?: string[];
     allowVoiceByDefault?: boolean;

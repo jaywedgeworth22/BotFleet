@@ -48,6 +48,7 @@ afterEach(() => {
   nextDispatch = { dispatched: true };
   delete process.env.LINQ_WEBHOOK_SECRET;
   delete process.env.LINQ_API_TOKEN;
+  delete process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK;
 });
 
 interface JsonResponse {
@@ -79,9 +80,23 @@ async function run(body: string, headers: Record<string, string> = {}): Promise<
   return captured;
 }
 
+
+const TEST_SECRET = "the-real-secret";
+
+/** Fail-closed by default: most cases need a valid signature (or the
+ *  explicit LINQ_ALLOW_UNSIGNED_WEBHOOK=1 opt-out under test). */
+function signed(body: string, secret = TEST_SECRET): Record<string, string> {
+  return { "x-linq-signature": createHmac("sha256", secret).update(body).digest("hex") };
+}
+
+async function runSigned(body: string): Promise<JsonResponse> {
+  process.env.LINQ_WEBHOOK_SECRET = TEST_SECRET;
+  return run(body, signed(body));
+}
+
 describe("readLinqWebhook", () => {
   it("returns 400 when the body is not valid JSON", async () => {
-    const res = await run("not json");
+    const res = await runSigned("not json");
     expect(res.status).toBe(400);
   });
 
@@ -115,8 +130,26 @@ describe("readLinqWebhook", () => {
     expect((dispatchCalls[0].msg as { fromNumber: string }).fromNumber).toBe("+15555550100");
   });
 
-  it("accepts unverified calls when the operator skipped setting a secret", async () => {
-    process.env.LINQ_API_TOKEN = "test-token";
+  it("refuses unsigned calls when LINQ_WEBHOOK_SECRET is unset (fail closed)", async () => {
+    delete process.env.LINQ_WEBHOOK_SECRET;
+    delete process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK;
+    const body = JSON.stringify({
+      type: "message.received",
+      chat_id: "chat-2",
+      message_id: "m-2",
+      from: "+15555550100",
+      to: "+14158707772",
+      body: "open",
+    });
+    const res = await run(body);
+    expect(res.status).toBe(503);
+    expect(res.body.reason).toBe("webhook_secret_not_configured");
+    expect(dispatchCalls).toHaveLength(0);
+  });
+
+  it("accepts unsigned calls only when LINQ_ALLOW_UNSIGNED_WEBHOOK=1", async () => {
+    delete process.env.LINQ_WEBHOOK_SECRET;
+    process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK = "1";
     const body = JSON.stringify({
       type: "message.received",
       chat_id: "chat-2",
@@ -128,17 +161,18 @@ describe("readLinqWebhook", () => {
     const res = await run(body);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+    delete process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK;
   });
 
   it("returns 400 on an unknown event payload", async () => {
-    const res = await run(JSON.stringify({ type: "message.unknown" }));
+    const res = await runSigned(JSON.stringify({ type: "message.unknown" }));
     expect(res.status).toBe(400);
     expect(res.body.reason).toBe("bad_event");
   });
 
   it("returns 200 on a delivered lifecycle event without dispatching", async () => {
     const body = JSON.stringify({ type: "message.delivered", message_id: "m", at: new Date().toISOString() });
-    const res = await run(body);
+    const res = await runSigned(body);
     expect(res.status).toBe(200);
     expect(res.body.lifecycle).toBe("message.delivered");
     expect(dispatchCalls).toHaveLength(0);
@@ -147,7 +181,7 @@ describe("readLinqWebhook", () => {
   it("answers 503 when the message never reached the bot, so Linq retries", async () => {
     nextDispatch = { dispatched: false, reason: "http_500" };
     const body = JSON.stringify({ type: "message.received", chat_id: "c", message_id: "m", from: "+1", to: "+2", body: "hi" });
-    const res = await run(body);
+    const res = await runSigned(body);
     expect(res.status).toBe(503);
     expect(res.body.retry).toBe(true);
   });
@@ -155,7 +189,7 @@ describe("readLinqWebhook", () => {
   it("answers 200 for a deliberate policy drop, so Linq does not redeliver", async () => {
     nextDispatch = { dispatched: false, reason: "sender_blocked" };
     const body = JSON.stringify({ type: "message.received", chat_id: "c", message_id: "m", from: "+1", to: "+2", body: "hi" });
-    const res = await run(body);
+    const res = await runSigned(body);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
   });
