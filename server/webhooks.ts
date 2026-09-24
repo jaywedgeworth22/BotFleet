@@ -366,7 +366,9 @@ export function shouldIgnoreWebhookEvent(
       if (interveningPattern.test(prompt)) return false;
 
       const negationPattern = new RegExp(
-        `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b|\\b${lvl}s?\\b[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb})`,
+        `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?\\b${lvl}s?\\b` +
+          `|\\b${lvl}s?\\b[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb}` +
+          `|\\b(?:no|neither)\\s+[^.;\\n]*?\\b${lvl}s?\\b[^.;\\n]*?${exclusionVerb})`,
         "i",
       );
       if (negationPattern.test(prompt)) return false;
@@ -403,7 +405,7 @@ export function shouldIgnoreWebhookEvent(
       const isAssignmentExcluded = (): boolean => {
         const exclusionVerb = `(?:out of scope|stay silent|ignore|(?<!\\b(?:a|an|the|any|sharp|sudden|recent|new)\\s+)drop(?!\\s+(?:in|of)\\b))`;
         const contrastingVerb = `\\b(?:investigate|act|handle|process|triage|fix|resolve|watch|monitor|track|escalate|alert|notify)\\b`;
-        const assignmentTarget = `\\b(?:assign(?:ed|ment|ee)?s?|ownership)\\b`;
+        const assignmentTarget = `\\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\\b`;
         const exceptionBoundary = String.raw`\b(?:except|but|not|other\s+than|apart\s+from|aside\s+from)\b|${contrastingVerb}`;
         const verbFirstPattern = new RegExp(
           `${exclusionVerb}(?:(?!${exceptionBoundary})[^.;\\n])*?${assignmentTarget}`,
@@ -428,7 +430,9 @@ export function shouldIgnoreWebhookEvent(
         if (interveningPattern.test(prompt)) return false;
 
         const negationPattern = new RegExp(
-          `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}|${assignmentTarget}[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb})`,
+          `(?:(?:do\\s+not|don't|never|not)\\s+${exclusionVerb}[^.;\\n]*?${assignmentTarget}` +
+            `|${assignmentTarget}[^.;\\n]*?(?:do\\s+not|don't|never|not|no)\\s+[^.;\\n]*?${exclusionVerb}` +
+            `|\\b(?:no|neither)\\s+[^.;\\n]*?${assignmentTarget}[^.;\\n]*?${exclusionVerb})`,
           "i",
         );
         if (negationPattern.test(prompt)) return false;
@@ -457,9 +461,9 @@ export function shouldIgnoreWebhookEvent(
       }
 
       const handlesAssignments =
-        (trigger.eventTypes ?? []).some((e) => /\b(?:assign(?:ed|ment|ee)?|ownership)\b/i.test(e)) ||
-        /\b(?:assign(?:ed|ment|ee)?|ownership|router|triage)\b/i.test(prompt) ||
-        /\b(?:assign(?:ed|ment|ee)?|ownership)\b/i.test(name);
+        (trigger.eventTypes ?? []).some((e) => /\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i.test(e)) ||
+        /\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership|router|triage)\b/i.test(prompt) ||
+        /\b(?:re-?assign(?:ed|ment|ee)?s?|assign(?:ed|ment|ee)?s?|ownership)\b/i.test(name);
 
       if (
         !handlesAssignments &&

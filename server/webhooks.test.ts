@@ -612,6 +612,28 @@ describe("WebhookManager", () => {
     const notBoundaryDebugResult = h.manager.receive(notBoundaryHook.endpointId, notBoundarySecret, clauseDebug);
     expect(notBoundaryDebugResult).toMatchObject({ ignored: true });
 
+    // 22. "No warning events are out of scope" has clause-leading negation
+    // and should NOT ignore warning events.
+    const { webhook: leadingNegHook, secret: leadingNegSecret } = h.manager.create({
+      name: "Leading Negation Warning Handler",
+      prompt: "No warning events are out of scope. Act on errors.",
+      botId: "maus-1",
+    });
+    const leadingNegResult = h.manager.receive(leadingNegHook.endpointId, leadingNegSecret, clauseWarning);
+    expect(leadingNegResult).toMatchObject({ duplicate: false });
+    expect(leadingNegResult.runId).toBeDefined();
+
+    // 23. "Handle reassigned issues" recognizes reassigned forms
+    // and should NOT ignore assigned deliveries.
+    const { webhook: reassignHook, secret: reassignSecret } = h.manager.create({
+      name: "Fatal Incident Alert Responder",
+      prompt: "Handle reassigned issues and investigate fatal crashes.",
+      botId: "maus-1",
+    });
+    const reassignResult = h.manager.receive(reassignHook.endpointId, reassignSecret, assignEvent);
+    expect(reassignResult).toMatchObject({ duplicate: false });
+    expect(reassignResult.runId).toBeDefined();
+
     expect(dropNounResult.runId).toBeDefined();
   });
 });
