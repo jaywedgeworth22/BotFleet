@@ -1005,6 +1005,16 @@ describe("unattendedModelDowngrade", () => {
         { unattended: true },
       ).model,
     ).toBe("gemini-2.5-flash");
+    // Custom / local-inject routes outside the static catalog keep the
+    // configured model, even with "-pro" in the id.
+    for (const model of ["my-proxy-gemini-pro-high", "gemini-3.9-pro-high", "local-qwen-pro"]) {
+      expect(
+        unattendedModelDowngrade(
+          { instanceId: "antigravity", model },
+          { unattended: true, driverKind: "antigravityAgent" },
+        ).model,
+      ).toBe(model);
+    }
     // Non-Pro Antigravity models are left alone.
     expect(
       unattendedModelDowngrade(
