@@ -24,6 +24,10 @@
 //   FAKE_CLAUDE_QUOTA_GATE  optional file whose creation releases quota mode,
 //                           so integration tests can queue work before settle
 //   FAKE_CLAUDE_REPLY  optional successful assistant text for prose-boundary tests
+//   FAKE_CLAUDE_PROMPTS  optional path; every user message this process reads
+//                        from stdin is appended as one JSON line, so a test
+//                        can see what a REUSED process was sent (the dump
+//                        above records only the launch)
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -294,6 +298,7 @@ process.stdin.on("data", (c) => {
     } catch {
       continue;
     }
+    if (process.env.FAKE_CLAUDE_PROMPTS) appendFileSync(process.env.FAKE_CLAUDE_PROMPTS, JSON.stringify({ pid: process.pid, prompt }) + "\n");
     if (turnRunning) steered.push(promptText(prompt));
     else playTurn(prompt);
   }
