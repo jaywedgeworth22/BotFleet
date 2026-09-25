@@ -11657,6 +11657,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     usageQuotaPoller.stop();
     infisical.stop();
     webhookIngress?.server.close();
+    // Clear inflightThreadId for all bots on graceful shutdown so the next
+    // boot does not attempt to resume stale ACP sessions (whose CLI processes
+    // were just killed by disposeAll below).  writeFileAtomic is synchronous,
+    // so these patches are flushed to bots.json before we exit.  Crash
+    // recovery (SIGKILL / OOM) still works: inflightThreadId survives because
+    // the store's load-time loop intentionally preserves it; only the graceful
+    // path clears it here.
+    for (const bot of store.bots) {
+      if (bot.inflightThreadId) store.patchBot(bot.id, { inflightThreadId: undefined });
+    }
     // bus.flush() is here because the canonical event log is no longer written
     // on the publish path: the tee queues and one writer drains it, so the
     // last few records of every live thread are in memory when a SIGTERM
