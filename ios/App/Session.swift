@@ -1575,6 +1575,22 @@ final class Session: ObservableObject {
         } catch { recordActionError(error) }
     }
 
+    /// Snooze one thread, or wake it with nil.  Refreshes rather than
+    /// guessing: the harness heals a deadline that has already passed, so
+    /// what it hands back is the only reading of "asleep" worth painting.
+    @discardableResult
+    func snoozeTask(_ task: BotTask, for bot: Bot, snoozedUntil: Double?) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.snoozeTask(botId: bot.id, threadId: task.threadId, snoozedUntil: snoozedUntil)
+            await refresh()
+            return true
+        } catch {
+            recordActionError(error)
+            return false
+        }
+    }
+
     func deleteTask(_ task: BotTask, for bot: Bot) async {
         guard let client else { return }
         do { state.apply(.bot(try await client.deleteTask(botId: bot.id, threadId: task.threadId))) }
