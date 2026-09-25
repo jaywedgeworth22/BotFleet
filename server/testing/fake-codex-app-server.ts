@@ -177,6 +177,9 @@ process.stdin.on("data", (chunk) => {
           } catch {}
           const quota = Number(process.env.FAKE_CODEX_TRANSIENTS) || 0;
           writeFileSync(process.env.FAKE_CODEX_STATE, String(launched + 1));
+          if (process.env.FAKE_CODEX_DUMP) {
+            writeFileSync(`${process.env.FAKE_CODEX_DUMP}.attempt-${launched}`, JSON.stringify({ calls }, null, 2));
+          }
           if (launched < quota) {
             if (process.env.FAKE_CODEX_PARTIAL_FAILS) {
               out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
