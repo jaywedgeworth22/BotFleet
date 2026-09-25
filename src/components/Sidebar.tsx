@@ -15,6 +15,7 @@ import {
   Archive,
   ArrowDownToLine,
   BellDot,
+  BellOff,
   Bot as BotIcon,
   Bug,
   CalendarDays,
@@ -28,6 +29,7 @@ import {
   FolderPlus,
   Library,
   Loader2,
+  Moon,
   Network,
   Pencil,
   PanelLeftClose,
@@ -63,6 +65,17 @@ import { plainPreview } from "@/lib/plain-preview";
 import { classifyTool, toolVerb } from "../../shared/tool-activity";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { nextRename } from "@/lib/rename";
+import {
+  isThreadSnoozed,
+  orderedThreadRows,
+  resolveCustomSnooze,
+  resolveSnoozePreset,
+  SNOOZE_PRESET_LABELS,
+  SNOOZE_PRESETS,
+  snoozeLabel,
+  useSnoozeExpiry,
+} from "@/lib/thread-snooze";
+import { ThreadSnoozeBadge, ThreadWakeButton } from "./SidebarThreadRow";
 import { imageAttachmentFromFile, intakeFiles } from "@/lib/composer-attachments";
 import { pathForFile } from "./ComposerAttachments";
 import { appendDraftAttachments } from "@/lib/drafts";
@@ -376,6 +389,17 @@ interface ThreadOwner {
 
 const THREAD_DROP_CLASS = "bg-ink/15 ring-2 ring-ink/25";
 
+/** What a thread row needs to draw itself.  Bot threads and channel threads
+ * share this shape; only a bot thread can carry a snooze, because a channel
+ * conversation has no per-thread snooze route. */
+type SidebarThread = {
+  threadId: string;
+  title: string;
+  createdAt: number;
+  lastActivity?: number;
+  snoozedUntil?: number;
+};
+
 /** One conversation inside a channel.
  *
  * The server already names these from the first thing said in them and lets
@@ -390,7 +414,7 @@ function ThreadListItem({
   renameSignal,
 }: {
   owner: ThreadOwner;
-  task: { threadId: string; title: string; createdAt: number; lastActivity?: number };
+  task: SidebarThread;
   density: SidebarDensity;
   siblingCount: number;
   onMenu: (menu: { ownerId: string; threadId: string; x: number; y: number }) => void;
@@ -405,6 +429,10 @@ function ThreadListItem({
     state.activeView === "chat" &&
     state.selectedId === owner.id &&
     owner.threadId === task.threadId;
+  // Re-read on every render rather than memoised: the branch above re-renders
+  // when the nearest deadline passes, and a stale `asleep` would leave the
+  // moon on a row that has already woken.
+  const asleep = isThreadSnoozed(task.snoozedUntil);
 
   const commit = () => {
     const title = draft.trim();
@@ -448,98 +476,112 @@ function ThreadListItem({
     );
   }
 
+  // The wake button is a SIBLING of the row, never inside it: the row is a
+  // button, and a button inside a button is neither valid nor reachable —
+  // the same reason ThreadDisclosure sits outside its row.
   return (
-    <button
-      draggable={siblingCount > 1}
-      onDragStart={(event) => {
-        const payload = beginThreadDrag({
-          threadId: task.threadId,
-          fromId: owner.id,
-          fromKind: owner.kind,
-        });
-        event.dataTransfer.setData(THREAD_DRAG_TYPE, payload);
-        event.dataTransfer.setData("text/plain", payload);
-        event.dataTransfer.effectAllowed = "move";
-      }}
-      onDragEnd={() => endThreadDrag()}
-      onClick={() => {
-        dispatch({ type: "select", id: owner.id });
-        if (owner.threadId === task.threadId) return;
-        dispatch(
-          owner.kind === "group"
-            ? { type: "switchGroupTask", groupId: owner.id, threadId: task.threadId }
-            : { type: "switchTask", botId: owner.id, threadId: task.threadId },
-        );
-      }}
-      onDoubleClick={(event) => {
-        event.preventDefault();
-        setDraft(task.title);
-        setRenaming(true);
-      }}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onMenu({ ownerId: owner.id, threadId: task.threadId, x: event.clientX, y: event.clientY });
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        onMenu({
-          ownerId: owner.id,
-          threadId: task.threadId,
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-        });
-      }}
-      onDragEnter={(event) => {
-        if (!threadDragTypes(event)) return;
-        event.preventDefault();
-        setIsDragTarget(true);
-      }}
-      onDragLeave={() => setIsDragTarget(false)}
-      onDragOver={(event) => {
-        if (!threadDragTypes(event)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        setIsDragTarget(false);
-        const dragged = readThreadDragEvent(event);
-        if (!dragged || dragged.threadId === task.threadId) return;
-        if (dragged.fromKind === "bot" && owner.kind === "bot" && dragged.fromId === owner.id) {
-          dispatch({
-            type: "mergeTasks",
-            botId: owner.id,
-            threadId: dragged.threadId,
-            intoThreadId: task.threadId,
+    <div className="flex items-center">
+      <button
+        draggable={siblingCount > 1}
+        onDragStart={(event) => {
+          const payload = beginThreadDrag({
+            threadId: task.threadId,
+            fromId: owner.id,
+            fromKind: owner.kind,
           });
-          return;
-        }
-        if (dragged.fromKind === "bot" && owner.kind === "bot") {
-          dispatch({
-            type: "moveTaskToBot",
-            botId: dragged.fromId,
-            threadId: dragged.threadId,
-            toBotId: owner.id,
+          event.dataTransfer.setData(THREAD_DRAG_TYPE, payload);
+          event.dataTransfer.setData("text/plain", payload);
+          event.dataTransfer.effectAllowed = "move";
+        }}
+        onDragEnd={() => endThreadDrag()}
+        onClick={() => {
+          dispatch({ type: "select", id: owner.id });
+          if (owner.threadId === task.threadId) return;
+          dispatch(
+            owner.kind === "group"
+              ? { type: "switchGroupTask", groupId: owner.id, threadId: task.threadId }
+              : { type: "switchTask", botId: owner.id, threadId: task.threadId },
+          );
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          setDraft(task.title);
+          setRenaming(true);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onMenu({ ownerId: owner.id, threadId: task.threadId, x: event.clientX, y: event.clientY });
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          onMenu({
+            ownerId: owner.id,
+            threadId: task.threadId,
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
           });
-        }
-      }}
-      title={`${label}\u00a0 — double-click to rename, drag onto a bot to move, onto a thread to merge`}
-      className={cn(
-        "flex w-full items-center gap-2 rounded-lg py-1 pr-2 text-left transition-colors",
-        density === "compact" ? "pl-8" : "pl-9",
-        isDragTarget
-          ? THREAD_DROP_CLASS
-          : active
-            ? "bg-raised text-ink"
-            : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+        }}
+        onDragEnter={(event) => {
+          if (!threadDragTypes(event)) return;
+          event.preventDefault();
+          setIsDragTarget(true);
+        }}
+        onDragLeave={() => setIsDragTarget(false)}
+        onDragOver={(event) => {
+          if (!threadDragTypes(event)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setIsDragTarget(false);
+          const dragged = readThreadDragEvent(event);
+          if (!dragged || dragged.threadId === task.threadId) return;
+          if (dragged.fromKind === "bot" && owner.kind === "bot" && dragged.fromId === owner.id) {
+            dispatch({
+              type: "mergeTasks",
+              botId: owner.id,
+              threadId: dragged.threadId,
+              intoThreadId: task.threadId,
+            });
+            return;
+          }
+          if (dragged.fromKind === "bot" && owner.kind === "bot") {
+            dispatch({
+              type: "moveTaskToBot",
+              botId: dragged.fromId,
+              threadId: dragged.threadId,
+              toBotId: owner.id,
+            });
+          }
+        }}
+        title={`${label}\u00a0 — double-click to rename, drag onto a bot to move, onto a thread to merge`}
+        className={cn(
+          "flex w-full min-w-0 items-center gap-2 rounded-lg py-1 pr-2 text-left transition-colors",
+          density === "compact" ? "pl-8" : "pl-9",
+          isDragTarget
+            ? THREAD_DROP_CLASS
+            : active
+              ? "bg-raised text-ink"
+              : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+        )}
+      >
+        <span className="size-1.5 shrink-0 rounded-full bg-current opacity-40" />
+        <span className={cn("truncate text-[13px]", asleep && "opacity-60")}>{label}</span>
+        <ThreadSnoozeBadge threadId={task.threadId} snoozedUntil={task.snoozedUntil} />
+      </button>
+      {asleep && (
+        <ThreadWakeButton
+          label={label}
+          onWake={() =>
+            dispatch({ type: "snoozeTask", botId: owner.id, threadId: task.threadId, snoozedUntil: null })
+          }
+        />
       )}
-    >
-      <span className="size-1.5 shrink-0 rounded-full bg-current opacity-40" />
-      <span className="truncate text-[13px]">{label}</span>
-    </button>
+    </div>
   );
 }
 
@@ -569,6 +611,8 @@ function ThreadContextMenu({
 }) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState<"channels" | "bots" | null>(null);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customAt, setCustomAt] = useState("");
   const terminology = getRoomTerminology(state.config);
 
   useEffect(() => {
@@ -596,7 +640,21 @@ function ThreadContextMenu({
     (b) => !b.hidden && !(owner.kind === "bot" && b.id === owner.id),
   );
 
-  const top = Math.min(menu.y, window.innerHeight - 220);
+  // Only a bot thread can sleep: a channel conversation has no per-thread
+  // snooze route, and the bot-wide snooze in routines.ts is a wider thing
+  // that belongs to the bot's own menu.
+  const snoozeThread =
+    owner.kind === "bot"
+      ? state.bots.find((b) => b.id === owner.id)?.tasks?.find((t) => t.threadId === menu.threadId)
+      : undefined;
+  const asleep = isThreadSnoozed(snoozeThread?.snoozedUntil);
+  const snooze = (snoozedUntil: number | null) => {
+    dispatch({ type: "snoozeTask", botId: owner.id, threadId: menu.threadId, snoozedUntil });
+    onClose();
+  };
+
+  // The snooze block makes this menu roughly twice the 220px first guess.
+  const top = Math.min(menu.y, window.innerHeight - (snoozeThread ? 420 : 220));
   const left = Math.min(menu.x, window.innerWidth - 250);
   const itemClass =
     "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[13px] text-ink hover:bg-raised/70";
@@ -633,6 +691,68 @@ function ThreadContextMenu({
       <button type="button" className={itemClass} onClick={() => { onRename(); onClose(); }}>
         Rename
       </button>
+      {snoozeThread && (
+        <>
+          <div className="mt-1 flex items-center gap-2 border-t border-hairline/40 px-3 pb-1 pt-2 text-[11px] text-ink-secondary">
+            <Moon size={12} aria-hidden="true" />
+            Snooze
+          </div>
+          {SNOOZE_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              className={itemClass}
+              // Resolved on the CLICK, never when the menu opened: a menu
+              // left open overnight must not snooze until a morning that has
+              // already been and gone.
+              onClick={() => snooze(resolveSnoozePreset(preset))}
+            >
+              {SNOOZE_PRESET_LABELS[preset]}
+            </button>
+          ))}
+          {customOpen ? (
+            <div className="flex items-center gap-1.5 px-3 py-2">
+              <input
+                autoFocus
+                type="datetime-local"
+                aria-label="Snooze until"
+                value={customAt}
+                onChange={(event) => setCustomAt(event.target.value)}
+                className="min-w-0 flex-1 rounded-md border border-hairline/50 bg-inset px-2 py-1 text-[12px] text-ink focus:outline-none"
+              />
+              <button
+                type="button"
+                // A moment already past is not a snooze.  Refuse rather than
+                // store one that is over before it starts.
+                disabled={resolveCustomSnooze(customAt) === undefined}
+                onClick={() => {
+                  const at = resolveCustomSnooze(customAt);
+                  if (at !== undefined) snooze(at);
+                }}
+                className="shrink-0 rounded-md bg-raised px-2 py-1 text-[12px] text-ink hover:bg-raised/70 disabled:opacity-40"
+              >
+                Set
+              </button>
+            </div>
+          ) : (
+            <button type="button" className={itemClass} onClick={() => setCustomOpen(true)}>
+              Custom&hellip;
+            </button>
+          )}
+          {asleep && (
+            <button type="button" className={itemClass} onClick={() => snooze(null)}>
+              <span className="flex items-center gap-2">
+                <BellOff size={13} aria-hidden="true" />
+                Stop snoozing
+              </span>
+              <span className="text-[11px] text-ink-secondary">
+                {snoozeLabel(snoozeThread.snoozedUntil)}
+              </span>
+            </button>
+          )}
+          <div className="mb-1 border-b border-hairline/40" />
+        </>
+      )}
       {movable && (
         <>
           <div className="relative" onMouseEnter={() => setOpen("channels")} onMouseLeave={() => setOpen(null)}>
@@ -858,7 +978,7 @@ function ThreadBranch({
   collapsed,
 }: {
   owner: ThreadOwner;
-  tasks: Array<{ threadId: string; title: string; createdAt: number; lastActivity?: number }>;
+  tasks: SidebarThread[];
   density: SidebarDensity;
   threadCount: number;
   collapsed: boolean;
@@ -872,11 +992,17 @@ function ThreadBranch({
   } | null>(null);
   const [renameSignals, setRenameSignals] = useState<Record<string, number>>({});
 
-  // Most recently active first, where activity is the last thing that
-  // happened in the thread whoever caused it — a person, a webhook or a
-  // schedule all land as messages.
-  const ordered = [...tasks].sort(
-    (a, b) => (b.lastActivity ?? b.createdAt) - (a.lastActivity ?? a.createdAt),
+  // A snoozed thread SINKS rather than disappearing, and the moment its
+  // deadline passes it is back in plain update order — where update order is
+  // the last thing that happened in the thread whoever caused it, a person,
+  // a webhook or a schedule, all of which land as messages.  The thread the
+  // person is reading stays put: snoozing the conversation on screen must
+  // not yank it out from under them.
+  useSnoozeExpiry(tasks);
+  const ordered = orderedThreadRows(
+    tasks,
+    Date.now(),
+    new Set(owner.threadId ? [owner.threadId] : []),
   );
   const shown = showAll ? ordered : ordered.slice(0, threadCount);
   const hidden = ordered.length - shown.length;
@@ -967,7 +1093,7 @@ function ThreadTree({
   children,
 }: {
   owner: ThreadOwner;
-  tasks: Array<{ threadId: string; title: string; createdAt: number; lastActivity?: number }>;
+  tasks: SidebarThread[];
   density: SidebarDensity;
   threadCount: number;
   collapsed: boolean;
