@@ -66,6 +66,7 @@ targets:
         CFBundleURLTypes:
         - CFBundleURLName: app.botfleet.companion.pairing
           CFBundleURLSchemes:
+          - botfleet-ios
           - botfleet
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
@@ -105,6 +106,8 @@ targets:
         - webcredentials:botfleet.app
         com.apple.security.application-groups:
         - group.app.botfleet
+        keychain-access-groups:
+        - $(AppIdentifierPrefix)group.app.botfleet
         com.apple.developer.usernotifications.time-sensitive: true
         aps-environment: production
   BotFleetWidgets:

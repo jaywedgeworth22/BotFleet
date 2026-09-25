@@ -98,7 +98,7 @@ Naming convention `app.<name>.<platform>` for executables, `app.<name>` for the 
 | App group | `group.app.botfleet` | `ios/App/BotFleet.entitlements`, `ios/Widgets/BotFleetWidgets.entitlements` |
 | Associated domain | `botfleet.app` (Universal Links + web credentials) | `ios/project.yml` `com.apple.developer.associated-domains` |
 
-The macOS app does not yet ship an `.entitlements` file — entitlements land when `electron-builder` signs against a developer profile.  Add `com.apple.security.application-groups: [group.app.botfleet]` and `com.apple.developer.associated-domains: [applinks:botfleet.app, webcredentials:botfleet.app]` to that file when it is first introduced.
+macOS signing uses `build/entitlements.mac.plist` for the main app and `build/entitlements.mac.inherit.plist` for nested Electron Helper apps (`electron-builder.yml` `entitlements` / `entitlementsInherit`).  Restricted capabilities (`com.apple.security.application-groups: [group.app.botfleet]`, `com.apple.developer.associated-domains: [applinks:botfleet.app, webcredentials:botfleet.app]`) must go only on the main plist when the App ID is provisioned — never on the inherit plist.
 
 ## Skills In This Repo
 
