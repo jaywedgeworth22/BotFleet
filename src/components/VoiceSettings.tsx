@@ -11,6 +11,8 @@ import { useDesktopCapabilities } from "@/components/DesktopCapabilities";
 import { speaker } from "@/lib/tts";
 import { cn } from "@/lib/cn";
 
+const DEFAULT_MINIMAX_VOICE = "Jay-Wedgeworth-001";
+
 const SAMPLE = "Morning. Overnight the tests went green, and I left two notes for you in the thread.";
 
 export function VoiceSettings({
@@ -64,12 +66,12 @@ export function VoiceSettings({
     };
   }, [configured, provider]);
 
-  const setProvider = (next: "minimax" | "system") => {
+  const setProvider = (next: "minimax" | "elevenlabs" | "system") => {
     if (next === provider || switching || (next === "system" && !systemVoicesAvailable)) return;
     setSwitching(true);
     setError(null);
-    api("/api/config", { method: "PUT", body: JSON.stringify({ tts: { provider: next } }) })
-      .then((status: ConfigStatus) => dispatch({ type: "configStatus", config: status }))
+    api("/api/config", { method: "PUT", body: JSON.stringify({ tts: { provider: next, voice: "" } }) })
+      .then((status: ConfigStatus) => { dispatch({ type: "configStatus", config: status }); setVoices([]); })
       .catch((e: Error) => setError(e.message))
       .finally(() => setSwitching(false));
   };
@@ -100,16 +102,16 @@ export function VoiceSettings({
 
   const handleClone = async () => {
     const label = cloneLabel.trim();
-    if (!label || label.length < 2) {
-      setCloneError("Name must be at least 2 characters.");
-      return;
-    }
-    if (label.length > 64) {
-      setCloneError("Name must be 64 characters or fewer.");
+    if (!/^[A-Za-z][A-Za-z0-9_-]{6,62}[A-Za-z0-9]$/.test(label)) {
+      setCloneError("Voice ID must be 8–64 characters, start with a letter, and contain only letters, numbers, - or _ (not at the end).");
       return;
     }
     if (!cloneFile) {
       setCloneError("Select an audio file first.");
+      return;
+    }
+    if (cloneFile.size > 20 * 1024 * 1024 || !/\.(mp3|m4a|wav)$/i.test(cloneFile.name)) {
+      setCloneError("Use an MP3, M4A or WAV clip under 20 MB (10 seconds to 5 minutes).");
       return;
     }
     setCloneCloning(true);
@@ -117,13 +119,15 @@ export function VoiceSettings({
     setCloneSuccess(null);
     try {
       const arrayBuffer = await cloneFile.arrayBuffer();
-      const base64 = btoa(
-        new Uint8Array(arrayBuffer)
-          .reduce((data, byte) => data + String.fromCharCode(byte), ""),
-      );
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 8192) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+      }
+      const base64 = btoa(binary);
       const result = await api("/api/tts/voice-clone", {
         method: "POST",
-        body: JSON.stringify({ voiceId: label, audioFile: base64 }),
+        body: JSON.stringify({ voiceId: label, audioFile: base64, filename: cloneFile.name }),
       }) as { voiceId?: string; error?: string };
       if (result.error) {
         setCloneError(result.error);
@@ -157,7 +161,7 @@ export function VoiceSettings({
           ? systemVoicesAvailable
             ? " the voices are the ones already installed on this Mac."
             : " built-in Mac voices are unavailable here. Switch to MiniMax to keep using voice."
-          : " the MiniMax key is shared by the workspace."}
+          : provider === "elevenlabs" ? " the ElevenLabs key is shared by the workspace." : " the MiniMax key is shared by the workspace."}
       </div>
 
       <div className="mt-4">
@@ -165,6 +169,7 @@ export function VoiceSettings({
         <div className="inline-flex rounded-xl bg-inset p-1" role="radiogroup" aria-label="Voice Engine">
           {([
             { value: "minimax" as const, label: "MiniMax", available: true },
+            { value: "elevenlabs" as const, label: "ElevenLabs", available: true },
             { value: "system" as const, label: "Built-in Mac voices", available: systemVoicesAvailable },
           ]).map((option) => (
             <button
@@ -186,22 +191,23 @@ export function VoiceSettings({
         </div>
       </div>
 
-      {provider === "minimax" && (
+      {provider !== "system" && (
         <>
           <div className="mt-4">
             <div className="mb-1.5 flex items-center gap-2 text-[13px] text-ink-secondary">
               <span className={cn("size-1.5 rounded-full", configured ? "bg-success" : "bg-raised-hover")} />
-              <span>MiniMax Key</span>
+              <span>{provider === "elevenlabs" ? "ElevenLabs Key" : "MiniMax Key"}</span>
               {configured && <span className="text-[11px] text-success">Connected</span>}
             </div>
+            <p className="mb-2 text-[11.5px] text-ink-secondary">Switching engines keeps the saved key. Replace it here if the new engine uses a different account.</p>
             <div className="flex gap-2">
               <input
                 type="password"
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && key.trim() && void saveKey()}
-                placeholder={configured ? "••••••••  (paste to replace)" : "Paste your MiniMax API key"}
-                aria-label="MiniMax Key"
+                placeholder={configured ? "••••••••  (paste to replace)" : `Paste your ${provider === "elevenlabs" ? "ElevenLabs" : "MiniMax"} API key`}
+                aria-label={`${provider === "elevenlabs" ? "ElevenLabs" : "MiniMax"} Key`}
                 autoComplete="off"
                 className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
               />
@@ -215,7 +221,7 @@ export function VoiceSettings({
             </div>
           </div>
 
-          {configured && (
+          {configured && provider === "minimax" && (
             <>
               {/* ── Voice clone panel ── */}
               <div className="mt-4 border-t border-hairline/40 pt-4">
@@ -234,14 +240,14 @@ export function VoiceSettings({
                 {cloneOpen && (
                   <div className="mt-2 rounded-lg border border-hairline/40 bg-inset p-3">
                     <p className="mb-2 text-[12px] text-ink-secondary">
-                      Upload a short audio clip (≤30 seconds, MP3/WAV/FLAC) to create a voice
+                      Upload a short audio clip (10 seconds to 5 minutes, MP3/M4A/WAV, under 20 MB) to create a voice
                       clone. The clone appears in the voice list below.
                     </p>
                     <div className="mb-2 flex gap-2">
                       <input
                         ref={fileInputRef}
                         type="file"
-                        accept="audio/mpeg,audio/wav,audio/flac,.mp3,.wav,.flac"
+                        accept="audio/mpeg,audio/mp4,audio/wav,.mp3,.m4a,.wav"
                         onChange={handleCloneFile}
                         aria-label="Audio file for voice clone"
                         className="w-full rounded-lg border border-hairline/40 bg-card px-3 py-2 text-[13px] text-ink file:mr-2 file:rounded file:border-0 file:bg-control file:px-2 file:py-1 file:text-[12px] file:text-ink file:shadow-none"
@@ -253,8 +259,8 @@ export function VoiceSettings({
                         value={cloneLabel}
                         onChange={(e) => setCloneLabel(e.target.value)}
                         maxLength={64}
-                        placeholder='Name this voice (e.g. "My Voice")'
-                        aria-label="Clone name"
+                        placeholder='Voice ID (e.g. Jay-Wedgeworth-001)'
+                        aria-label="Clone voice ID"
                         className="w-full rounded-lg border border-hairline/40 bg-card px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
                       />
                     </div>
@@ -298,7 +304,10 @@ export function VoiceSettings({
                     ? "Workspace default"
                     : "Pick a voice"}
               </option>
-              {selectedVoice && !voices.some((voice) => voice.id === selectedVoice) && (
+              {provider === "minimax" && !voices.some((voice) => voice.id === DEFAULT_MINIMAX_VOICE) && (
+                <option value={DEFAULT_MINIMAX_VOICE}>Jay-Wedgeworth-001 (default, if available on your MiniMax account)</option>
+              )}
+              {selectedVoice && !voices.some((voice) => voice.id === selectedVoice) && selectedVoice !== DEFAULT_MINIMAX_VOICE && (
                 <option value={selectedVoice}>Current bot voice</option>
               )}
               {voices.map((v) => (
@@ -318,6 +327,9 @@ export function VoiceSettings({
               <Volume2 size={14} /> Try
             </button>
           </div>
+          {provider === "minimax" && !voices.some((voice) => voice.id === DEFAULT_MINIMAX_VOICE) && !loadingVoices && (
+            <p className="mt-1 text-[11px] text-warning">Jay-Wedgeworth-001 is the requested default, but it is not in this account's current voice list. Clone or add that voice before speaking.</p>
+          )}
         </div>
       )}
 
@@ -347,6 +359,17 @@ export function VoiceSettings({
         </button>
       </div>
 
+      <div className="mt-4 flex items-center justify-between gap-4 border-t border-hairline/40 pt-4">
+        <div>
+          <div className="text-[13px] font-medium text-ink">Speech-friendly summaries</div>
+          <p className="text-[11.5px] text-ink-secondary">Ask every bot to write a short spoken summary and a full written answer. The summary appears when a message is expanded and is used for speech.</p>
+        </div>
+        <input type="checkbox" checked={Boolean(tts.optimizedSummary)} aria-label="Speech-friendly summaries" onChange={(e) => {
+          api("/api/config", { method: "PUT", body: JSON.stringify({ tts: { optimizedSummary: e.target.checked } }) })
+            .then((status: ConfigStatus) => dispatch({ type: "configStatus", config: status }))
+            .catch((cause: Error) => setError(cause.message));
+        }} />
+      </div>
       {error && <div role="alert" className="mt-2 text-[12px] text-danger">{error}</div>}
     </div>
   );
