@@ -1,3 +1,4 @@
+import { spokenReply } from "../../../shared/voice-summary";
 // The speaker — one voice for the whole window.
 //
 // Deliberately a singleton: two bots talking over each other is never what
@@ -107,7 +108,7 @@ export class Speaker {
     this.set({ status: "preparing", botId: opts.botId, messageId: opts.messageId });
     let utterances: string[];
     try {
-      utterances = await this.prepare(text, opts.voiceId, controller.signal);
+      utterances = await this.prepare(spokenReply(text), opts.voiceId, controller.signal);
     } catch (e) {
       if (live()) this.set({ ...IDLE, error: e instanceof Error ? e.message : String(e) });
       if (this.request === controller) this.request = null;
@@ -168,7 +169,7 @@ export class Speaker {
     const body: TtsPrepareBody = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? `the voice service returned ${res.status}`);
     if (!body.ready) {
-      throw new Error("Add the shared MiniMax key in a bot profile on this computer, then pick a voice for the bot.");
+      throw new Error("Add a voice engine key in a bot profile on this computer, then pick a voice for the bot.");
     }
     return body.utterances ?? [];
   }
