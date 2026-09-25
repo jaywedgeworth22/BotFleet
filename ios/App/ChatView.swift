@@ -1115,6 +1115,19 @@ struct MessageRow: View {
                     .foregroundStyle(Color.secondary)
             }
 
+            if message.role == .bot, message.kind == .text, senderBot != nil,
+               (message.audio?.isEmpty == false || session.config?.canSpeak(agentVoice: senderBot?.voice) == true) {
+                Button {
+                    session.playVoice(message, threadId: chat.threadId)
+                } label: {
+                    Label(session.speakingMessageId == message.id ? "Stop voice" : (message.audio?.isEmpty == false ? "Replay voice" : "Read aloud"),
+                          systemImage: session.speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2")
+                }
+                .font(.system(size: 12, weight: .medium))
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+            }
+
             if let reactions = message.reactions, !reactions.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(reactionGroups(reactions), id: \.emoji) { group in
