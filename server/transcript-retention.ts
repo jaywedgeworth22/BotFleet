@@ -68,8 +68,11 @@ const DAILY_SWEEP_MS = 24 * 60 * 60 * 1000;
  * over the original.  A SIGKILL or a power loss between those two steps
  * leaves the temp file behind with nothing to reclaim it, so the sweep does:
  * a temp file whose writer is gone, or that is older than an hour, is not a
- * trim in flight. */
-const TEMP_NAME = /^(?:.+)\.ndjson(?:\.1)?\.(\d{1,10})\.[0-9a-f-]{36}\.tmp$/;
+ * trim in flight.  Group 1 is the thread id prefix (`<threadId>.ndjson[.1]`
+ * minus the `.ndjson`/`.ndjson.1` suffix), group 2 the pid — the orphan sweep
+ * below reads group 1 to fold a stray temp file into the thread it belongs
+ * to; `sweepTranscriptLogs` reads group 2 for `reapStaleTemp`. */
+const TEMP_NAME = /^(.+)\.ndjson(?:\.1)?\.(\d{1,10})\.[0-9a-f-]{36}\.tmp$/;
 const STALE_TEMP_MS = 60 * 60 * 1000;
 
 /** Live byte counts, so the cap costs an arithmetic compare per append rather
@@ -373,7 +376,7 @@ export function sweepTranscriptLogs(dir: string, maxBytes: number, now: number =
   for (const name of names) {
     const temp = TEMP_NAME.exec(name);
     if (temp) {
-      const reaped = reapStaleTemp(join(dir, name), Number(temp[1]), now);
+      const reaped = reapStaleTemp(join(dir, name), Number(temp[2]), now);
       if (reaped.removed) {
         result.tempRemoved += 1;
         result.bytesReclaimed += reaped.bytes;
@@ -520,19 +523,32 @@ function threadIdFromLogName(name: string): string {
   return base.slice(0, -".ndjson".length);
 }
 
+/** The thread id a trim's leftover temp file name encodes
+ * (`<threadId>.ndjson[.1].<pid>.<uuid>.tmp`), or null when `name` does not
+ * match that shape.  `removeTranscriptLogs` already deletes a thread's stray
+ * temp files alongside its logs; this is what lets the orphan sweep's own
+ * byte/file count agree with what that deletion actually does, rather than
+ * silently under-reporting whenever an interrupted trim left one behind. */
+function threadIdFromTempName(name: string): string | null {
+  const match = TEMP_NAME.exec(name);
+  return match ? match[1]! : null;
+}
+
 export interface OrphanSweepResult {
   /** distinct orphaned thread ids old enough to act on */
   ids: number;
-  /** files removed — or that would be removed under dry run — up to 4 per
-   *  id: native live/rotated, events live/rotated */
+  /** files removed — or that would be removed under dry run — normally up
+   *  to 4 per id (native live/rotated, events live/rotated), plus any stray
+   *  `.tmp` file left by an interrupted trim for that id */
   files: number;
   bytesReclaimed: number;
   dryRun: boolean;
 }
 
-/** Delete both generations of `native/<id>.ndjson` and `events/<id>.ndjson`
- * for every thread id that is neither in `liveThreadIds` nor touched within
- * `maxAgeMs`.  `liveThreadIds` is the caller's job to build — every bot's
+/** Delete both generations of `native/<id>.ndjson` and `events/<id>.ndjson`,
+ * and any leftover trim temp file beside them, for every thread id that is
+ * neither in `liveThreadIds` nor touched within `maxAgeMs`.  `liveThreadIds`
+ * is the caller's job to build — every bot's
  * active thread and every task thread, every group's active thread and every
  * group task thread (see the call site in index.ts, which builds this the
  * same way `Store`'s own legacy-import pass does).
@@ -560,8 +576,14 @@ export function sweepOrphanedTranscripts(
       continue;
     }
     for (const name of names) {
-      if (!isTranscriptLogName(name)) continue;
-      const threadId = threadIdFromLogName(name);
+      let threadId: string;
+      if (isTranscriptLogName(name)) {
+        threadId = threadIdFromLogName(name);
+      } else {
+        const tempThreadId = threadIdFromTempName(name);
+        if (tempThreadId === null) continue;
+        threadId = tempThreadId;
+      }
       // Never delete a file for a live id — checked before anything else
       // here touches the file.
       if (liveThreadIds.has(threadId)) continue;

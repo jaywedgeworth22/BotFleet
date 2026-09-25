@@ -406,6 +406,42 @@ describe("sweepOrphanedTranscripts", () => {
     for (const file of files) expect(existsSync(file)).toBe(false);
   });
 
+  it("folds a stray trim temp file into its thread's byte and file count", () => {
+    // removeTranscriptLogs already deletes a thread's leftover *.tmp files
+    // alongside its logs; this pins that the count and bytes this function
+    // reports agree with that, rather than under-reporting whenever an
+    // interrupted trim left one behind (Sentry finding on PR #599).
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const log = join(nativeDir, "orphan.ndjson");
+    const temp = join(nativeDir, `orphan.ndjson.${process.pid}.123e4567-e89b-42d3-a456-426614174000.tmp`);
+    writeFileSync(log, "x".repeat(10));
+    writeFileSync(temp, "y".repeat(7));
+    age(log, OLD);
+    age(temp, OLD);
+
+    const result = sweepOrphanedTranscripts({ eventsDir, nativeDir }, new Set());
+    expect(result).toEqual({ ids: 1, files: 2, bytesReclaimed: 17, dryRun: false });
+    expect(existsSync(log)).toBe(false);
+    expect(existsSync(temp)).toBe(false);
+  });
+
+  it("dry run previews a stray temp file's bytes too, without touching disk", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const log = join(nativeDir, "preview2.ndjson");
+    const temp = join(nativeDir, `preview2.ndjson.${process.pid}.123e4567-e89b-42d3-a456-426614174000.tmp`);
+    writeFileSync(log, "a".repeat(3));
+    writeFileSync(temp, "b".repeat(4));
+    age(log, OLD);
+    age(temp, OLD);
+
+    const result = sweepOrphanedTranscripts({ eventsDir, nativeDir }, new Set(), { dryRun: true });
+    expect(result).toEqual({ ids: 1, files: 2, bytesReclaimed: 7, dryRun: true });
+    expect(existsSync(log)).toBe(true);
+    expect(existsSync(temp)).toBe(true);
+  });
+
   it("never deletes a file for a live id, no matter how old", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();
