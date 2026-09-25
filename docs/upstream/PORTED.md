@@ -6,6 +6,7 @@ Format: one line per port, newest last.
 
 | Date (CT) | Upstream | What | BotFleet PR | Notes |
 |---|---|---|---|---|
+| Sep 25, 2026 | `docs/verification/` + `docs/requirements/` | Process documentation: verification discipline and requirements template | PORT | Eight seeded recipes: chat-ui, routines, approvals, ios-companion, packaged-server, quota-fallback, mac-updater, connector-grants; issue #285 example |
 | Sep 24, 2026 | `shared/redact.ts` prefixes | `xai-`, `gsk_`, `hf_` secret key patterns | #598 | BotFleet's idempotence guard kept |
 | Sep 24, 2026 | PR #774 | Chief roster drops live busy state | #617 | Plus BotFleet-only status-capsule timestamp fix |
 | Sep 24, 2026 | `server/message-db.ts` `readThreadTail` | `LIMIT`-ed thread tail read | #602 | Feeds the thread-cache LRU |
