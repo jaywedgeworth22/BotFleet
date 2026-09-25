@@ -490,7 +490,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 ## Planned / Reserved
 - **2026-09-24 - CLAUDE - PLANNED - Add deploying-seat + PR number to Sentry release/deploy metadata (pattern from UM).** <!-- wb-agent-report:1af9e28693c24219b4883ee675769086 -->
 - **2026-09-24 - CLAUDE - PLANNED - BotFleet: verify whether claude driver's stop_reason=stop_sequence is really a failure before allowlisting it.** <!-- wb-agent-report:64324c2c65d44e35b682a135de63c399 -->
-- **2026-09-24 - CLAUDE - PLANNED - BotFleet: 89% of invoke_agent internal_errors are ACP 'initialize timed out' (60s), concentrated on DSH/deepseek.** <!-- wb-agent-report:a682f434755c4fb2b98c4adea728ea07 -->
+- **2026-09-25 - CLAUDE - IN PROGRESS - BotFleet: 89% of invoke_agent internal_errors are ACP 'initialize timed out' (60s), concentrated on DSH/deepseek.**  Branch `claude/sentry-acp-init`, worktree `~/apps/botfleet-claude-sentry-acp-init`; board a0f9033b. <!-- wb-agent-report:a682f434755c4fb2b98c4adea728ea07 -->
 - **2026-09-24 - CODEX - PLANNED - Investigate current BotFleet fleet recall degraded readiness.** <!-- wb-agent-report:c01901afdc1044c6ad82e30bf9bbda28 -->
 - **2026-09-24 - CODEX - PLANNED - Align DSH Flash display with canonical DeepSeek slug through Harness.** <!-- wb-agent-report:c0a77d0584ac4412a656d1d397d4c4bb -->
 - **2026-09-24 - CODEX - PLANNED - Refresh Claude static picker for Opus 5.5 and transport-safe aliases.** <!-- wb-agent-report:91142572c8f44b25bb9f81d07849b670 -->

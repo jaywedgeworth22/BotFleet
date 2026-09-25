@@ -20,9 +20,11 @@ import {
   dshVersionCompatibilityReason,
   dshWrapSpawn,
   DshAgentDriver,
+  DSH_INIT_TIMEOUT_MS,
   DSH_MINIMUM_ACP_VERSION,
   STATIC_DSH_MODELS,
 } from "./dsh.ts";
+import { resolveInitDeadline } from "./init-deadline.ts";
 import type { AcpStdioMcpServer } from "./core.ts";
 import { dshMcpPatchYaml, isStockDshCli, writeDshMcpPatch } from "./dsh-mcp.ts";
 
@@ -90,6 +92,17 @@ describe("DshAgentDriver config", () => {
     expect(dshVersionCompatibilityReason("dsh 0.1.4")).toMatch(/0\.1\.5-rc\.1 or newer/);
     expect(dshVersionCompatibilityReason("development build")).toMatch(/0\.1\.5-rc\.1 or newer/);
     expect(dshVersionCompatibilityReason("development build", "/opt/dsh-wrapper")).toBeNull();
+  });
+
+  // `dsh --profile acp` answers initialize only after loading its whole
+  // Cordis plugin graph; the shared 60 s default cut those boots off.
+  it("gives the heavy DSH cold boot a longer, still load-scaled initialize deadline", () => {
+    expect(dshSupport.initTimeoutMs).toBe(DSH_INIT_TIMEOUT_MS);
+    expect(DSH_INIT_TIMEOUT_MS).toBe(120_000);
+    const quiet = resolveInitDeadline({ engineBaseMs: dshSupport.initTimeoutMs, load: { load1: 4, cores: 10 } });
+    expect(quiet.timeoutMs).toBe(120_000);
+    const busy = resolveInitDeadline({ engineBaseMs: dshSupport.initTimeoutMs, load: { load1: 20, cores: 10 } });
+    expect(busy.timeoutMs).toBe(240_000);
   });
 });
 

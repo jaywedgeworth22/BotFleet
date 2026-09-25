@@ -191,6 +191,14 @@ describe("ACP decodeConfig", () => {
     expect(GrokAgentDriver.decodeConfig({ promptTimeoutMs: 20 * 60_000 + 1 }).promptTimeoutMs).toBeUndefined();
   });
 
+  it("accepts only bounded initialize deadlines", () => {
+    expect(GrokAgentDriver.decodeConfig({ initTimeoutMs: 1_000 }).initTimeoutMs).toBe(1_000);
+    expect(GrokAgentDriver.decodeConfig({ initTimeoutMs: 5 * 60_000 }).initTimeoutMs).toBe(5 * 60_000);
+    expect(GrokAgentDriver.decodeConfig({ initTimeoutMs: 999 }).initTimeoutMs).toBeUndefined();
+    expect(GrokAgentDriver.decodeConfig({ initTimeoutMs: 5 * 60_000 + 1 }).initTimeoutMs).toBeUndefined();
+    expect("initTimeoutMs" in GrokAgentDriver.decodeConfig({})).toBe(false);
+  });
+
   it("advertises local CUA and qdrant in full-auto mode, because a host turn runs brokered", async () => {
     const fullAuto = await GrokAgentDriver.create({
       instanceId: "grok-full-auto",
@@ -248,6 +256,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_PARTIAL_FAILS;
     delete process.env.FAKE_ACP_STATE;
     delete process.env.FAKE_ACP_RETRY_SCALE;
+    delete process.env.FAKE_ACP_INIT_DELAY_MS;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -840,6 +849,38 @@ describe("ACP turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed" && e.ok === false, 25_000);
     expect(recorder.events.filter((e) => e.type === "turn.retrying").map((e) => e.attempt)).toEqual([1, 2]);
     expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(true);
+  }, 40_000);
+
+  // A cold boot that is slow but alive must get its answer in: the deadline is
+  // what used to cut DSH off mid-boot under host load.
+  it("completes a turn whose initialize answers late but inside its deadline", async () => {
+    process.env.FAKE_ACP_INIT_DELAY_MS = "1500";
+    await create(GrokAgentDriver, undefined, { initTimeoutMs: 20_000 });
+    await instance.adapter.sendTurn({ threadId: "t-acp-slow-init", text: "go" });
+
+    await recorder.until((e) => e.type === "turn.completed", 25_000);
+    expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(0);
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+  }, 40_000);
+
+  // A relaunch repeats the whole cold boot under the same load, so an
+  // initialize timeout spends one retry, not the full transient budget.
+  it("relaunches an initialize timeout once, then fails naming the budget", async () => {
+    process.env.FAKE_ACP_INIT_DELAY_MS = "60000";
+    process.env.FAKE_ACP_RETRY_SCALE = "0.001";
+    await create(GrokAgentDriver, undefined, { initTimeoutMs: 1_000 });
+    await instance.adapter.sendTurn({ threadId: "t-acp-init-timeout", text: "go" });
+
+    await recorder.until((e) => e.type === "turn.completed", 25_000);
+    const retries = recorder.events.filter((e) => e.type === "turn.retrying");
+    expect(retries.map((e) => e.attempt)).toEqual([1]);
+    expect(retries[0]).toMatchObject({ reason: "timeout" });
+    const error = recorder.events.find((e) => e.type === "runtime.error");
+    // Keeps the phrase sentry-ai.ts keys its expected-condition breadcrumb on,
+    // and names the budget that ran out.
+    expect(error).toMatchObject({ message: expect.stringContaining("initialize timed out after 1 s (instance setting") });
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "rpc_error" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
   }, 40_000);
 
   it("never retries a failure that arrived after the agent had already spoken", async () => {
