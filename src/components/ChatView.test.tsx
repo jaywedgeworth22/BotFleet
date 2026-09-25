@@ -6,7 +6,7 @@
 // mounted dozens of permanent 60fps loops for messages that had already
 // settled.
 //
-// CursorAvatar's `paused` prop (driven by `animated` on MausAvatar/BotAvatar)
+// CursorAvatar's `paused` prop (driven by `animated` on BotMascot/BotAvatar)
 // gates an internal requestAnimationFrame effect and is not reflected
 // anywhere in rendered markup — confirmed by reading its render output,
 // which sets `d`/`transform` on ref'd paths imperatively rather than via a
@@ -26,7 +26,7 @@ const SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ChatView
 
 describe("ChatView mascot avatars stay paused once settled", () => {
   it("renders both the expanded and collapsed bot-to-bot comm chip paused — a settled message never needs motion", () => {
-    const commChipLines = SRC.split("\n").filter((line) => line.includes("<MausAvatar color={comm.withColor}"));
+    const commChipLines = SRC.split("\n").filter((line) => line.includes("<BotMascot color={comm.withColor}"));
     expect(commChipLines).toHaveLength(2); // ActivityChip's expanded and collapsed comm-chip renders
     for (const line of commChipLines) {
       expect(line).toContain("animated={false}");
