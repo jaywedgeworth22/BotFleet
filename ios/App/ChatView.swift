@@ -98,6 +98,8 @@ struct ChatView: View {
 
     private var currentDriverKind: String? {
         guard let selection = currentModelSelection else { return nil }
+        // Instance IDs are caller-chosen labels, not provider kinds. If the
+        // registry is cold, omit the mark rather than guessing a provider.
         return session.instanceDriverKinds[selection.instanceId]
     }
 
@@ -392,8 +394,8 @@ struct ChatView: View {
                         )
                         .overlay(alignment: .bottomTrailing) {
                             if let currentDriverKind {
-                                ProviderMarkView(driverKind: currentDriverKind, model: currentModelSelection?.model, size: 15)
-                                    .offset(x: 2, y: 2)
+                                ProviderMarkView(driverKind: currentDriverKind, model: currentModelSelection?.model, size: 21)
+                                    .offset(x: 3, y: 3)
                             }
                         }
                         VStack(alignment: .leading, spacing: 1) {
@@ -459,39 +461,43 @@ struct ChatView: View {
                     .ignoresSafeArea()
                     .onTapGesture { withAnimation(.snappy(duration: 0.28)) { showingPlus = false } }
 
-                VStack(spacing: 0) {
-                    ForEach(plusActions) { action in
-                        Button {
-                            withAnimation(.snappy(duration: 0.28)) { showingPlus = false }
-                            action.run()
-                        } label: {
-                            HStack(spacing: 16) {
-                                Image(systemName: action.systemImage)
-                                    .font(.system(size: 20, weight: .medium))
-                                    .foregroundStyle(action.destructive ? Color.red : Color.primary)
-                                    .frame(width: 44, height: 44)
-                                    .background(Circle().fill(Color.primary.opacity(0.10)))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(action.title)
-                                        .font(.system(size: 19, weight: .medium))
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        ForEach(plusActions) { action in
+                            Button {
+                                withAnimation(.snappy(duration: 0.28)) { showingPlus = false }
+                                action.run()
+                            } label: {
+                                HStack(spacing: 16) {
+                                    Image(systemName: action.systemImage)
+                                        .font(.system(size: 20, weight: .medium))
                                         .foregroundStyle(action.destructive ? Color.red : Color.primary)
-                                    Text(action.subtitle)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 44, height: 44)
+                                        .background(Circle().fill(Color.primary.opacity(0.10)))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(action.title)
+                                            .font(.system(size: 19, weight: .medium))
+                                            .foregroundStyle(action.destructive ? Color.red : Color.primary)
+                                        Text(action.subtitle)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Color.secondary)
+                                    }
+                                    Spacer(minLength: 0)
                                 }
-                                Spacer(minLength: 0)
+                                .padding(.horizontal, 18)
+                                .frame(height: 64)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 18)
-                            .frame(height: 64)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            .disabled(action.disabled)
+                            .opacity(action.disabled ? 0.45 : 1)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(action.disabled)
-                        .opacity(action.disabled ? 0.45 : 1)
                     }
+                    .padding(.vertical, 10)
                 }
-                .padding(.vertical, 10)
+                .scrollBounceBehavior(.basedOnSize)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: 480)
                 .glassSheet(cornerRadius: 30)
                 .padding(.leading, 12)
                 .padding(.trailing, 44)
@@ -1052,6 +1058,24 @@ struct MessageRow: View {
         return nil
     }
 
+    private var senderModelSelection: ModelSelection? {
+        guard let bot = senderBot else { return nil }
+        if let currentTask = bot.tasks?.first(where: { $0.threadId == chat.threadId }) {
+            if let taskSelection = currentTask.modelSelection {
+                return currentTask.activeModelSelection ?? taskSelection
+            }
+            return currentTask.activeModelSelection ?? bot.activeModelSelection ?? bot.modelSelection
+        }
+        return bot.activeModelSelection ?? bot.modelSelection
+    }
+
+    private var senderDriverKind: String? {
+        guard let selection = senderModelSelection else { return nil }
+        // A cold registry cannot tell whether a named instance runs this model's
+        // native driver or a different one. Do not mislabel the sender's mark.
+        return session.instanceDriverKinds[selection.instanceId]
+    }
+
     @ViewBuilder
     private var avatarBadge: some View {
         // A `.system` row is an auto-delivered routine/webhook/resource
@@ -1064,6 +1088,12 @@ struct MessageRow: View {
             if let bot = senderBot {
                 if endsRun {
                     BotAvatarView(bot: bot, size: 28, state: .idle, animated: false)
+                        .overlay(alignment: .bottomTrailing) {
+                            if let senderDriverKind {
+                                ProviderMarkView(driverKind: senderDriverKind, model: senderModelSelection?.model, size: 16)
+                                    .offset(x: 3, y: 3)
+                            }
+                        }
                 } else {
                     Color.clear.frame(width: 28, height: 28)
                 }
