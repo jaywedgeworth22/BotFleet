@@ -82,8 +82,8 @@ export interface InterruptedTurnRecord {
   at: number;
   reason: InterruptReason;
   /** Which side of the provider's accept boundary this turn died on, decided
-   * at shutdown while the evidence was freshest.  The next boot prefers this
-   * over re-deriving it, and only a `before-accept` turn may be sent again.
+   * at shutdown.  Boot reconciles it with the drained event log; only a
+   * `before-accept` turn without contrary evidence may be sent again.
    * Absent on a record written by an older build — the boot re-derives. */
   classification?: ResumeFailureClass;
 }
@@ -273,6 +273,7 @@ export function inspectLastTurn(
   let promptSubmitted = false;
   let producedOutput = false;
   let sawTurnStart = false;
+  let sawTerminal = false;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!.trim();
     if (!line.startsWith("{")) continue;
@@ -282,16 +283,16 @@ export function inspectLastTurn(
     } catch {
       continue;
     }
-    // Everything below the newest `turn.completed` belongs to a turn that is
-    // already done, and nothing above it needs reading.  `ok` separates the
-    // two very different endings: a turn that answered is settled, and a turn
-    // that ended badly is terminal — resuming either one at boot spends
-    // tokens on work that will not change.  A turn the harness itself
-    // interrupted also lands here as `ok: false`, which is why the shutdown
-    // record overrides this reading (server/index.ts, `bootRecoveryEvidence`).
+    // A failed completion may be the terminal event emitted by shutdown's
+    // own interrupt.  Keep scanning that turn: output queued *before* the
+    // terminal event still proves the provider accepted the prompt.  A
+    // successful completion is settled, so no replay decision is needed.
     if (event.type === "turn.completed") {
+      if (sawTerminal) break; // Never mix in evidence from an earlier turn.
+      sawTerminal = true;
       outcome = event.ok === false ? "failed" : "completed";
-      break;
+      if (event.ok !== false) break;
+      continue;
     }
     switch (event.type) {
       case "item.started":
@@ -325,6 +326,20 @@ export function inspectLastTurn(
   }
   const state: ResumeAttemptState = { attempted, rejected, promptSubmitted, producedOutput };
   return { outcome, state, classification: classifyResumeFailure(state) };
+}
+
+/** Merge a stop's snapshot with the log after its queued writer drained.
+ * A positive accept signal always wins. An explicit unknown stop record means
+ * the flush may have timed out: a partial log cannot upgrade it to replayable.
+ * No record (a crash/older build) uses the inspected log as before. */
+export function reconcileRecoveryClassification(
+  recorded: ResumeFailureClass | undefined,
+  inspected: ResumeFailureClass,
+): ResumeFailureClass {
+  if (recorded === "after-accept" || inspected === "after-accept") return "after-accept";
+  if (recorded === "unknown") return "unknown";
+  if (recorded === "before-accept" || inspected === "before-accept") return "before-accept";
+  return "unknown";
 }
 
 /** The newest whole lines of a file, without reading the whole file.  The
