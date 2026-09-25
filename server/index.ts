@@ -70,6 +70,7 @@ import { usageQuotaPoller } from "./usage-quota.ts";
 import { getDeepSeekBalance } from "./deepseek-balance.ts";
 import { rollingSpendTracker } from "./rolling-spend.ts";
 import {
+  configureAntigravityQuotaPoller,
   lastAntigravityQuotaSnapshot,
   startAntigravityQuotaPoller,
   stopAntigravityQuotaPoller,
@@ -314,6 +315,14 @@ import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
 import { installTestParentWatchdog } from "./test-parent-watchdog.ts";
+import { installTimestampedConsole } from "./console-timestamps.ts";
+
+// OP7: before any other logging in this file — the launchd StandardOutPath
+// is one shared, unrotated file with the companion sidecar's already-
+// timestamped lines, and every harness line below (boot sweeps, telemetry,
+// antigravity-quota, infisical, …) otherwise carries no timestamp at all,
+// so nothing here can be correlated against a companion line by time.
+installTimestampedConsole();
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -393,7 +402,12 @@ infisical.configure(
 );
 await infisical.preload();
 Object.assign(cfg, loadConfig());
-console.log(infisical.bootLine());
+// Always prints at boot (bootLineIfChanged() has nothing to compare the
+// first call against) and primes the dedup state the Settings PATCH
+// handler below reuses, so a save shortly after boot that changed nothing
+// does not repeat this same line (OP11).
+const bootInfisicalLine = infisical.bootLineIfChanged();
+if (bootInfisicalLine) console.log(bootInfisicalLine);
 // Telemetry reads settings live (cfg is mutated in place on save), so a new
 // ingest URL or project rule takes effect without a restart.
 telemetry.configure(() => ({
@@ -11147,7 +11161,12 @@ const server = createServer(async (req, res) => {
         // back by the status route and the card while the old one kept
         // running until the next restart.  Idempotent when it has not moved.
         infisical.start();
-        console.log(infisical.bootLine());
+        // OP11: only when the effective configuration actually changed —
+        // this used to fire on every save that carried an `infisical`
+        // block, which on a Mac with no machine identity configured meant
+        // "disabled: not configured" on every unrelated Settings save.
+        const patchedInfisicalLine = infisical.bootLineIfChanged();
+        if (patchedInfisicalLine) console.log(patchedInfisicalLine);
       }
       // A new DSN, or a flipped kill switch, takes effect on this request:
       // the Sentry client is closed and re-opened in place.  Nothing waits for
@@ -11548,6 +11567,17 @@ routines?.start();
 resourceTriggers.start();
 if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
+  // OP3 / HS13: only spawn the CLI while at least one Antigravity instance
+  // is actually in the fleet.  `instanceConfigs(cfg)` reads the SAME live,
+  // mutated-in-place `cfg` every settings-reload path already uses, so a
+  // fleet edited after boot is picked up on the poller's very next tick
+  // with no restart — the underlying timer stays armed either way (cheap;
+  // no CLI spawn), only the CLI spawn itself is gated.
+  configureAntigravityQuotaPoller(() =>
+    Object.values(instanceConfigs(cfg)).some(
+      (entry) => entry.driver === "antigravityAgent" && entry.enabled !== false,
+    ),
+  );
   startAntigravityQuotaPoller();
 }
 
