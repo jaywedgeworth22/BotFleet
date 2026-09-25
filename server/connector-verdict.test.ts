@@ -57,6 +57,27 @@ describe("connectorCallFromFrame", () => {
       .toEqual({ kind: "tools", invoked: COMPOSIO_MULTI_EXECUTE_TOOL, names: ["GMAIL_SEND_EMAIL"] });
   });
 
+  it("applies the direct-call name checks to every batch slug", () => {
+    // Meta-tools and connection cards inside a batch stay ungated, as they are direct.
+    expect(connectorCallFromFrame(multiExecute({
+      tools: [
+        { tool_slug: "GMAIL_MANAGE_CONNECTIONS", arguments: {} },
+        { tool_slug: "GMAIL_SEND_EMAIL", arguments: {} },
+        { tool_slug: "COMPOSIO_SEARCH_TOOLS", arguments: {} },
+      ],
+    }))).toEqual({ kind: "tools", invoked: COMPOSIO_MULTI_EXECUTE_TOOL, names: ["GMAIL_SEND_EMAIL"] });
+    expect(connectorCallFromFrame(multiExecute({
+      tools: [{ tool_slug: "SLACK_WAIT_FOR_CONNECTIONS", arguments: {} }],
+    }))).toEqual({ kind: "passthrough" });
+    expect(connectorCallFromFrame(multiExecute({ tool_slug: "GMAIL_MANAGE_CONNECTIONS" })))
+      .toEqual({ kind: "passthrough" });
+    // A malformed slug is refused as unrecognized, not judged by its prefix.
+    expect(connectorCallFromFrame(multiExecute({
+      tools: [{ tool_slug: "GMAIL_SEND_EMAIL", arguments: {} }, { tool_slug: "gmail_send_email", arguments: {} }],
+    })).kind).toBe("unrecognized");
+    expect(connectorCallFromFrame(multiExecute({ tool_slug: "GMAIL SEND" })).kind).toBe("unrecognized");
+  });
+
   it("denies unrecognized shapes by default", () => {
     expect(connectorCallFromFrame(multiExecute({ sync_response_to_workbench: false })).kind).toBe("unrecognized");
     expect(connectorCallFromFrame(multiExecute({ tools: "GMAIL_SEND_EMAIL" })).kind).toBe("unrecognized");
