@@ -38,12 +38,8 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
   });
 
   it("every patch builder yields { section: { ... } } and passes the value through unchanged", () => {
-    // ttsKey intentionally persists a second field alongside the key
-    // (provider: "minimax") so the config reader can always distinguish
-    // MiniMax from the system provider without guessing from field shape;
-    // that extra field is pinned by the dedicated regression test below
-    // rather than by a one-field assertion here.
-    const multiField = new Set(["ttsKey"]);
+    // Saving a voice key must never silently change a chosen voice engine.
+    const multiField = new Set();
     for (const name of names) {
       const sentinel = `sentinel-${name}`;
       const result = patch[name](sentinel);
@@ -78,12 +74,12 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
     assert.deepEqual(patch.infisicalClientSecret("shh"), { infisical: { clientSecret: "shh" } });
   });
 
-  it("persists provider: 'minimax' alongside the key on a fresh ttsKey save", () => {
+  it("preserves the chosen voice engine when saving the key", () => {
     // A fresh MiniMax save must carry the explicit provider field so the
     // config reader always knows which voice engine to use without guessing.
     // This is tested at the CREDENTIAL_PATCH level because packaged Electron
     // saves route through CREDENTIAL_PATCH rather than the shared helper.
     assert.ok(Object.hasOwn(patch, "ttsKey"), "CREDENTIAL_PATCH is missing ttsKey");
-    assert.deepEqual(patch.ttsKey("sk-fresh"), { tts: { key: "sk-fresh", provider: "minimax" } });
+    assert.deepEqual(patch.ttsKey("sk-fresh"), { tts: { key: "sk-fresh" } });
   });
 });
