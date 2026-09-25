@@ -20,6 +20,18 @@ export function startOfMonthInZone(at: number, timeZone: string): number {
   return epochForZonedDateTime({ year, month, day: 1, hour: 0, minute: 0 }, timeZone);
 }
 
+/** Start of the zoned calendar month `offset` months away from the one
+ * `monthStart` falls in.  The year rolls over in both directions, so
+ * December + 1 is next January and January - 1 is last December — never
+ * month 13 or 0, which `epochForZonedDateTime` rejects with a RangeError. */
+export function shiftMonthInZone(monthStart: number, offset: number, timeZone: string): number {
+  const { year, month } = calendarDate(monthStart, timeZone);
+  const monthIndex = year * 12 + (month - 1) + offset;
+  const nextYear = Math.floor(monthIndex / 12);
+  const nextMonth = monthIndex - nextYear * 12 + 1;
+  return epochForZonedDateTime({ year: nextYear, month: nextMonth, day: 1, hour: 0, minute: 0 }, timeZone);
+}
+
 /** The Monday-first 42-day grid (6 full weeks) covering `monthStart`'s
  * month, expressed as start-of-zoned-day epochs so every cell lines up
  * exactly with what `scheduleFireDays`/`nextZonedOccurrence` compute. */
@@ -70,10 +82,7 @@ export function MiniMonth({ anchor, schedule, timeZone }: MiniMonthProps) {
   );
 
   const moveMonth = (offset: number) =>
-    setVisibleMonthStart((current) => {
-      const { year, month } = calendarDate(current, timeZone);
-      return epochForZonedDateTime({ year, month: month + offset, day: 1, hour: 0, minute: 0 }, timeZone);
-    });
+    setVisibleMonthStart((current) => shiftMonthInZone(current, offset, timeZone));
 
   return (
     <section aria-label="Schedule preview" className="select-none px-3 py-3">

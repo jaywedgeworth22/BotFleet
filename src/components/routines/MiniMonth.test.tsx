@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { RoutineSchedule } from "@/lib/routines";
 import { scheduleFireDays } from "@/lib/routine-calendar";
 import { calendarDate, calendarWeekday, addDaysInTimeZone } from "../../../shared/time-zone";
-import { MiniMonth, monthGrid, startOfMonthInZone } from "./MiniMonth";
+import { MiniMonth, monthGrid, shiftMonthInZone, startOfMonthInZone } from "./MiniMonth";
 
 const ZONE = "America/Chicago";
 const SEPTEMBER_INSTANT = Date.parse("2026-09-15T12:00:00.000Z");
@@ -49,6 +49,29 @@ describe("MiniMonth month-day computation", () => {
     const highlighted = scheduleFireDays(schedule, ZONE, days[0], addDaysInTimeZone(days[days.length - 1], 1, ZONE));
     expect(highlighted.size).toBe(1);
     expect(days).toContain([...highlighted][0]);
+  });
+});
+
+describe("MiniMonth month navigation", () => {
+  it("rolls the year forward from December and back from January instead of throwing", () => {
+    const december = startOfMonthInZone(Date.parse("2026-12-15T18:00:00.000Z"), ZONE);
+    expect(calendarDate(shiftMonthInZone(december, 1, ZONE), ZONE)).toEqual({ year: 2027, month: 1, day: 1 });
+
+    const january = startOfMonthInZone(Date.parse("2027-01-15T18:00:00.000Z"), ZONE);
+    expect(calendarDate(shiftMonthInZone(january, -1, ZONE), ZONE)).toEqual({ year: 2026, month: 12, day: 1 });
+  });
+
+  it("lands on the 1st of each month across a full year in both directions", () => {
+    let forward = startOfMonthInZone(SEPTEMBER_INSTANT, ZONE);
+    let backward = forward;
+    for (let step = 1; step <= 14; step++) {
+      forward = shiftMonthInZone(forward, 1, ZONE);
+      backward = shiftMonthInZone(backward, -1, ZONE);
+      expect(calendarDate(forward, ZONE).day).toBe(1);
+      expect(calendarDate(backward, ZONE).day).toBe(1);
+    }
+    expect(calendarDate(forward, ZONE)).toEqual({ year: 2027, month: 11, day: 1 });
+    expect(calendarDate(backward, ZONE)).toEqual({ year: 2025, month: 7, day: 1 });
   });
 });
 
