@@ -22,7 +22,9 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   ClipboardCopy,
+  Clock3,
   Copy,
   Crown,
   FolderMinus,
@@ -59,6 +61,7 @@ import {
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { ProviderMark } from "./ProviderIcons";
 import { stateForBot } from "@/lib/mascot";
+import { botStatusText, botWaitReason } from "@/lib/sidebar-activity";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
 import { plainPreview } from "@/lib/plain-preview";
@@ -282,12 +285,12 @@ function UpdateButton() {
   );
 }
 
-function preview(bot: Bot): string {
-  if (bot.activity === "waiting-on-you") return "Waiting for you…";
-  if (bot.busy) return "Working…";
-  // the visible branch's tail — bot.messages holds every fork, so its last
-  // entry can belong to a version the user switched away from
-  const last = visibleMessages(bot).at(-1);
+function preview(bot: Bot, last: Message | undefined, bots: Bot[]): string {
+  // waiting-on-you/busy get a status line more specific than a bare
+  // spinner when it's known what the bot is waiting on — see
+  // @/lib/sidebar-activity (ported from upstream's SidebarBotActivity).
+  const status = botStatusText(bot, botWaitReason(bot, last, bots));
+  if (status) return status;
   if (!last) return "";
   if (last.kind === "options" && last.card) return plainPreview(last.card.title);
   if (last.kind === "activity" && last.tool) return activityPreview(last.tool);
@@ -1754,6 +1757,12 @@ function BotListItem({
   const visible = visibleMessages(bot);
   const last = visible.at(-1);
   const activityAt = latestChatActivity(bot.tasks, last?.at, bot.createdAt ?? 0);
+  const waitReason = botWaitReason(bot, last, state.bots);
+  const previewText = preview(bot, last, state.bots);
+  // Icon shape ported from upstream's SidebarBotActivity: CircleAlert for
+  // anything needing a person or naming a teammate, a spinning Loader2 as
+  // the fallback for plain busy work, nothing for idle.
+  const StatusIcon = waitReason ? (waitReason.kind === "teammate" ? Clock3 : CircleAlert) : bot.busy ? Loader2 : null;
   const rowClass = cn(
     "flex w-full items-center rounded-xl border text-left",
     iconOnly
@@ -1822,8 +1831,15 @@ function BotListItem({
                 <Crown size={11} /> Chief of Staff
               </span>
             )}
-            {bot.chiefOfStaff && preview(bot) && <span className="shrink-0 text-ink-secondary/60">·</span>}
-            <span className="truncate" title={preview(bot)}>{preview(bot)}</span>
+            {bot.chiefOfStaff && previewText && <span className="shrink-0 text-ink-secondary/60">·</span>}
+            {StatusIcon && (
+              <StatusIcon
+                size={11}
+                aria-hidden="true"
+                className={cn("shrink-0", waitReason ? "text-warning" : "animate-spin text-success")}
+              />
+            )}
+            <span className="truncate" title={previewText}>{previewText}</span>
           </span>
           {bot.unread && (
             <span className="size-2 shrink-0 rounded-full bg-accent" />
@@ -2382,7 +2398,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           !q ||
           b.name.toLowerCase().includes(q) ||
           (b.title ?? "").toLowerCase().includes(q) ||
-          preview(b).toLowerCase().includes(q),
+          preview(b, visibleMessages(b).at(-1), state.bots).toLowerCase().includes(q),
       );
     const unsectionedChief = matchingBots.find((bot) => bot.chiefOfStaff && !bot.section);
     const sectionChiefs = matchingBots.filter((bot) => bot.chiefOfStaff && bot.section);
