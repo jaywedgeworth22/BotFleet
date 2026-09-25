@@ -1152,7 +1152,10 @@ export function SettingsModal() {
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />
                   <ApiKeyRow section="deepseek" />
-                  <EngineKeyRow engine="minimax" />
+                  <div>
+                    <EngineKeyRow engine="minimax" />
+                    <p className="mt-1 text-[12px] text-ink-secondary">MiniMax API key runs models; voice synthesis uses the separate MiniMax voice key in each bot's Voice settings.</p>
+                  </div>
                   <EngineKeyRow engine="openaiCompat" />
                   <QdrantRagConnection />
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
