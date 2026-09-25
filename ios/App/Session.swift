@@ -740,7 +740,7 @@ final class Session: ObservableObject {
         let previousMessages = state.messages
         let previousHasMore = state.hasMore
         let previousPending = state.pendingQueued
-        let fleet = try await requestClient.fleet(messages: 50)
+        let fleet = try await requestClient.fleet(messages: 1)
         try Task.checkCancellation()
         guard pairingGeneration == generation else { return .pairingChanged }
         guard state.hydrate(fleet, ifUnchangedSince: hydrationToken) else { return .newerState }
@@ -1428,6 +1428,31 @@ final class Session: ObservableObject {
         do {
             let page = try await client.messages(threadId: threadId, before: oldest.id, limit: 50)
             state.prepend(page, toThread: threadId)
+        } catch {
+            recordActionError(error)
+        }
+    }
+
+    /// Fetch the initial page of messages for a thread that was hydrated with
+    /// only a one-message preview stub.  A full page load is skipped when the
+    /// thread is already populated (≥ 50 messages) or has no more history.
+    ///
+    /// Called from ChatView when the chat is first opened, so the main-thread
+    /// text-layout cost is deferred until the user actually navigates to that
+    /// chat rather than paid up front for every bot at launch.
+    func loadInitialMessages(threadId: String) async {
+        guard let client else { return }
+        let count = state.messages[threadId]?.count ?? 0
+        let hasMore = state.hasMore[threadId] ?? false
+        // A stub has < 50 messages and hasMore == true.  A thread that is
+        // already fully loaded (count == 50 and hasMore still true) or
+        // completely empty (hasMore == false) does not need this fetch.
+        guard count < 50, hasMore else { return }
+        do {
+            // No `before:` — returns the newest 50, which includes the stub
+            // message already in state.  merge() deduplicates by message id.
+            let page = try await client.messages(threadId: threadId)
+            state.merge(page, intoThread: threadId)
         } catch {
             recordActionError(error)
         }
