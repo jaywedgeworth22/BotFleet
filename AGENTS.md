@@ -41,6 +41,10 @@ Search the `fleet-agents` corpus before re-deriving a lesson (`recall "query"` o
 
 **Never assume a new user message means prior questions or tasks are dropped.**  Treat the full conversation as still active unless the owner explicitly contradicts, cancels, or redirects.
 
+## Verification
+
+Every claim of "it works" points at a recipe that proves it in an isolated fixture.  See `docs/verification/README.md` for the verification discipline, test recipes, and evidence standards.  "Verified" in a PR means a recipe or an existing unit test was run in an isolated fixture, never against live user data.  Fixtures use temporary data directories and free ports; they do not contact the harness on port 8799 or the user's running app.
+
 ## No New GitHub Repositories (owner directive, 2026-09-02)
 
 **Never create a GitHub repository — no forks, no release repos, no site or docs repos, no scratch repos — unless the owner asks for that repository by name.**  One repository per app: BotFleet's releases, site, docs, and CI all live in `jaywedgeworth22/BotFleet`.  Need to send a change upstream?  Ask the owner first, and delete the fork when the PR closes.  Need a public update feed?  This repo's own Releases.  Found an extra repo no directive created?  Surface it to the owner; do not delete it yourself.  Canonical: `AGENT-SYNC.md` § Owner Directives → No new GitHub repositories.
