@@ -4769,9 +4769,12 @@ _loadPending();
 const deferredBootRecoveries = new Set<string>();
 
 function threadExternalCredentialPending(bot: NonNullable<ReturnType<typeof store.bot>>, threadId: string): boolean {
-  const task = store.taskByThread(bot.id, threadId);
-  if (!task) return false;
-  const policy = task.modelSelection ?? bot.modelSelection;
+  // A task carries its own model selection; a bot's main thread runs on the
+  // bot's.  This used to answer `false` for anything that was not a task,
+  // which made a keyless main thread look dispatchable — harmless while the
+  // only caller re-checked by catching `startTurn`'s refusal, and wrong now
+  // that the recovery PLAN has to know before it decides anything.
+  const policy = store.taskByThread(bot.id, threadId)?.modelSelection ?? bot.modelSelection;
   return turnExternalCredentialPending(bot, quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId);
 }
 
@@ -4863,6 +4866,29 @@ function bootRecoveryEvidence(
   };
 }
 
+/** A bot whose encrypted credential has not been restored yet cannot have its
+ * recovery DECIDED, only postponed.
+ *
+ * Deferring used to live inside `recoverInflightTurn`, which only the
+ * `resume` arm of the plan reaches.  A `notify` or `skipped` verdict never
+ * got there, and both are as irreversible as a dispatch: they clear the crash
+ * marker, and `notify` also writes "send a message to pick it back up" into
+ * the thread — advice that is wrong on a harness that would answer that
+ * message with a 409.  The evidence is complete; the harness is not.  So the
+ * whole candidate waits, and `drainDeferredBootRecoveries` plans it from
+ * scratch the moment the key lands. */
+function deferBootRecoveryForCredential(botId: string, threadId: string): boolean {
+  const bot = store.bot(botId);
+  if (!bot || !threadExternalCredentialPending(bot, threadId)) return false;
+  // Logged on the way in only: the drain re-checks this on every credential
+  // event, and a bot that is still waiting must not reprint the line.
+  if (!deferredBootRecoveries.has(bot.id)) {
+    deferredBootRecoveries.add(bot.id);
+    console.log(`boot recovery: waiting for encrypted credential for ${bot.name}`);
+  }
+  return true;
+}
+
 /** Say in the thread that the turn was interrupted, and stop there.  The
  * provider may already have acted on the prompt and there is no session to
  * continue, so re-sending would repeat whatever it did; the person decides. */
@@ -4889,10 +4915,11 @@ function recoverInflightTurn(botId: string, action: BootRecoveryAction = "contin
   const threadId = bot.inflightThreadId;
   if (!threadId) return Promise.resolve();
   if (!claimBootResume(bot.id, threadId)) return Promise.resolve();
+  // Backstop: the plan sites above already defer a keyless bot, so this only
+  // catches a credential that lapsed between the plan and the dispatch.
   if (threadExternalCredentialPending(bot, threadId)) {
     releaseBootResume(bot.id, threadId);
-    deferredBootRecoveries.add(bot.id);
-    console.log(`boot recovery: waiting for encrypted credential for ${bot.name}`);
+    deferBootRecoveryForCredential(bot.id, threadId);
     return Promise.resolve();
   }
   const activeMsgs = store.activePath(threadId);
@@ -4977,6 +5004,9 @@ function drainDeferredBootRecoveries(): void {
       deferredBootRecoveries.delete(botId);
       continue;
     }
+    // One credential arriving does not mean THIS bot's arrived: stay deferred
+    // rather than deciding on a still half-restored harness.
+    if (deferBootRecoveryForCredential(candidate.botId, candidate.threadId)) continue;
     const plan = planBootRecovery([candidate]);
     for (const entry of plan.resume) void recoverInflightTurn(entry.candidate.botId, entry.action);
     for (const skipped of plan.notify) {
@@ -5001,6 +5031,9 @@ async function runBootRecovery(): Promise<void> {
   const consider = (botId: string, threadId?: string) => {
     const candidate = bootRecoveryCandidateFor(botId, threadId);
     if (!candidate) return;
+    // Before the plan, not inside its `resume` arm: a keyless bot must not be
+    // notified-and-cleared either (see `deferBootRecoveryForCredential`).
+    if (deferBootRecoveryForCredential(candidate.botId, candidate.threadId)) return;
     const key = resumeKey(candidate.botId, candidate.threadId);
     // Claimed means some other path already took it — one coordinator, one
     // dispatch (HS20).  Seen means this pass already listed it from the other
