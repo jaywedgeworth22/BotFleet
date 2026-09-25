@@ -255,6 +255,11 @@ export interface TurnLoopDeps {
    *  asserts the policy without paying its seconds.  Production leaves it
    *  at 1. */
   retryDelayScale?: number;
+  /** This turn's catalog, as the driver already has it.  The loop reads one
+   *  thing from it: a tool's own `timeoutMs`, when the registry declared that
+   *  this tool needs longer than the uniform per-tool ceiling.  Absent, or a
+   *  tool with no override, keeps `budget.toolTimeoutMs`. */
+  tools?: ReadonlyArray<{ name: string; timeoutMs?: number }>;
 }
 
 /** A tool's arguments are declared as a JSON object schema; anything else on
@@ -443,6 +448,14 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
     }
     const toolAbort = new AbortController();
     let toolTimedOut = false;
+    // One ceiling per TOOL, not one per loop.  90s catches a hung shell
+    // command; it also used to cut `ask_bot` off mid-peer-turn, well under
+    // the three minutes the fleet documents for a peer reply, and report a
+    // timeout for a bot that was still working.  The number lives on the
+    // tool definition (registry.ts) so it travels with the behaviour that
+    // needs it instead of being a special case here.
+    const toolTimeoutMs =
+      deps.tools?.find((tool) => tool.name === decoded.name)?.timeoutMs ?? budget.toolTimeoutMs;
     // The per-tool clock, and it PAUSES.  The 90s ceiling is there to catch
     // a call that has hung; a card sitting in front of a person is neither
     // hung nor the model's fault, and killing the tool out from under a
@@ -453,7 +466,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
     // keeps running: something has to bound a turn nobody ever answers, and
     // the watchdog's stall detector is separately exempted for an open card
     // (`setWaitingOnHuman`), which is what makes this pause safe.
-    let remainingMs = budget.toolTimeoutMs;
+    let remainingMs = toolTimeoutMs;
     let clockStartedAt = now();
     let toolTimer: ReturnType<typeof setTimeout> | null = null;
     const startClock = () => {
@@ -507,7 +520,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
       if (toolTimedOut) {
         return {
           kind: "error",
-          content: `Tool ${decoded.name} did not finish within ${Math.round(budget.toolTimeoutMs / 1000)}s and was stopped.`,
+          content: `Tool ${decoded.name} did not finish within ${Math.round(toolTimeoutMs / 1000)}s and was stopped.`,
           detail: "timed out",
         };
       }

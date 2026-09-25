@@ -275,6 +275,9 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         emit,
         runRound,
         messages,
+        // Only `timeoutMs` is read from this; the provider payload is built
+        // separately above from name/description/parameters.
+        tools: turn.tools,
         toolHost: turn.toolHost,
         requestApproval: turn.toolHost?.requestApproval
           ? (ask) => turn.toolHost!.requestApproval!(ask)

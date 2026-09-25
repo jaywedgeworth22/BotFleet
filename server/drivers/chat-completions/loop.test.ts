@@ -75,6 +75,7 @@ interface Harness {
     retryDelayScale?: number;
     emit?: (event: RuntimeEvent) => void;
     computeCost?: (usage: { input: number; output: number; cachedInput?: number }) => number | null;
+    tools?: ReadonlyArray<{ name: string; timeoutMs?: number }>;
     requestApproval?: (ask: {
       tool: string;
       summary: string;
@@ -135,6 +136,7 @@ function harness(rounds: ScriptedRound[]): Harness {
         now: over?.now,
         retryDelayScale: over?.retryDelayScale,
         computeCost: over?.computeCost,
+        tools: over?.tools,
         runRound: async (roundMessages, opts) => {
           roundsSeen.push(roundMessages.map((m) => ({ ...m })));
           attempts.push({ round: opts.round, attempt: opts.attempt });
@@ -722,6 +724,54 @@ describe("runTurnLoop — rounds", () => {
       const exit = await running;
       expect(exit).toBe("settled");
       expect(String(h.messages.find((m) => m.role === "tool")?.content)).toContain("did not finish");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // DR9.  One uniform 90s clock is right for a shell command and wrong for a
+  // tool whose job is to wait on a peer's entire turn; `ask_bot` was being cut
+  // off at 90s, well under the three minutes the fleet documents for a peer
+  // reply, and reported as a timeout for a bot that was still working.
+  it("honours a per-tool timeout override from the turn's catalog", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness([wantsTools([call("c1", "ask_bot")]), answer("moving on")]);
+      const running = h.run({
+        budget: { toolTimeoutMs: 5_000 },
+        tools: [{ name: "ask_bot", timeoutMs: 60_000 }],
+        toolHost: { execute: async () => new Promise<TurnToolOutcome>(() => undefined) },
+      });
+
+      // long past the uniform ceiling, and the tool is still allowed to run
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(h.messages.some((m) => m.role === "tool")).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      const exit = await running;
+      expect(exit).toBe("settled");
+      const reported = String(h.messages.find((m) => m.role === "tool")?.content);
+      expect(reported).toContain("did not finish");
+      // and the message names the tool's OWN ceiling, not the loop's
+      expect(reported).toContain("60s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a tool with no override on the loop's uniform ceiling", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness([wantsTools([call("c1", "bash")]), answer("moving on")]);
+      const running = h.run({
+        budget: { toolTimeoutMs: 5_000 },
+        tools: [{ name: "ask_bot", timeoutMs: 60_000 }],
+        toolHost: { execute: async () => new Promise<TurnToolOutcome>(() => undefined) },
+      });
+      await vi.advanceTimersByTimeAsync(6_000);
+      const exit = await running;
+      expect(exit).toBe("settled");
+      expect(String(h.messages.find((m) => m.role === "tool")?.content)).toContain("did not finish within 5s");
     } finally {
       vi.useRealTimers();
     }

@@ -650,6 +650,9 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         emit,
         runRound,
         messages,
+        // Only `timeoutMs` is read from this; the provider payload is built
+        // separately above from name/description/parameters.
+        tools: turn.tools,
         toolHost: turn.toolHost,
         // The harness's permission broker, carried across on the same
         // per-turn service object caller identity rides on.  The driver

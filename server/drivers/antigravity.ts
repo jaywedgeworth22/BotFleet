@@ -39,6 +39,7 @@
 // global `~/.gemini/config/mcp_config.json` before each spawn — see
 // ensureAntigravityMcp below.
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { stderrExcerpt } from "../stderr-excerpt.ts";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -189,28 +190,137 @@ export function readAntigravityModelCatalog(env: Record<string, string | undefin
 // failing the turn (the ensureOpenCodeInjectModel discipline).
 export const ANTIGRAVITY_COMPUTER_MCP_KEY = "botfleet-computer";
 
+/** Every key this harness owns in agy's global file starts with this; nothing
+ *  else in it is ours to add, replace, or remove. */
+export const BOTFLEET_MCP_PREFIX = "botfleet-";
+
 export interface AntigravityComputerMcpServer {
   command: string;
   args: string[];
   env: Record<string, string>;
 }
 
-// agy's MCP file is machine-global. Hold this lease for the complete child
-// lifetime so two Antigravity turns cannot see each other's computer tokens.
-let antigravityComputerMcpLease: Promise<void> = Promise.resolve();
+// ── the mount lease (DR4) ───────────────────────────────────────────────
+//
+// agy's MCP file is machine-global, so a turn that MOUNTS a computer into it
+// must exclude every other Antigravity turn for its child's whole lifetime —
+// otherwise a second turn's agy could pick up the first turn's tools and, in
+// their env, its box or control tokens.  That part has not changed.
+//
+// What changed is who has to wait.  The lease used to be one module-global
+// promise taken unconditionally, so a turn with NO computer at all — the
+// overwhelming majority — still serialized behind whatever else was running,
+// for up to the 10-minute `--print-timeout` or the 11-minute watchdog.  Two
+// bots on Antigravity could not answer at the same time.
+//
+// It is a reader/writer lease now, per config path:
+//   • a turn that mounts nothing and has nothing of ours to strip takes the
+//     SHARED side — any number of those run at once, because none of them
+//     writes the file and none of them can inherit a mount that does not
+//     exist;
+//   • a turn that mounts a computer, or that has to strip a leftover
+//     `botfleet-*` key, takes the EXCLUSIVE side: it waits for the readers
+//     already running to finish AND locks everyone else out until its child
+//     is gone.
+//
+// That keeps today's isolation guarantee intact.  The obvious cheaper fixes
+// do not: releasing the lease once the child has "read" the config assumes a
+// read time nobody has measured (agy may start an MCP server lazily, at the
+// first tool call), and skipping the lease outright for computer-less turns
+// would let one start WHILE a mount is installed, which is exactly the
+// token-crossing this lease exists to prevent.
+//
+// TODO(DR4): a MOUNTING turn still holds the file for its child's whole
+// lifetime — up to the 10-minute `--print-timeout`, or the 11-minute
+// watchdog.  Shortening that needs one measured fact nobody has yet: WHEN
+// does `agy` read `~/.gemini/config/mcp_config.json`?  If it reads once at
+// startup, the exclusive hold can end at the init event and mounting turns
+// would stop excluding each other for minutes.  If it re-reads lazily — say,
+// the first time the model calls a computer tool — an early release would
+// hand one turn another turn's tools and box token, so the hold must stay.
+// Measure it against a real `agy` (watch the file with fs events across a
+// turn that calls a tool late) before changing anything here.  Neither the
+// code, the comments below, nor agy 1.1.26's embedded docs answer it.
+interface AntigravityMcpLease {
+  /** Chain of exclusive holders; a reader waits on it while one is active. */
+  writers: Promise<void>;
+  /** True from the moment an exclusive holder starts until it releases. */
+  writing: boolean;
+  /** Shared holders running right now. */
+  readers: number;
+  /** Exclusive holders parked until `readers` reaches zero. */
+  drained: Array<() => void>;
+}
 
-async function acquireAntigravityComputerMcpLease(): Promise<() => void> {
-  const previous = antigravityComputerMcpLease;
+const antigravityMcpLeases = new Map<string, AntigravityMcpLease>();
+
+/** The machine-global file agy actually reads.  Derived from the turn's own
+ *  env so two instances pointed at different HOMEs get different leases —
+ *  they are different files and have no reason to wait on each other. */
+export function antigravityMcpConfigPath(env: Record<string, string | undefined> = process.env): string {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  return join(home, ".gemini", "config", "mcp_config.json");
+}
+
+function leaseFor(path: string): AntigravityMcpLease {
+  const existing = antigravityMcpLeases.get(path);
+  if (existing) return existing;
+  const lease: AntigravityMcpLease = { writers: Promise.resolve(), writing: false, readers: 0, drained: [] };
+  antigravityMcpLeases.set(path, lease);
+  return lease;
+}
+
+/** Does the file already carry one of our keys?  A turn that would have to
+ *  remove one is a WRITER even though it mounts nothing.  An unreadable file
+ *  answers `true` on purpose: "we cannot tell" must take the safe side. */
+export function antigravityConfigHasBotfleetServers(path: string): boolean {
+  try {
+    if (!existsSync(path)) return false;
+    const parsed = mcpConfigFileSchema.safeParse(JSON.parse(readFileSync(path, "utf8")));
+    if (!parsed.success) return false;
+    return Object.keys(parsed.data.mcpServers ?? {}).some((key) => key.startsWith(BOTFLEET_MCP_PREFIX));
+  } catch {
+    return true;
+  }
+}
+
+/** Take the mount lease for one turn and return its release.
+ *
+ *  `exclusive` turns hold the file; shared turns only promise not to touch
+ *  it.  Both hold until the child is gone, because that is the window in
+ *  which agy might still read the file. */
+export async function acquireAntigravityComputerMcpLease(
+  path: string,
+  exclusive: boolean,
+): Promise<() => void> {
+  const lease = leaseFor(path);
+  let released = false;
+  if (!exclusive) {
+    // Re-checked after every wait: a writer that became active while this
+    // turn was parked must not be overtaken.  When no writer is active this
+    // loop does not await at all, which is the point — the common turn pays
+    // nothing.
+    while (lease.writing) await lease.writers;
+    lease.readers++;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--lease.readers === 0) for (const wake of lease.drained.splice(0)) wake();
+    };
+  }
+  const previous = lease.writers;
   let unlock: (() => void) | undefined;
   const current = new Promise<void>((resolve) => {
     unlock = resolve;
   });
-  antigravityComputerMcpLease = previous.then(() => current);
+  lease.writers = previous.then(() => current);
   await previous;
-  let released = false;
+  lease.writing = true;
+  if (lease.readers > 0) await new Promise<void>((resolve) => lease.drained.push(resolve));
   return () => {
     if (released) return;
     released = true;
+    lease.writing = false;
     unlock?.();
   };
 }
@@ -263,8 +373,7 @@ export function ensureAntigravityMcp(
   servers: Record<string, { command: string; args: string[]; env: Record<string, string> }>,
   env: Record<string, string | undefined> = process.env,
 ): () => void {
-  const home = env.HOME || env.USERPROFILE || homedir();
-  const path = join(home, ".gemini", "config", "mcp_config.json");
+  const path = antigravityMcpConfigPath(env);
   const existed = existsSync(path);
   const original = existed ? readFileSync(path, "utf8") : null;
   let config: any = {};
@@ -277,7 +386,7 @@ export function ensureAntigravityMcp(
   let hasChanges = false;
   
   for (const key of Object.keys(currentServers)) {
-    if (key.startsWith("botfleet-")) {
+    if (key.startsWith(BOTFLEET_MCP_PREFIX)) {
       delete currentServers[key];
       hasChanges = true;
     }
@@ -324,7 +433,7 @@ export function ensureAntigravityMcp(
       const cleanupServers = { ...cleanupConfig.mcpServers };
       let changed = false;
       for (const key of Object.keys(cleanupServers)) {
-        if (key.startsWith("botfleet-")) {
+        if (key.startsWith(BOTFLEET_MCP_PREFIX)) {
           delete cleanupServers[key];
           changed = true;
         }
@@ -336,7 +445,7 @@ export function ensureAntigravityMcp(
            const origParsed = mcpConfigFileSchema.safeParse(JSON.parse(original));
            if (origParsed.success && origParsed.data.mcpServers) {
              for (const [k, v] of Object.entries(origParsed.data.mcpServers)) {
-               if (k.startsWith("botfleet-")) {
+               if (k.startsWith(BOTFLEET_MCP_PREFIX)) {
                  cleanupServers[k] = v;
                  changed = true;
                }
@@ -361,8 +470,7 @@ export function ensureAntigravityMcp(
 export function cleanStaleAntigravityMcp(
   env: Record<string, string | undefined> = process.env,
 ): void {
-  const home = env.HOME || env.USERPROFILE || homedir();
-  const path = join(home, ".gemini", "config", "mcp_config.json");
+  const path = antigravityMcpConfigPath(env);
   if (!existsSync(path)) return;
   try {
     const raw = readFileSync(path, "utf8");
@@ -371,7 +479,7 @@ export function cleanStaleAntigravityMcp(
     const currentServers = { ...parsed.data.mcpServers };
     let hasChanges = false;
     for (const key of Object.keys(currentServers)) {
-      if (key.startsWith("botfleet-")) {
+      if (key.startsWith(BOTFLEET_MCP_PREFIX)) {
         delete currentServers[key];
         hasChanges = true;
       }
@@ -500,6 +608,14 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
     const active = new Map<string, { stop: () => void; turnId: string }>();
     const pending = new Set<string>();
     let disposed = false;
+    // Retry bookkeeping lives PER THREAD, not per sendTurn call: a relaunch
+    // re-enters sendTurn, and the budget has to survive that hop or every
+    // attempt would look like the first.  claude.ts owns the same shape.
+    const retryState = new Map<string, { attempt: number; cancelled: boolean }>();
+    // A relaunch waits real seconds; the fake agy in antigravity.test.ts
+    // scales that down.  The `turn.retrying` event still reports the REAL
+    // policy delay, so a test asserts the policy without paying for it.
+    const retryScale = Number(process.env.FAKE_AGY_RETRY_SCALE ?? "1");
     // every live agy child, tracked independently of `active`: a child can
     // hang AFTER emitting `result` (so it's already removed from `active`), and
     // dispose()/stopAll() must still be able to reap it. Removed on process exit.
@@ -539,6 +655,14 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       if (active.has(threadId) || pending.has(threadId)) throw new Error("a turn is already running on this thread");
       pending.add(threadId);
       const turnId = newId();
+      // Carried across a relaunch (see maybeRetry): `attempt` counts the
+      // transient failures this logical turn has already absorbed, and
+      // `cancelled` is how a stop during the backoff reaches the pending
+      // relaunch instead of letting it spawn a child nobody wants.
+      const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
+      retry.cancelled = false;
+      retryState.set(threadId, retry);
+      const retryAbort = new AbortController();
 
       // Host control means the user's real desktop — the Local VM and a VPS
       // also arrive as `localComputer`, but they are isolated and carry no
@@ -591,6 +715,15 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       const resumeCursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
       let settled = false;
+      // Set once a relaunch is scheduled: the failed child is still dying and
+      // its close event must not also terminate a turn that is coming back.
+      let retryScheduled = false;
+      // The replay-safety gate, and it is PROTOCOL state rather than a
+      // reading of the error text: it flips the moment this child put
+      // something on the bus a relaunch would duplicate — a tool step, a
+      // streamed token, a refusal.  Before that, a transient failure is a
+      // failure to START, and starting over costs nothing.
+      let sawOutput = false;
       // Last backstop: a child that neither emits `result` nor exits. The
       // exit/close handlers below cover a child that dies; this covers one
       // that is alive and wedged, which would otherwise leave the bot busy
@@ -605,8 +738,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         cost: number | null = null,
         usage?: { input: number; output: number; cachedInput?: number },
       ) => {
-        if (settled) return;
+        if (settled || retryScheduled) return;
         settled = true;
+        retryState.delete(threadId);
         clearTimeout(watchdog);
         active.delete(threadId);
         armPostSettleCleanup();
@@ -629,11 +763,21 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       }
       const useStdin = Buffer.byteLength(prompt) > 64 * 1024;
 
-      // agy's config is global, so every turn — including one without a
-      // computer — owns the mount for its complete child lifetime. This keeps
-      // overlapping turns from inheriting, replacing, or removing each
-      // other's tools and credentials.
-      const releaseMcpLease = await acquireAntigravityComputerMcpLease();
+      // agy's config is global, so a turn that WRITES it owns the mount for
+      // its complete child lifetime — that is what keeps overlapping turns
+      // from inheriting, replacing, or removing each other's tools and
+      // credentials.  A turn that neither mounts anything nor has a leftover
+      // key to strip writes nothing, so it takes the shared side and runs
+      // alongside its peers instead of queueing behind them (DR4).
+      //
+      // Both reads happen in this one synchronous stretch, and the acquire
+      // below claims its side before its first await, so a mounting turn can
+      // never slip in between deciding and claiming.
+      const mcpServers = antigravityMcpServers(turn.integrations);
+      const mcpConfigPath = antigravityMcpConfigPath(env);
+      const mountsComputer = Object.keys(mcpServers).length > 0;
+      const ownsMcpFile = mountsComputer || antigravityConfigHasBotfleetServers(mcpConfigPath);
+      const releaseMcpLease = await acquireAntigravityComputerMcpLease(mcpConfigPath, ownsMcpFile);
       if (disposed) {
         releaseMcpLease();
         pending.delete(threadId);
@@ -642,7 +786,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       }
       let restoreMcp = () => {};
       try {
-        restoreMcp = ensureAntigravityMcp(antigravityMcpServers(turn.integrations), env);
+        restoreMcp = ensureAntigravityMcp(mcpServers, env);
       } catch (error) {
         releaseMcpLease();
         pending.delete(threadId);
@@ -759,6 +903,80 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         postSettleReaper.unref?.();
       };
 
+      /** Absorb a transient failure by relaunching the turn, or report false
+       *  and let the caller settle it (DR2).
+       *
+       *  Antigravity had no retry at all: a single 429 or a connection reset
+       *  failed the whole turn and pushed the bot's fallback chain into a
+       *  cooldown one more attempt would have avoided.  The conditions are
+       *  claude.ts's, for claude.ts's reasons — transient by the shared
+       *  classifier, not stopped by the person, budget left, and nothing yet
+       *  put on the bus by this child. */
+      const maybeRetry = (failure: Parameters<typeof classifyError>[0]): boolean => {
+        if (settled || retryScheduled || sawOutput) return false;
+        if (retry.cancelled || disposed) return false;
+        if (retry.attempt >= RETRY_MAX_ATTEMPTS - 1) return false;
+        const verdict = classifyError(failure);
+        if (!verdict.transient) return false;
+
+        retryScheduled = true;
+        clearTimeout(watchdog);
+        retry.attempt++;
+        const delayMs = computeBackoff(retry.attempt - 1);
+        emit({
+          ...base(threadId, turnId),
+          type: "turn.retrying",
+          attempt: retry.attempt,
+          delayMs,
+          reason: verdict.reason,
+        });
+        // The thread STAYS claimed through the backoff — that entry is what
+        // makes a stop during the wait reach this turn rather than racing a
+        // relaunch nobody can see yet.
+        const cancelRetry = () => {
+          retry.cancelled = true;
+          retryAbort.abort();
+        };
+        active.set(threadId, { stop: cancelRetry, turnId });
+        void (async () => {
+          const wait = interruptibleDelay(delayMs * retryScale, retryAbort.signal);
+          await wait.promise;
+          active.delete(threadId);
+          if (retry.cancelled || disposed) {
+            retryState.delete(threadId);
+            emit({
+              ...base(threadId, turnId),
+              type: "turn.completed",
+              ok: false,
+              stopReason: retry.cancelled ? "interrupted" : "disposed",
+              cost: null,
+            });
+            return;
+          }
+          try {
+            // The SAME turn: a relaunch keeps the cursor it arrived with, so
+            // it resumes the thread's real conversation rather than the one
+            // this attempt created and abandoned.
+            await sendTurn(turn);
+          } catch (error) {
+            retryState.delete(threadId);
+            emit({
+              ...base(threadId, turnId),
+              type: "runtime.error",
+              message: error instanceof Error ? error.message : String(error),
+            });
+            emit({
+              ...base(threadId, turnId),
+              type: "turn.completed",
+              ok: false,
+              stopReason: "exit_before_result",
+              cost: null,
+            });
+          }
+        })();
+        return true;
+      };
+
       // conversation_id from the init event → the resumeCursor (session.started
       // is what the harness persists as the cursor). Also seeds tool item ids.
       let conversationId: string | null = null;
@@ -807,6 +1025,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                     : null;
               if (reported === null || !ANTIGRAVITY_ASKING_POLICIES.has(reported)) {
                 hostPolicyRefused = true;
+                // a refusal is a verdict the person is shown; never re-run it
+                sawOutput = true;
                 emit({
                   ...base(threadId, turnId),
                   type: "runtime.error",
@@ -822,6 +1042,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           case "step_update": {
             if (payload.step_type === "tool") {
               const itemId = `${conversationId ?? o.conversation_id ?? "conv"}:${payload.step_index}`;
+              // a tool is running, or has run: a relaunch would repeat it
+              sawOutput = true;
               if (payload.state === "ACTIVE") {
                 emit({
                   ...base(threadId, turnId),
@@ -839,6 +1061,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
             } else if (payload.step_type === "agent_response") {
               if (typeof payload.text_delta === "string" && payload.text_delta.length > 0) {
                 streamedAssistantText += payload.text_delta;
+                // words the person has already read — see maybeRetry
+                sawOutput = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: payload.text_delta });
               }
               if (payload.usage) {
@@ -858,6 +1082,17 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           }
           case "result": {
             const response = typeof payload.response === "string" ? payload.response : streamedAssistantText;
+            // agy has no error event: a provider 429 or a dropped connection
+            // arrives as an ERROR result like everything else.  One that
+            // carries no answer and followed no tool step is a failure to
+            // START, so it gets the same relaunch a dead child would.
+            if (!response && !sawOutput) {
+              const early = parseAntigravityTurnResult(payload);
+              if (early.status !== "SUCCESS" && maybeRetry({ text: antigravityTurnErrorMessage(early) })) {
+                stop(); // the child has said all it is going to
+                return;
+              }
+            }
             if (response && !streamedAssistantText) {
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: response });
             }
@@ -947,13 +1182,14 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         clearTimeout(terminationEscalation);
         clearTimeout(exitDrain);
         finalizeMcp();
-        if (settled) return;
+        if (settled || retryScheduled) return;
         const how = code === null && signal ? `was killed by ${signal}` : `exited ${code}`;
-        emit({
-          ...base(threadId, turnId),
-          type: "runtime.error",
-          message: `agy ${how} before result${stderr ? `: ${stderrExcerpt(stderr)}` : ""}`,
-        });
+        const message = `agy ${how} before result${stderr ? `: ${stderrExcerpt(stderr)}` : ""}`;
+        // The mount lease is already released above, so the relaunch queues
+        // for it honestly instead of deadlocking on a lease this turn still
+        // holds.
+        if (maybeRetry({ exitCode: code, stderr: message })) return;
+        emit({ ...base(threadId, turnId), type: "runtime.error", message });
         settle(false, "exit_before_result");
       };
 
@@ -971,7 +1207,17 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         exitDrain.unref?.();
       });
 
-      active.set(threadId, { stop, turnId });
+      // Wrapped, not bare: a person who stops this turn has stopped the WHOLE
+      // turn, and the child's close must not then read as a transient failure
+      // worth relaunching.  `stop` stays unwrapped for the driver's own use.
+      active.set(threadId, {
+        stop: () => {
+          retry.cancelled = true;
+          retryAbort.abort();
+          stop();
+        },
+        turnId,
+      });
       pending.delete(threadId);
 
       // 11 min — just above agy's own 10m --print-timeout, so agy normally
