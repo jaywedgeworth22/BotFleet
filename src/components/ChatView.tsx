@@ -62,6 +62,7 @@ import { RenameTitle } from "./RenameTitle";
 import { ThreadTabs } from "./ThreadTabs";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { CopyButton } from "./CopyButton";
+import { SpeakButton } from "./SpeakButton";
 import { CallButton, CallOverlay } from "./CallView";
 import { cn } from "@/lib/cn";
 import { COMPACT_BUBBLE } from "@/lib/compact-chip";
@@ -389,6 +390,7 @@ function Bubble({
         {/* Row 3: reactions, the "+", then which model answered — the mark
             is a logo only; the model name still lives in its tooltip. */}
         <div className="flex items-center gap-1.5">
+          {message.role === "bot" && message.kind === "text" && <SpeakButton text={text} botId={bot.id} threadId={bot.threadId} messageId={message.id} voiceId={bot.voice} hasAudio={Boolean(message.audio?.length)} />}
           {message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
           {bot && bot.modelSelection && (() => {
             const instance = state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId);
