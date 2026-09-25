@@ -13,6 +13,7 @@ import SwiftUI
 import CompanionCore
 import UserNotifications
 import UIKit
+import AVFoundation
 
 /// Stream lifecycle, in Console.app and the Xcode console. A companion that
 /// is silently not connected looks exactly like one with nothing to say, so
@@ -88,6 +89,13 @@ final class Session: ObservableObject {
     /// A notification response that should be pushed by the roster's
     /// NavigationStack after the exact detached task has been activated.
     @Published private(set) var notificationChat: Chat?
+
+    // Shared across chat screens so a settled reply keeps playing when the
+    // person switches chats. Audio bytes stay on the paired computer.
+    private var voiceTask: Task<Void, Never>?
+    private var voiceGeneration = UUID()
+    private var voicePlayer: AVAudioPlayer?
+    @Published private(set) var speakingMessageId: String?
 
     private var client: CompanionClient?
     /// The device token, kept in memory so the client can be rebuilt when the
@@ -458,6 +466,7 @@ final class Session: ObservableObject {
     }
 
     func signOut() {
+        stopVoice()
         streamTask?.cancel()
         streamTask = nil
         endpointRefreshTask?.cancel()
@@ -581,6 +590,7 @@ final class Session: ObservableObject {
     /// anyway; dropping it deliberately means the cursor is written down at
     /// a known point instead of wherever the socket happened to die.
     func disconnect() {
+        stopVoice()
         streamTask?.cancel()
         streamTask = nil
         endpointRefreshTask?.cancel()
@@ -694,6 +704,14 @@ final class Session: ObservableObject {
                         continue
                     }
                     state.apply(frame)
+                    if case let .message(threadId, message) = frame.frame,
+                       message.role == .bot, message.kind == .text,
+                       let bot = state.bot(forThread: threadId),
+                       bot.speechDevices?.contains("iphone") == true,
+                       UIApplication.shared.applicationState == .active,
+                       !(message.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        playVoice(message, threadId: threadId)
+                    }
                     if case let .notify(notification) = frame.frame {
                         NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
                     }
@@ -1651,6 +1669,48 @@ final class Session: ObservableObject {
         guard let client else { return [] }
         do { return try await client.voices() }
         catch { recordActionError(error); return [] }
+    }
+
+    func stopVoice() {
+        let wasPlaying = voiceTask != nil || voicePlayer != nil
+        voiceGeneration = UUID()
+        voiceTask?.cancel()
+        voiceTask = nil
+        voicePlayer?.stop()
+        voicePlayer = nil
+        speakingMessageId = nil
+        if wasPlaying { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+    }
+
+    func playVoice(_ message: Message, threadId: String) {
+        if speakingMessageId == message.id { stopVoice(); return }
+        stopVoice()
+        guard let client else { return }
+        speakingMessageId = message.id
+        let generation = voiceGeneration
+        voiceTask = Task { [weak self] in
+            do {
+                let clips = try await client.messageVoice(threadId: threadId, messageId: message.id)
+                try Task.checkCancellation()
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .spokenAudio)
+                try audioSession.setActive(true)
+                for index in clips.indices {
+                    let data = try await client.voiceClip(threadId: threadId, messageId: message.id, index: index)
+                    try Task.checkCancellation()
+                    let player = try AVAudioPlayer(data: data)
+                    guard player.prepareToPlay(), player.play() else { throw APIError.transport("Voice clip could not be played.") }
+                    self?.voicePlayer = player
+                    while player.isPlaying && !Task.isCancelled {
+                        try await Task.sleep(nanoseconds: 100_000_000)
+                    }
+                    try Task.checkCancellation()
+                }
+            } catch {
+                if !Task.isCancelled { self?.recordActionError(error) }
+            }
+            if self?.voiceGeneration == generation { self?.stopVoice() }
+        }
     }
 
     func previewVoice(_ voiceId: String, for bot: Bot) async -> Data? {
