@@ -13,3 +13,4 @@ Format: one line per port, newest last.
 | Sep 24, 2026 | `server/message-db.ts` `readThreadTail` | `LIMIT`-ed thread tail read | #602 | Feeds the thread-cache LRU |
 | Sep 24, 2026 | PRs #1756, #1761 `server/connector-verdict.ts` | Per-bot Composio tool grants on the relay | #615 | `tools/list` filter added |
 | Sep 24, 2026 | PR #1280 `server/thread-retention.ts` (shape) | Orphan and age sweep for transcript logs | #599 | BotFleet code; upstream's safety rule adopted |
+| Sep 25, 2026 | PRs #1205, #1248 | Per-thread snooze on the task record, desktop row control, iPhone badge | #637 | Composes with the bot-wide snooze; #1248's pinned retention reads as "keep the open thread in place" |
