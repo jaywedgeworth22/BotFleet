@@ -9,6 +9,7 @@ import {
   closeMessageDb,
   deleteThread,
   insertMessage,
+  pruneDeadThreads,
   readThread,
   readThreadTail,
   searchMessages,
@@ -172,6 +173,53 @@ describe("message-db", () => {
     expect(page.messages.map((m) => m.id)).toEqual(["a", "b", "c"]);
     expect(page.hasMore).toBeUndefined();
     expect(existsSync(`${legacy("tail3")}.imported`)).toBe(true);
+  });
+
+  it("pruneDeadThreads removes messages and thread_state for dead threads, keeps live ones", () => {
+    insertMessage("dead1", msg("m1", "gone"));
+    setActiveLeaf("dead1", "m1");
+    insertMessage("dead2", msg("m2", "also gone"));
+    insertMessage("live1", msg("m3", "keep"));
+    setActiveLeaf("live1", "m3");
+
+    const result = pruneDeadThreads(new Set(["live1"]));
+    expect(result.messagesDeleted).toBe(2);
+    expect(result.threadStateDeleted).toBe(1); // only dead1 had a thread_state row
+    expect(readThread("dead1", legacy("dead1")).messages).toEqual([]);
+    expect(readThread("dead2", legacy("dead2")).messages).toEqual([]);
+    expect(readThread("live1", legacy("live1")).messages).toHaveLength(1);
+    expect(readThread("live1", legacy("live1")).activeLeafId).toBe("m3");
+  });
+
+  it("pruneDeadThreads removes an orphaned thread_state row with no messages rows too", () => {
+    setActiveLeaf("orphan-state", "some-id");
+    const result = pruneDeadThreads(new Set());
+    expect(result.threadStateDeleted).toBeGreaterThanOrEqual(1);
+    expect(readThread("orphan-state", legacy("orphan-state")).activeLeafId).toBeNull();
+  });
+
+  it("pruneDeadThreads accepts a plain iterable, not just a Set", () => {
+    insertMessage("dead3", msg("m1", "gone"));
+    insertMessage("live2", msg("m2", "keep"));
+    pruneDeadThreads(["live2"]); // array, not a Set
+    expect(readThread("dead3", legacy("dead3")).messages).toEqual([]);
+    expect(readThread("live2", legacy("live2")).messages).toHaveLength(1);
+  });
+
+  it("pruneDeadThreads does not VACUUM when the freed freelist is small", () => {
+    insertMessage("dead4", msg("m1", "x"));
+    const result = pruneDeadThreads(new Set());
+    expect(result.vacuumed).toBe(false);
+  });
+
+  it("pruneDeadThreads VACUUMs once the freed freelist crosses the threshold", () => {
+    // A large text value forces real page allocation, so deleting it frees
+    // at least one whole page — real production uses a 32 MB threshold
+    // (DEFAULT_VACUUM_THRESHOLD_BYTES), which a unit test should not have to
+    // allocate tens of megabytes to exercise.
+    insertMessage("dead5", msg("m1", "x".repeat(50_000)));
+    const result = pruneDeadThreads(new Set(), { vacuumThresholdBytes: 1 });
+    expect(result.vacuumed).toBe(true);
   });
 
   it("Store round-trips branching through the DB across a restart", () => {

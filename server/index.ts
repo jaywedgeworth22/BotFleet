@@ -11,7 +11,7 @@ import {
   type LocalAutoConsentCapability,
 } from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -169,7 +169,9 @@ import {
   NATIVE_DIR,
 } from "./config.ts";
 import {
+  appendBounded,
   describeSweep,
+  startOrphanTranscriptSweeps,
   startTranscriptRetentionSweeps,
   sweepTranscriptRetention,
   removeTranscriptLogs,
@@ -223,7 +225,7 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 // precedence; this only reports what the secret map structurally cannot see.
 import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
-import { searchMessages } from "./message-db.ts";
+import { pruneDeadThreads, searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
 import { _loadPending, discardDelegations, drainDelegations, pendingDelegationSnapshot, pendingThreads, queueDelegation, type QueueResult } from "./delegations.ts";
 import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage, queuedMessageCount } from "./steer-queue.ts";
@@ -263,6 +265,8 @@ import {
   listMemoryTopics,
   isMemoryTopicName,
   memorySystemPrompt,
+  describeWorkspaceSweep,
+  sweepOrphanedWorkspaces,
 } from "./workspace.ts";
 import {
   readMemoryFile,
@@ -359,6 +363,9 @@ const updateControl = createUpdateControl({
 // fence and long before `server.listen`, so no request ever waits on it, and
 // a stat-only no-op on every boot after the first.
 const transcriptDirs = { eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR };
+// HS7: errors.log's own cap, matching decision-log.ts's rotation so this
+// append-only audit file cannot grow forever like it used to.
+const ERRORS_LOG_MAX_BYTES = 4 * 1024 * 1024;
 const bootTranscriptSweep = describeSweep(sweepTranscriptRetention(transcriptDirs));
 if (bootTranscriptSweep) console.log(bootTranscriptSweep);
 // A harness that stays up for weeks outlives its boot sweep; this catches a
@@ -997,6 +1004,54 @@ const bootSelection = await defaultSelection();
 const store = new Store(() => bootSelection);
 store.seedIfEmpty();
 export { store };
+
+// HS1/HS2/HS3: everything above bounds or trims what a LIVE thread's log,
+// workspace, or DB rows may grow to. Nothing before this ever asked whether
+// a thread, task, group, or bot still exists at all — only an explicit
+// delete (deleteBot, deleteGroup, deleteTask) ever called
+// removeTranscriptLogs, rmSync on a workspace, or deleteThread, so a bot
+// deleted while the harness was down, or removed by a build before this
+// existed, left its transcripts, workspace, and DB rows on disk forever.
+// `liveThreadIds` mirrors the set Store's own legacy-import pass builds at
+// construction (bots' active + task threads, groups' active + task
+// threads) — computed fresh on every call, never cached, so a thread
+// created or deleted after boot is still read correctly a day later.
+function liveThreadIds(): Set<string> {
+  return new Set([
+    ...store.bots.flatMap((b) => [b.threadId, ...(b.tasks ?? []).map((t) => t.threadId)]),
+    ...store.groups.flatMap((g) => [g.threadId, ...(g.tasks ?? []).map((t) => t.threadId)]),
+  ]);
+}
+// One flag covers all three sweeps: a preview before trusting a brand-new
+// class of delete against real data.
+const retentionDryRun = process.env.OMB_RETENTION_DRY_RUN === "1";
+const stopOrphanTranscriptSweeps = startOrphanTranscriptSweeps(transcriptDirs, liveThreadIds, console.log, {
+  dryRun: retentionDryRun,
+});
+// Workspaces and messages.db are swept once, shortly after boot, off the
+// request path — no recurring timer to unref, because a harness restart (29
+// in two days per the audit) already re-runs this often enough on its own.
+setTimeout(() => {
+  const workspaceResult = sweepOrphanedWorkspaces(new Set(store.bots.map((b) => b.id)), { dryRun: retentionDryRun });
+  const workspaceLine = describeWorkspaceSweep(workspaceResult);
+  if (workspaceLine) console.log(workspaceLine);
+
+  if (retentionDryRun) {
+    console.log("[retention] dry run — pruneDeadThreads skipped (no delete, no VACUUM)");
+  } else {
+    try {
+      const prune = pruneDeadThreads(liveThreadIds());
+      if (prune.messagesDeleted || prune.threadStateDeleted) {
+        console.log(
+          `[retention] pruned ${prune.messagesDeleted} message row(s) and ${prune.threadStateDeleted} thread_state row(s) for dead threads` +
+            `${prune.vacuumed ? "; VACUUMed messages.db" : ""}`,
+        );
+      }
+    } catch (error) {
+      console.error("[retention] pruneDeadThreads failed", error instanceof Error ? error.message : String(error));
+    }
+  }
+}, 60_000).unref?.();
 
 /** A bot as a client may see it: no provider session bookkeeping.
  *
@@ -2324,7 +2379,13 @@ bus.subscribe((event: RuntimeEvent) => {
       try {
         const logPath = join(DATA_DIR, "errors.log");
         const entry = `[${new Date().toISOString()}] botId=${bot?.id || "unknown"} threadId=${event.threadId}\n${sanitized}\n\n`;
-        appendFileSync(logPath, entry, { mode: 0o600 });
+        // HS7: this used to be a bare appendFileSync with no rotation, unlike
+        // decision-log.ts's 4 MB rotation for the same kind of unbounded,
+        // append-only audit file. appendBounded is the shared primitive
+        // (server/transcript-retention.ts): same cap, same rotate-then-append
+        // shape, still synchronous — this call site was already synchronous
+        // and on the runtime-event fold, not a request.
+        appendBounded(logPath, entry, ERRORS_LOG_MAX_BYTES, { mode: 0o600 });
       } catch (err) {
         console.error("Failed to write to errors.log", err);
       }
@@ -11666,6 +11727,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
     stopTranscriptSweeps();
+    stopOrphanTranscriptSweeps();
     routines?.stop();
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();

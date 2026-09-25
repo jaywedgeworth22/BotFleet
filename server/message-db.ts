@@ -24,6 +24,7 @@ let handlePath: string | null = null;
 
 function open(): DatabaseSync {
   const file = DB_FILE();
+  const isNewFile = !existsSync(file);
   // Transcripts can contain private conversations and tool output. Create
   // the database with owner-only permissions and also repair an existing
   // file that may have inherited a permissive umask.
@@ -32,6 +33,20 @@ function open(): DatabaseSync {
     chmodSync(file, 0o600);
   } catch {}
   const db = new DatabaseSync(file);
+  // auto_vacuum only takes effect set on an EMPTY database (SQLite ignores
+  // it once a table exists, short of a full VACUUM), so this only ever runs
+  // for a file this call just created — before journal_mode or the first
+  // CREATE TABLE below writes a page. It lets pruneDeadThreads's freed pages
+  // be reclaimed incrementally instead of sitting dead in the file until the
+  // next freelist-triggered VACUUM.
+  if (isNewFile) {
+    try {
+      db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+    } catch {
+      // an older node:sqlite build without the pragma still works correctly;
+      // it just leaves reclaiming freed pages to VACUUM alone
+    }
+  }
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
   db.exec(`
@@ -195,6 +210,77 @@ export function setActiveLeaf(threadId: string, leafId: string | null): void {
 export function deleteThread(threadId: string): void {
   db().prepare("DELETE FROM messages WHERE thread_id = ?").run(threadId);
   db().prepare("DELETE FROM thread_state WHERE thread_id = ?").run(threadId);
+}
+
+/** Freelist bytes above which `pruneDeadThreads` runs a full `VACUUM`
+ * (HS2's 251 MB / 58,532-row database was almost entirely dead pages from
+ * `pruneScreenFrames` rewriting rows in place rather than shrinking the
+ * file). Exposed so a test can force the VACUUM branch without allocating
+ * tens of megabytes to build a real freelist that size. */
+export const DEFAULT_VACUUM_THRESHOLD_BYTES = 32 * 1024 * 1024;
+
+export interface PruneResult {
+  messagesDeleted: number;
+  threadStateDeleted: number;
+  vacuumed: boolean;
+}
+
+/** Delete every `messages` and `thread_state` row whose thread id is not in
+ * `liveThreadIds`, then VACUUM only when that freed enough pages to be worth
+ * the exclusive lock a VACUUM holds — `deleteThread` already does the same
+ * per-thread delete on an explicit removal, but nothing before this ever
+ * swept the threads a bot/task/group delete missed (harness down at the
+ * time, a pre-this-fix build) or ran the file-shrinking VACUUM at all.
+ *
+ * `liveThreadIds` is the caller's job to build: every bot's active and task
+ * threads, every group's active and task threads — the same set the
+ * transcript orphan sweep uses, so a thread the store still knows about is
+ * never at risk here either. */
+export function pruneDeadThreads(
+  liveThreadIds: Iterable<string>,
+  opts: { vacuumThresholdBytes?: number } = {},
+): PruneResult {
+  const live = new Set(liveThreadIds);
+  const database = db();
+
+  const candidates = new Set<string>();
+  for (const row of database.prepare("SELECT DISTINCT thread_id FROM messages").all() as Array<{ thread_id: string }>) {
+    candidates.add(row.thread_id);
+  }
+  for (const row of database.prepare("SELECT thread_id FROM thread_state").all() as Array<{ thread_id: string }>) {
+    candidates.add(row.thread_id);
+  }
+  const dead = [...candidates].filter((threadId) => !live.has(threadId));
+
+  let messagesDeleted = 0;
+  let threadStateDeleted = 0;
+  if (dead.length) {
+    const deleteMessages = database.prepare("DELETE FROM messages WHERE thread_id = ?");
+    const deleteState = database.prepare("DELETE FROM thread_state WHERE thread_id = ?");
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const threadId of dead) {
+        messagesDeleted += Number(deleteMessages.run(threadId).changes ?? 0);
+        threadStateDeleted += Number(deleteState.run(threadId).changes ?? 0);
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  const threshold = opts.vacuumThresholdBytes ?? DEFAULT_VACUUM_THRESHOLD_BYTES;
+  const freelistRow = database.prepare("PRAGMA freelist_count").get() as { freelist_count: number } | undefined;
+  const pageSizeRow = database.prepare("PRAGMA page_size").get() as { page_size: number } | undefined;
+  const freelist = freelistRow?.freelist_count ?? 0;
+  const pageSize = pageSizeRow?.page_size ?? 0;
+  let vacuumed = false;
+  if (freelist * pageSize > threshold) {
+    database.exec("VACUUM");
+    vacuumed = true;
+  }
+  return { messagesDeleted, threadStateDeleted, vacuumed };
 }
 
 export interface SearchHit {
