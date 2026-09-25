@@ -42,7 +42,7 @@
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
 if (mode === "cancel-exits-with-child") {
@@ -188,6 +188,31 @@ if (argv[0] === "models" || argv.includes("--list-models")) {
     ].join("\n"),
   );
   process.exit(0);
+}
+
+// Transient-failure script for the retry tests, the same shape
+// fake-claude-cli uses.  FAKE_ACP_TRANSIENTS is how many launches die with
+// 503-shaped stderr; the count of launches so far lives in a state FILE
+// because a child process cannot mutate its parent's environment.  Once the
+// quota is spent the run proceeds normally, so one test can assert "failed
+// twice, then answered once".  FAKE_ACP_PARTIAL_FAILS instead streams a chunk
+// and THEN dies, which the replay-safety guard must refuse to retry.
+let failAfterChunk = false;
+if (process.env.FAKE_ACP_TRANSIENTS && process.env.FAKE_ACP_STATE) {
+  let launched = 0;
+  try {
+    launched = Number(readFileSync(process.env.FAKE_ACP_STATE, "utf8")) || 0;
+  } catch {}
+  const quota = Number(process.env.FAKE_ACP_TRANSIENTS) || 0;
+  writeFileSync(process.env.FAKE_ACP_STATE, String(launched + 1));
+  if (launched < quota) {
+    if (process.env.FAKE_ACP_PARTIAL_FAILS) {
+      failAfterChunk = true;
+    } else {
+      process.stderr.write("fake-acp: HTTP 503 service temporarily unavailable\n");
+      process.exit(5);
+    }
+  }
 }
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
@@ -572,6 +597,14 @@ function handle(msg: any) {
             out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `delegate error: ${(e as Error).message}` } } } });
             complete();
           });
+        return;
+      }
+      if (failAfterChunk) {
+        // A chunk the person has already seen, and only then the transport
+        // failure: the driver must NOT relaunch this one.
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "half an answer" } } } });
+        process.stderr.write("fake-acp: HTTP 503 service temporarily unavailable\n");
+        setTimeout(() => process.exit(5), 20);
         return;
       }
       if (mode === "interleave") playInterleaveTurn();

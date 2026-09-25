@@ -21,6 +21,7 @@ import { decodeInjectId } from "../local-inject.ts";
 import { toolFields } from "../../tool-fields.ts";
 import { describeResult } from "../../../shared/tool-activity.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.ts";
+import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "../retry.ts";
 
 /**
  * A `host::model` pick talks to a loopback server with its own key.
@@ -402,6 +403,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       }
       const active = new Map<string, Turn>();
       let disposed = false;
+      // Retry bookkeeping lives PER THREAD, not per sendTurn call: a relaunch
+      // re-enters sendTurn, and the budget has to survive that hop or every
+      // attempt would look like the first one.  Mirrors claude.ts, which owns
+      // the same shape for the same reason.
+      const retryState = new Map<string, { attempt: number; cancelled: boolean }>();
+      // A relaunch waits real seconds; the fakes in acp.test.ts scale that
+      // down so a scripted transient failure does not cost the suite its
+      // backoff.  The `turn.retrying` event still reports the REAL delay.
+      const retryScale = Number(process.env.FAKE_ACP_RETRY_SCALE ?? "1");
 
       const emit = (event: RuntimeEvent) => {
         for (const l of [...listeners]) l(event);
@@ -435,12 +445,22 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const turnConfig: AcpConfig = controlsHost && config.fullAuto ? { ...config, fullAuto: false } : config;
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
+        // Carried across a relaunch (see maybeRetry): `attempt` is how many
+        // transient failures this logical turn has already absorbed, and
+        // `cancelled` is how a user stop during the backoff reaches the
+        // pending relaunch instead of letting it spawn a process nobody wants.
+        const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
+        retry.cancelled = false;
+        retryState.set(threadId, retry);
+        const retryAbort = new AbortController();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
         const env = childEnv(turnConfig);
         let preflightCancelled = false;
         const preflightAsks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
         const cancelPreflight = () => {
           preflightCancelled = true;
+          retry.cancelled = true;
+          retryAbort.abort();
         };
         active.set(threadId, {
           stop: cancelPreflight,
@@ -456,6 +476,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           error?: { message: string; setup?: boolean },
         ) => {
           if (active.get(threadId)?.turnId === turnId) active.delete(threadId);
+          retryState.delete(threadId);
           if (error) emit({ ...base(threadId, turnId), type: "runtime.error", ...error });
           emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
           return { turnId, dispatched: false as const };
@@ -536,7 +557,24 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           });
         }
 
-        const state = { settled: false, deadlineTerminating: false, promptSent: false, text: "" };
+        // `sawOutput` is the replay-safety gate, and it is PROTOCOL state, not
+        // a reading of the error text: it flips the moment this child put
+        // something on the bus that a relaunch would duplicate or contradict —
+        // an assistant or reasoning delta, a tool call, or a permission card.
+        // A transient failure before any of that is a failure to start, and
+        // starting over is free.  After it, the CLI may already have edited a
+        // file or run a command, and only the CLI's own resume can be trusted
+        // to continue safely — so the turn fails honestly instead.
+        // `retrying` means a relaunch is already scheduled; every settle path
+        // checks it so the dying child cannot also terminate the turn.
+        const state = {
+          settled: false,
+          deadlineTerminating: false,
+          promptSent: false,
+          sawOutput: false,
+          retrying: false,
+          text: "",
+        };
         const asks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
         let nextId = 1;
         let sessionId: string | null = null;
@@ -626,8 +664,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         let turnUsage: { input: number; output?: number } | undefined;
 
         const settle = (ok: boolean, stopReason: string | null) => {
-          if (state.settled) return;
+          if (state.settled || state.retrying) return;
           state.settled = true;
+          retryState.delete(threadId);
           if (interruptTimer) clearTimeout(interruptTimer);
           for (const finish of [...asks.values()]) finish("cancel", "system");
           for (const p of rpcPending.values()) {
@@ -648,6 +687,97 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           stop(); // the agent process does not exit on its own
         };
 
+        /** Absorb a transient provider or transport failure by relaunching
+         *  this turn, or report `false` and let the caller settle it.
+         *
+         *  Every ACP engine — Cursor, Droid, Grok CLI, Hermes, Kimi,
+         *  DeepSeek, Qwen, OpenCode, DSH — used to fail the whole turn on a
+         *  single 429 or connection reset, which then pushed the bot's
+         *  fallback chain into a cooldown that one retry would have avoided.
+         *  The conditions are exactly claude.ts's, and for the same reasons:
+         *  the failure must be transient by the shared classifier, the user
+         *  must not have stopped the turn, the budget must not be spent, and
+         *  — the replay-safety one — this child must not have produced any
+         *  output yet.  Nothing that already reached the person or the disk
+         *  is ever re-run here. */
+        const maybeRetry = (failure: Parameters<typeof classifyError>[0]): boolean => {
+          if (state.settled || state.retrying || state.deadlineTerminating) return false;
+          if (retry.cancelled || preflightCancelled || disposed) return false;
+          if (state.sawOutput) return false;
+          if (retry.attempt >= RETRY_MAX_ATTEMPTS - 1) return false;
+          const verdict = classifyError(failure);
+          if (!verdict.transient) return false;
+
+          state.retrying = true;
+          retry.attempt++;
+          const delayMs = computeBackoff(retry.attempt - 1);
+          emit({
+            ...base(threadId, turnId),
+            type: "turn.retrying",
+            attempt: retry.attempt,
+            delayMs,
+            reason: verdict.reason,
+          });
+          // Retire the failed attempt: no card, no pending RPC, and no child
+          // may outlive it into the relaunch.
+          if (interruptTimer) clearTimeout(interruptTimer);
+          for (const finish of [...asks.values()]) finish("cancel", "system");
+          asks.clear();
+          for (const p of rpcPending.values()) {
+            if (p.timer) clearTimeout(p.timer);
+            p.reject(new Error("turn retrying"));
+          }
+          rpcPending.clear();
+          stop();
+          // The thread STAYS claimed through the backoff — that entry is what
+          // makes a stop during the wait reach this turn instead of racing a
+          // relaunch nobody can see yet.
+          const cancelRetry = () => {
+            retry.cancelled = true;
+            retryAbort.abort();
+          };
+          active.set(threadId, { stop: cancelRetry, interrupt: cancelRetry, turnId, asks: new Map() });
+          void (async () => {
+            const wait = interruptibleDelay(delayMs * retryScale, retryAbort.signal);
+            await wait.promise;
+            active.delete(threadId);
+            if (retry.cancelled || disposed) {
+              retryState.delete(threadId);
+              emit({
+                ...base(threadId, turnId),
+                type: "turn.completed",
+                ok: false,
+                stopReason: retry.cancelled ? "interrupted" : "disposed",
+                cost: null,
+              });
+              return;
+            }
+            try {
+              // The SAME turn, cursor included: a turn that never got a
+              // prompt result has nothing to resume past, and re-loading the
+              // cursor it arrived with is what keeps the relaunch on the
+              // thread's real history rather than a session this attempt
+              // happened to create and abandon.
+              await sendTurn(turn);
+            } catch (error) {
+              retryState.delete(threadId);
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: error instanceof Error ? error.message : String(error),
+              });
+              emit({
+                ...base(threadId, turnId),
+                type: "turn.completed",
+                ok: false,
+                stopReason: "exit_before_result",
+                cost: null,
+              });
+            }
+          })();
+          return true;
+        };
+
         // server→client permission request → canonical request.opened
         const handleServerRequest = (msg: any) => {
           if (msg.method !== "session/request_permission") {
@@ -655,6 +785,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             return send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });
           }
           const params = msg.params ?? {};
+          // A card in front of a person, or a full-auto approval about to let
+          // a tool run, is a side effect this turn can no longer take back.
+          state.sawOutput = true;
           flushAssistantText();
           const options: Array<{ optionId?: string; kind?: string }> = Array.isArray(params.options) ? params.options : [];
           const optionFor = (want: "allow" | "reject") =>
@@ -729,6 +862,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               const delta = u.content?.text;
               if (typeof delta === "string" && delta) {
                 state.text += delta;
+                // past this point a relaunch would repeat words the person
+                // already read — see maybeRetry
+                state.sawOutput = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
               }
               break;
@@ -736,11 +872,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             case "agent_thought_chunk": {
               const delta = u.content?.text;
               if (typeof delta === "string" && delta) {
+                state.sawOutput = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "reasoning_text", delta });
               }
               break;
             }
             case "tool_call": {
+              state.sawOutput = true;
               flushAssistantText();
               // ACP hands us `kind`, `locations` and `rawInput` alongside the
               // title.  Folding all of it into one 80-char title was what left
@@ -862,12 +1000,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           settle(false, "spawn_error");
         });
         child.on("close", (code) => {
-          if (!state.settled && !state.deadlineTerminating) {
-            emit({
-              ...base(threadId, turnId),
-              type: "runtime.error",
-              message: `${DRIVER_KIND} exited ${code} before the prompt result${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`,
-            });
+          if (!state.settled && !state.deadlineTerminating && !state.retrying) {
+            const message = `${DRIVER_KIND} exited ${code} before the prompt result${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`;
+            // A CLI that died on a provider hiccup before saying anything is
+            // worth one more launch; a CLI that died for its own reasons is
+            // not, and classifyError treats a bare nonzero exit as terminal.
+            if (maybeRetry({ exitCode: code, stderr: message })) return;
+            emit({ ...base(threadId, turnId), type: "runtime.error", message });
             settle(false, "exit_before_result");
           }
         });
@@ -879,7 +1018,21 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           interruptTimer = setTimeout(() => settle(true, "cancelled"), 5_000);
           interruptTimer.unref?.();
         };
-        active.set(threadId, { stop, interrupt, turnId, asks });
+        // Wrapped, not bare: a person who stops this turn has stopped the
+        // WHOLE turn, and the child's close event must not read as a transient
+        // failure worth relaunching.  `stop` and `interrupt` themselves stay
+        // unwrapped for the driver's own internal use (settle, deadlines).
+        const cancelAndStop = () => {
+          retry.cancelled = true;
+          retryAbort.abort();
+          stop();
+        };
+        const cancelAndInterrupt = () => {
+          retry.cancelled = true;
+          retryAbort.abort();
+          interrupt();
+        };
+        active.set(threadId, { stop: cancelAndStop, interrupt: cancelAndInterrupt, turnId, asks });
 
         (async () => {
           try {
@@ -1042,7 +1195,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             else if (reason === "cancelled") settle(true, "cancelled");
             else settle(false, reason ?? "failed");
           } catch (e) {
-            if (!state.settled) {
+            if (!state.settled && !state.retrying) {
               const resumeFailure = e instanceof AcpResumeError;
               const classifiedFailure = resumeFailure && e.cause !== undefined ? e.cause : e;
               const classifiedMessage = classifiedFailure instanceof Error
@@ -1079,6 +1232,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               const message = resumeFailure && needsAuth && classifiedMessage !== baseMessage
                 ? `${baseMessage}  ${classifiedMessage}`
                 : baseMessage;
+              // A 429 or a reset during initialize / session setup / prompt is
+              // a failure to start, and `sawOutput` inside maybeRetry is what
+              // proves nothing has happened yet.  An auth problem is the
+              // person's to fix and is never retried; a prompt timeout already
+              // set `deadlineTerminating`, which maybeRetry refuses.
+              if (!needsAuth && maybeRetry(classifiedFailure instanceof Error ? classifiedFailure : { text: classifiedMessage })) {
+                return;
+              }
               emit({
                 ...base(threadId, turnId),
                 type: "runtime.error",
