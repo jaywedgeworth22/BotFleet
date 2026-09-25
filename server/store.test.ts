@@ -1,12 +1,13 @@
 // Store persistence contract: bots.json + messages-<threadId>.json are
 // the durable record — everything here must survive a process restart
 // except `busy`, which never does (no turn survives one either).
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
 import type { ModelSelection } from "./contracts.ts";
+import { insertMessage } from "./message-db.ts";
 import { peerAllowKey } from "./peer-approval-key.ts";
 import { resolveRoomMemberIds, Store, type BotRecord } from "./store.ts";
 
@@ -1015,6 +1016,117 @@ describe("Store patchBot modelSelection", () => {
       instanceId: "custom",
       model: "custom-model",
     });
+  });
+});
+
+// HS12/HS21: GET /api/bots used to hydrate every bot and group's thread
+// through an unbounded cache — one request against a large database
+// pulled every thread into the heap for the life of the process.
+describe("Store thread cache", () => {
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    // a couple of these tests seed rows via message-db directly, before
+    // any Store exists to create DATA_DIR itself
+    mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  it("messagesTail reads a bounded page without caching the whole thread", () => {
+    const threadId = "long-thread";
+    // seeded directly through sqlite, bypassing Store, so this thread has
+    // never been hydrated into any Store's cache before messagesTail runs.
+    // parentId is chained explicitly, same as Store.appendMessage would —
+    // an omitted parentId reads back as undefined and is what marks a row
+    // as pre-branching legacy data, which always forces a full load.
+    let parentId: string | null = null;
+    for (let i = 0; i < 10; i++) {
+      insertMessage(threadId, { id: `m${i}`, role: "user", kind: "text", text: `text ${i}`, at: Date.now(), parentId });
+      parentId = `m${i}`;
+    }
+
+    const store = new Store(selection);
+    const page = store.messagesTail(threadId, 3);
+    expect(page.messages.map((m) => m.text)).toEqual(["text 7", "text 8", "text 9"]);
+    expect(page.hasMore).toBe(true);
+    // the bounded SQL read must not have materialized and cached the rest
+    // of the transcript
+    expect(store.threadIsCachedForTests(threadId)).toBe(false);
+
+    // an explicit full read still works correctly, and now caches it
+    expect(store.messagesFor(threadId)).toHaveLength(10);
+    expect(store.threadIsCachedForTests(threadId)).toBe(true);
+  });
+
+  it("messagesTail caches a thread whose whole history fits in the page", () => {
+    const threadId = "short-thread";
+    insertMessage(threadId, { id: "a", role: "user", kind: "text", text: "one", at: Date.now(), parentId: null });
+    insertMessage(threadId, { id: "b", role: "user", kind: "text", text: "two", at: Date.now(), parentId: "a" });
+
+    const store = new Store(selection);
+    const page = store.messagesTail(threadId, 5);
+    expect(page.messages.map((m) => m.text)).toEqual(["one", "two"]);
+    expect(page.hasMore).toBe(false);
+    // nothing left to page through later, so this is cached like any
+    // other full load — a later messagesFor() does not re-read it
+    expect(store.threadIsCachedForTests(threadId)).toBe(true);
+  });
+
+  it("evicts the least-recently-used thread and re-reads it transparently", () => {
+    const setup = new Store(selection);
+    const a = setup.createBot({ name: "A" }, { seedMessages: false });
+    const b = setup.createBot({ name: "B" }, { seedMessages: false });
+    const c = setup.createBot({ name: "C" }, { seedMessages: false });
+    setup.appendMessage(a.threadId, { role: "user", kind: "text", text: "hi a" });
+    setup.appendMessage(b.threadId, { role: "user", kind: "text", text: "hi b" });
+    setup.appendMessage(c.threadId, { role: "user", kind: "text", text: "hi c" });
+
+    // a fresh Store with a bound cache starts cold regardless of what the
+    // setup store above warmed — the messagesFor() calls below are what
+    // actually populate this store's cache, in a controlled order
+    const store = new Store(selection, { threadCacheLimit: 2 });
+    expect(store.threadIsCachedForTests(a.threadId)).toBe(false);
+
+    store.messagesFor(a.threadId);
+    store.messagesFor(b.threadId);
+    expect(store.threadIsCachedForTests(a.threadId)).toBe(true);
+    expect(store.threadIsCachedForTests(b.threadId)).toBe(true);
+
+    // a third thread pushes the cache past its bound; A is the least
+    // recently used (touched before B) and is evicted, not B
+    store.messagesFor(c.threadId);
+    expect(store.threadIsCachedForTests(a.threadId)).toBe(false);
+    expect(store.threadIsCachedForTests(b.threadId)).toBe(true);
+    expect(store.threadIsCachedForTests(c.threadId)).toBe(true);
+
+    // eviction is invisible to callers: A's messages re-hydrate correctly
+    // from sqlite, and touching it again re-warms the cache — this time
+    // evicting B, the next-least-recently-used entry
+    expect(store.messagesFor(a.threadId).map((m) => m.text)).toEqual(["hi a"]);
+    expect(store.threadIsCachedForTests(a.threadId)).toBe(true);
+    expect(store.threadIsCachedForTests(b.threadId)).toBe(false);
+  });
+
+  it("appendMessage after eviction stays consistent with what is durable on disk", () => {
+    const setup = new Store(selection);
+    const target = setup.createBot({ name: "Target" }, { seedMessages: false });
+    const filler = setup.createBot({ name: "Filler" }, { seedMessages: false });
+    setup.appendMessage(target.threadId, { role: "user", kind: "text", text: "before eviction" });
+
+    const store = new Store(selection, { threadCacheLimit: 1 });
+    store.messagesFor(target.threadId); // warm the cache
+    expect(store.threadIsCachedForTests(target.threadId)).toBe(true);
+    store.messagesFor(filler.threadId); // one slot only — evicts target
+    expect(store.threadIsCachedForTests(target.threadId)).toBe(false);
+
+    // appendMessage on an evicted thread must re-hydrate from sqlite
+    // (which already has "before eviction" persisted) rather than lose
+    // it, then persist and cache the new message on top.
+    const appended = store.appendMessage(target.threadId, { role: "bot", kind: "text", text: "after eviction" });
+    expect(store.messagesFor(target.threadId).map((m) => m.text)).toEqual(["before eviction", "after eviction"]);
+    expect(store.activeLeaf(target.threadId)).toBe(appended.id);
+
+    // durable across a full restart, not just this process's cache
+    const reloaded = new Store(selection);
+    expect(reloaded.messagesFor(target.threadId).map((m) => m.text)).toEqual(["before eviction", "after eviction"]);
   });
 });
 

@@ -718,10 +718,62 @@ interface ThreadState {
   activeLeafId: string | null;
 }
 
+/** How many threads' full message arrays `Store` keeps warm in memory at
+ * once. `GET /api/bots` used to hydrate every bot and group's thread
+ * through this cache with no eviction — one request against a large
+ * database pulled every thread into the heap for the life of the process
+ * (HS12/HS21). A thread's existence lives on its bot/group record, never
+ * here, so evicting a thread's cached messages loses nothing durable:
+ * the next read just re-hydrates from sqlite. */
+const DEFAULT_THREAD_CACHE_LIMIT = 64;
+
+/** A bounded LRU over per-thread message caches. `get` touches (moves the
+ * entry to the most-recently-used end); `set` evicts the least-recently-
+ * used entries past `limit`. Backed by a plain Map: insertion order is
+ * Map's own iteration order, so "delete then re-set" is enough to move a
+ * key to the MRU end, and `.keys().next()` is always the LRU key. */
+class ThreadCache {
+  private map = new Map<string, ThreadState>();
+  private limit: number;
+
+  constructor(limit: number) {
+    this.limit = limit;
+  }
+
+  get(threadId: string): ThreadState | undefined {
+    const state = this.map.get(threadId);
+    if (state) {
+      this.map.delete(threadId);
+      this.map.set(threadId, state);
+    }
+    return state;
+  }
+
+  set(threadId: string, state: ThreadState): void {
+    this.map.delete(threadId);
+    this.map.set(threadId, state);
+    while (this.map.size > this.limit) {
+      const oldest = this.map.keys().next().value;
+      if (oldest === undefined) break;
+      this.map.delete(oldest);
+    }
+  }
+
+  delete(threadId: string): void {
+    this.map.delete(threadId);
+  }
+
+  /** Membership only — deliberately does not touch LRU order, so a test
+   * can inspect the cache without perturbing the eviction it's testing. */
+  has(threadId: string): boolean {
+    return this.map.has(threadId);
+  }
+}
+
 export class Store {
   bots: BotRecord[] = [];
   groups: GroupRecord[] = [];
-  private threads = new Map<string, ThreadState>();
+  private threads: ThreadCache;
   private defaultSelection: () => ModelSelection;
   private listeners = new Set<(change: StoreChange) => void>();
   /** true when no bots.json existed at load — the one time the roster is seeded */
@@ -730,8 +782,12 @@ export class Store {
    * in-memory roster as "every room member was deleted". */
   private botsLoadFailed = false;
 
-  constructor(defaultSelection: () => ModelSelection) {
+  /** `opts.threadCacheLimit` only exists so tests can force evictions
+   * without creating dozens of real threads; production always takes the
+   * default. */
+  constructor(defaultSelection: () => ModelSelection, opts: { threadCacheLimit?: number } = {}) {
     this.defaultSelection = defaultSelection;
+    this.threads = new ThreadCache(opts.threadCacheLimit ?? DEFAULT_THREAD_CACHE_LIMIT);
     mkdirSync(DATA_DIR, { recursive: true });
     try {
       this.bots = JSON.parse(readFileSync(BOTS_FILE, "utf8"));
@@ -1342,11 +1398,21 @@ export class Store {
   }
 
   private thread(threadId: string): ThreadState {
-    let t = this.threads.get(threadId);
+    const t = this.threads.get(threadId);
     if (t) return t;
     // SQLite is the source of truth; a thread with no rows imports its
     // legacy messages-<threadId>.json once, inside readThread
-    const { messages, activeLeafId: storedLeaf } = mdb.readThread(threadId, messagesFile(threadId));
+    return this.cacheThread(threadId, mdb.readThread(threadId, messagesFile(threadId)));
+  }
+
+  /** Finish hydrating a full set of thread rows into the cache: chain any
+   * legacy (pre-branching) rows' parentId in array order, default the
+   * active leaf to the newest message, and store it (evicting the LRU
+   * entry if the cache is now over its bound). Shared by a full load and
+   * by messagesTail() when its bounded read turns out to be the whole
+   * thread anyway. */
+  private cacheThread(threadId: string, rows: mdb.ThreadRows): ThreadState {
+    const { messages, activeLeafId: storedLeaf } = rows;
     let activeLeafId = storedLeaf;
     // legacy rows carry no parentId — chain them in array order
     let prev: string | null = null;
@@ -1355,13 +1421,53 @@ export class Store {
       prev = m.id;
     }
     if (!activeLeafId) activeLeafId = messages.at(-1)?.id ?? null;
-    t = { messages, activeLeafId };
+    const t = { messages, activeLeafId };
     this.threads.set(threadId, t);
     return t;
   }
 
   messagesFor(threadId: string): Message[] {
     return this.thread(threadId).messages;
+  }
+
+  /** A bounded page of a thread's newest messages, for callers that only
+   * need a display page — the GET /api/bots hydrate and a fresh
+   * scrollback view. Reads just `limit` rows at the SQL boundary instead
+   * of the whole transcript (HS12/HS21), unless the thread is already
+   * cached from other work (then it's a plain in-memory slice, no extra
+   * SQL) or the bounded read comes back as the complete thread anyway
+   * (short thread, or a one-time legacy import) — that gets cached like
+   * any other full load so a later messagesFor() doesn't re-read it.
+   * Legacy rows that predate per-message parentId are only chained
+   * correctly on a full load, so a bounded page missing that context
+   * falls back to one rather than returning messages with a broken
+   * parent chain. */
+  messagesTail(threadId: string, limit: number): { messages: Message[]; hasMore: boolean; activeLeafId: string | null } {
+    let state = this.threads.get(threadId);
+    if (!state) {
+      const tail = mdb.readThreadTail(threadId, messagesFile(threadId), limit);
+      const legacyRows = tail.hasMore !== undefined && tail.messages.some((m) => m.parentId === undefined);
+      if (tail.hasMore !== true || legacyRows) {
+        state = this.cacheThread(threadId, legacyRows ? mdb.readThread(threadId, messagesFile(threadId)) : tail);
+      } else {
+        return {
+          messages: tail.messages,
+          hasMore: tail.hasMore,
+          activeLeafId: tail.activeLeafId ?? tail.messages.at(-1)?.id ?? null,
+        };
+      }
+    }
+    const { messages, activeLeafId } = state;
+    const start = Math.max(0, messages.length - limit);
+    return { messages: messages.slice(start), hasMore: start > 0, activeLeafId };
+  }
+
+  /** Test-only: whether a thread's messages are currently warm in the LRU,
+   * so a test can prove a bounded read stayed bounded (or that eviction
+   * actually happened) without depending on internal call counts. Reads
+   * membership only — does not touch LRU order. */
+  threadIsCachedForTests(threadId: string): boolean {
+    return this.threads.has(threadId);
   }
 
   activeLeaf(threadId: string): string | null {
