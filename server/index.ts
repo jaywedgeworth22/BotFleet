@@ -10933,7 +10933,7 @@ const server = createServer(async (req, res) => {
       }
       // same rule for a voice key — and check it against the provider the
       // patch SELECTS, not the one already saved, or pasting a Cartesia key
-      // while switching from ElevenLabs validates against the wrong service
+      // while switching from MiniMax validates against the wrong service
       const newTts = patch.tts;
       if (newTts?.key?.trim()) {
         const check = await tts.verifyKey(newTts.key.trim(), { tts: newTts });
