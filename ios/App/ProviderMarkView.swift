@@ -12,7 +12,7 @@ import SwiftUI
 struct ProviderMarkView: View {
     let driverKind: String
     var model: String? = nil
-    var size: CGFloat = 15
+    var size: CGFloat = 20
 
     static func resolvedDriverKind(for driverKind: String, model: String?) -> String {
         guard let model = model?.lowercased() else { return driverKind }
@@ -22,7 +22,7 @@ struct ProviderMarkView: View {
         if model.contains("claude") { return "claude" }
         if model.contains("deepseek") { return "deepseek" }
         if model.contains("gpt") || model.contains("o1") || model.contains("o3") || model.contains("o4") { return "openai" }
-        if model.contains("gemini") { return "gemini" }
+        if model.contains("gemini") || model.contains("antigravity") { return "gemini" }
         return driverKind
     }
 
@@ -98,7 +98,8 @@ struct ProviderMarkView: View {
         case "deepseek", "deepseekAgent", "dsh", "dshAgent": return "DeepSeek"
         case "codex": return "Codex"
         case "openai-compat", "openai": return "OpenAI"
-        case "gemini", "geminiAgent", "antigravity", "antigravityAgent": return "Gemini"
+        case "gemini", "geminiAgent": return "Gemini"
+        case "antigravity", "antigravityAgent": return "Antigravity"
         case "cursor", "cursorAgent": return "Cursor"
         case "minimax", "minimaxAgent": return "MiniMax"
         case "boxAgent": return "Computer"
@@ -149,7 +150,7 @@ struct ProviderMarkView: View {
         .frame(width: size, height: size)
         .background(Circle().fill(Color(uiColor: .systemBackground)))
         .clipShape(Circle())
-        .overlay(Circle().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+        .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.75))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(displayName)
     }
