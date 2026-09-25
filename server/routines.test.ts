@@ -96,7 +96,7 @@ afterEach(() => {
 it("persists queued receipts while pruning more than 2,000 terminal records", () => {
   const h = harness();
   h.setAdmitting(false);
-  const input = { runOn: "maus" as const, webhookId: "retention-hook", webhookName: "Retention", prompt: "Fixture", botId: "bot", receivedAt: 1 };
+  const input = { runOn: "bot" as const, webhookId: "retention-hook", webhookName: "Retention", prompt: "Fixture", botId: "bot", receivedAt: 1 };
   const queued = h.manager.enqueueWebhook({ ...input, deliveryId: "queued" });
   const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
   disk.runs = [queued, ...Array.from({ length: 2001 }, (_, i) => ({ ...queued, id: `history-${i}`, deliveryId: `history-${i}`, status: "completed", createdAt: i + 2, finishedAt: i + 3 }))];
@@ -114,7 +114,7 @@ it("bounds the prompt snapshot of settled runs older than the newest 100 when it
   h.setAdmitting(false);
   const payload = "p".repeat(20_000);
   const prompt = ["Event: deploy.finished", "[UNTRUSTED WEBHOOK EVENT DATA]", payload, "[/UNTRUSTED WEBHOOK EVENT DATA]"].join("\n");
-  const input = { runOn: "maus" as const, webhookId: "bound-hook", webhookName: "Bound", prompt, botId: "bot", receivedAt: 1 };
+  const input = { runOn: "bot" as const, webhookId: "bound-hook", webhookName: "Bound", prompt, botId: "bot", receivedAt: 1 };
   const queued = h.manager.enqueueWebhook({ ...input, deliveryId: "queued" });
   const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
   disk.runs = [queued, ...Array.from({ length: 105 }, (_, i) => ({ ...queued, id: `history-${i}`, deliveryId: `history-${i}`, status: "completed", createdAt: i + 2, finishedAt: i + 3 }))];
@@ -252,7 +252,7 @@ describe("RoutineManager", () => {
     const h = harness();
     h.setBot("busy");
     for (let i = 0; i < 3; i++) h.manager.enqueueWebhook({ webhookId: "combined-fixture", webhookName: "Combined fixture",
-      prompt: `Synthetic delivery ${i}`, botId: "maus-1", runOn: "maus", deliveryId: `delivery-${i}`, receivedAt: 1000 + i });
+      prompt: `Synthetic delivery ${i}`, botId: "maus-1", runOn: "bot", deliveryId: `delivery-${i}`, receivedAt: 1000 + i });
     await h.manager.tick();
     h.setBot("ready");
     await h.manager.tick();
@@ -278,7 +278,7 @@ describe("RoutineManager", () => {
     const h = harness();
     h.setBot("busy");
     for (let i = 0; i < 2; i++) h.manager.enqueueWebhook({ webhookId: "combined-cancel", webhookName: "Cancel fixture",
-      prompt: "Synthetic delivery", botId: "maus-1", runOn: "maus", deliveryId: `cancel-${i}`, receivedAt: i });
+      prompt: "Synthetic delivery", botId: "maus-1", runOn: "bot", deliveryId: `cancel-${i}`, receivedAt: i });
     await h.manager.tick();
     h.setBot("ready");
     await h.manager.tick();
@@ -598,14 +598,14 @@ describe("RoutineManager", () => {
     });
     h.setNow(routine.nextRunAt!);
     await h.manager.tick();
-    h.manager.update(routine.id, { runOn: "maus" });
+    h.manager.update(routine.id, { runOn: "bot" });
 
     h.setBot("ready");
     await h.manager.tick();
 
     expect(h.runOns).toEqual(["cloud"]);
     expect(h.manager.listRuns()[0]).toMatchObject({ runOn: "cloud" });
-    expect(h.manager.listRoutines()[0]).toMatchObject({ runOn: "maus" });
+    expect(h.manager.listRoutines()[0]).toMatchObject({ runOn: "bot" });
   });
 
   it("opens webhook jobs in the assigned bot's live chat", async () => {
@@ -646,7 +646,7 @@ describe("RoutineManager", () => {
         webhookName: "UptimeRobot alerts",
         prompt: `Handle ${deliveryId}`,
         botId: "maus-webhook",
-        runOn: "maus",
+        runOn: "bot",
         deliveryId,
         receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
       });
@@ -674,7 +674,7 @@ describe("RoutineManager", () => {
       webhookName: "UptimeRobot alerts",
       prompt: "Handle ticket 42",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d1",
       receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
     });
@@ -691,7 +691,7 @@ describe("RoutineManager", () => {
       webhookName: "Sentry incidents",
       prompt: "Handle page",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d2",
       receivedAt: new Date(2026, 7, 17, 8, 3).getTime(),
     });
@@ -708,7 +708,7 @@ describe("RoutineManager", () => {
       webhookName: "UptimeRobot alerts",
       prompt: "Handle ticket 42",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d1",
       receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
     });
@@ -726,7 +726,7 @@ describe("RoutineManager", () => {
       webhookName: "New ticket",
       prompt: "Handle ticket 42",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d-simple",
       receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
     });
@@ -802,7 +802,7 @@ describe("RoutineManager", () => {
       webhookName: "Sentry incidents",
       prompt: "Handle page",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d-hidden",
       receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
     });
@@ -821,7 +821,7 @@ describe("RoutineManager", () => {
       webhookName: "Sentry",
       prompt: "Handle issue",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d-live-1",
       receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
     });
@@ -839,7 +839,7 @@ describe("RoutineManager", () => {
       webhookName: "Sentry",
       prompt: "Handle issue",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d-primary",
       receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
     });
@@ -859,7 +859,7 @@ describe("RoutineManager", () => {
       webhookName: "PagerDuty",
       prompt: "Handle page",
       botId: "maus-webhook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "d-primary-2",
       receivedAt: new Date(2026, 7, 17, 8, 3).getTime(),
     });
@@ -1060,7 +1060,7 @@ describe("RoutineManager", () => {
       webhookName: "Deploy",
       prompt: "Deploy the build",
       botId: "maus-hook",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "delivery-1",
       receivedAt: start,
     });
@@ -1214,7 +1214,7 @@ describe("RoutineManager", () => {
         webhookName: "Hook 1",
         prompt: "Run 1",
         botId: "compiler-bot",
-        runOn: "maus",
+        runOn: "bot",
         deliveryId: "del-1",
         receivedAt: Date.now(),
       });
@@ -1223,7 +1223,7 @@ describe("RoutineManager", () => {
         webhookName: "Hook 2",
         prompt: "Run 2",
         botId: "compiler-bot",
-        runOn: "maus",
+        runOn: "bot",
         deliveryId: "del-2",
         receivedAt: Date.now(),
       });
@@ -1232,7 +1232,7 @@ describe("RoutineManager", () => {
         webhookName: "Hook 3",
         prompt: "Run Other",
         botId: "other-bot",
-        runOn: "maus",
+        runOn: "bot",
         deliveryId: "del-3",
         receivedAt: Date.now(),
       });
@@ -1256,7 +1256,7 @@ describe("RoutineManager", () => {
         webhookName: "Hook 1",
         prompt: "Run while snoozed",
         botId: "compiler-bot",
-        runOn: "maus",
+        runOn: "bot",
         deliveryId: "del-1",
         receivedAt: Date.now(),
       });
@@ -1268,7 +1268,7 @@ describe("RoutineManager", () => {
         triggerName: "Res 1",
         prompt: "Resource alert",
         botId: "compiler-bot",
-        runOn: "maus",
+        runOn: "bot",
         deliveryId: "del-2",
         receivedAt: Date.now(),
       });
@@ -1436,7 +1436,7 @@ describe("Sentry Crons check-ins", () => {
       webhookName: "Fixture hook",
       prompt: "handle delivery",
       botId: "maus-1",
-      runOn: "maus",
+      runOn: "bot",
       deliveryId: "delivery-1",
       receivedAt: 1,
     });

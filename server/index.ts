@@ -2936,7 +2936,7 @@ async function startTurn(
     /** Routines run in detached tasks; pin the destination for the whole turn. */
     threadId?: string;
     /** Cloud routines run the whole agent inside the bot's Box VM instead
-     * of merely mounting that VM's computer tools on the MAUS's provider. */
+     * of merely mounting that VM's computer tools on the bot's provider. */
     runOn?: RoutineRunOn;
     /** Lets the system prompt put externally supplied payloads behind an
      * explicit untrusted-data boundary without changing ordinary chat. */
@@ -3894,7 +3894,7 @@ function resolveAndSendRoutine(
 
 // Webhook definitions are independent from calendar schedules, but every
 // delivery joins the same RoutineManager queue. That keeps unattended work
-// ordered behind a busy MAUS and gives webhook runs the same durable receipts.
+// ordered behind a busy bot and gives webhook runs the same durable receipts.
 const webhooks = new WebhookManager({
   emit: broadcast,
   botState: (botId) => {

@@ -36,7 +36,7 @@ import {
   type InstanceInfo,
   type Message,
 } from "@/state/store";
-import { BotAvatar, MausAvatar } from "./Avatar";
+import { BotAvatar, BotMascot } from "./Avatar";
 import { ProviderMark } from "./ProviderIcons";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
@@ -414,7 +414,7 @@ function Bubble({
           to. */}
       {alignRight && !humanTyped && message.from?.name && (
         <div className="mb-1 flex items-center gap-1.5 pr-1">
-          <MausAvatar color={message.from.color} state="happy" size={16} animated={false} />
+          <BotMascot color={message.from.color} state="happy" size={16} animated={false} />
           <span className="text-[11px] font-medium text-ink-secondary">{message.from.name}</span>
         </div>
       )}
@@ -618,7 +618,7 @@ function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
           <div className="flex flex-col gap-2 rounded-xl border border-hairline/40 bg-panel p-3 shadow-sm min-w-[320px] max-w-[480px]">
              <div className="flex items-center justify-between">
                 <button onClick={() => setExpanded(false)} className="flex items-center gap-2 text-[13px] text-ink-secondary hover:text-ink">
-                  <MausAvatar color={comm.withColor} state="happy" size={16} />
+                  <BotMascot color={comm.withColor} state="happy" size={16} />
                   <span className="font-medium truncate" title={tool.name}>{tool.name}</span>
                   <ChevronDown size={13} />
                 </button>
@@ -644,7 +644,7 @@ function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
           title={`Expand message`}
           className="flex items-center gap-2 rounded-xl border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
-          <MausAvatar color={comm.withColor} state="happy" size={16} />
+          <BotMascot color={comm.withColor} state="happy" size={16} />
           <span className="max-w-[480px] truncate" title={tool.name}>{tool.name}</span>
           <ChevronRight size={13} />
         </button>
@@ -1522,7 +1522,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           )}
           <TurnPresence
             avatar={
-              <MausAvatar
+              <BotMascot
                 color={bot.color}
                 state={toolInFlight ? "working" : "thinking"}
                 size={36}

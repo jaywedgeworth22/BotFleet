@@ -25,7 +25,7 @@ import { stateForBot } from "@/lib/mascot";
 import { WebhooksPanel } from "@/components/WebhooksPanel";
 import { ResourceTriggersPanel } from "@/components/ResourceTriggersPanel";
 import { cn } from "@/lib/cn";
-import { MAUS_COLORS, type MausState } from "@/lib/mascot";
+import { BOT_COLORS, type BotState } from "@/lib/mascot";
 import type { Routine, RoutineInput, RoutineRunOn, RoutineRunStatus } from "@/lib/routines";
 import {
   CENTRAL_TIME_ZONE,
@@ -86,7 +86,7 @@ function canToggleRoutine(routine: Routine) {
   return routine.schedule.type === "daily" || routine.schedule.at > Date.now();
 }
 
-function statusState(status: RoutineRunStatus): MausState {
+function statusState(status: RoutineRunStatus): BotState {
   switch (status) {
     case "queued":
       return "drowsy";
@@ -133,7 +133,7 @@ function webhookPromptParts(prompt?: string) {
 
 function RoutineCard({ item, bot, compact, onOpen }: { item: CalendarItem; bot: Bot; compact: boolean; onOpen: () => void }) {
   const status = item.run?.status;
-  const color = MAUS_COLORS[bot.color];
+  const color = BOT_COLORS[bot.color];
   const title = item.routine?.name ?? item.run?.routineName ?? "Routine";
   const animated = status === "running" || status === "waiting";
   return (
@@ -271,7 +271,7 @@ export function RoutineEditor({
   const [name, setName] = useState(routine?.name ?? "");
   const [prompt, setPrompt] = useState(routine?.prompt ?? "");
   const [botId, setBotId] = useState(lockedBotId ?? routine?.botId ?? bots[0]?.id ?? "");
-  const [runOn, setRunOn] = useState<RoutineRunOn>(routine?.runOn ?? defaultRunOn ?? "maus");
+  const [runOn, setRunOn] = useState<RoutineRunOn>(routine?.runOn ?? defaultRunOn ?? "bot");
   const [kind, setKind] = useState<"once" | "daily">(routine?.schedule.type ?? "daily");
   const [at, setAt] = useState(
     toInputDateTime(routine?.schedule.type === "once" ? routine.schedule.at : nextHour()),
@@ -338,10 +338,10 @@ export function RoutineEditor({
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => setRunOn("maus")}
+                onClick={() => setRunOn("bot")}
                 className={cn(
                   "rounded-xl border p-3 text-left transition",
-                  runOn === "maus" ? "border-accent/70 bg-accent/10" : "border-hairline/50 bg-inset hover:bg-raised/60",
+                  runOn === "bot" ? "border-accent/70 bg-accent/10" : "border-hairline/50 bg-inset hover:bg-raised/60",
                 )}
               >
                 <div className="flex items-center gap-2 text-[13px] font-medium text-ink"><Laptop size={15} />This Computer</div>
@@ -461,7 +461,7 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-5 backdrop-blur-sm" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="w-full max-w-[520px] overflow-hidden rounded-2xl border border-hairline/60 bg-panel shadow-2xl">
-        <div className="relative overflow-hidden border-b border-hairline/40 px-5 py-5" style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${MAUS_COLORS[bot.color]} 28%, #111), #111)` }}>
+        <div className="relative overflow-hidden border-b border-hairline/40 px-5 py-5" style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${BOT_COLORS[bot.color]} 28%, #111), #111)` }}>
           <button onClick={onClose} aria-label="Close Routine Details" className="absolute right-3 top-3 rounded-lg p-2 text-white/60 hover:bg-white/10 hover:text-white"><X size={18} /></button>
           <div className="flex items-center gap-4 pr-10">
             <BotAvatar bot={bot} state={run ? statusState(run.status) : stateForBot(bot)} size={72} animated={run?.status === "running" || run?.status === "waiting"} label={bot.name} />

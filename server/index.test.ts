@@ -1719,7 +1719,7 @@ describe("harness HTTP API", () => {
           name: "Morning signals",
           agent: "scout",
           prompt: "Prepare the approved morning signal brief.",
-          runOn: "maus",
+          runOn: "bot",
           schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
           durationMinutes: 30,
           enabledAfterInstall: false,
@@ -3883,7 +3883,7 @@ describe("harness HTTP API", () => {
               time: "09:00",
               weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
             },
-            runOn: "maus",
+            runOn: "bot",
             durationMinutes: 30,
           },
         }),
@@ -3937,7 +3937,7 @@ describe("harness HTTP API", () => {
         name: `Legacy ${fakeNameSecret}`,
         prompt: `${fakeSecret}\n${"Review the archive. ".repeat(180)}`,
         botId: bot.id,
-        runOn: "maus",
+        runOn: "bot",
         enabled: false,
         schedule: { type: "daily", time: "10:00", weekdays: [1] },
       });
@@ -3949,7 +3949,7 @@ describe("harness HTTP API", () => {
           name: `Budget probe ${index}`,
           prompt: "x".repeat(2_000),
           botId: bot.id,
-          runOn: "maus",
+          runOn: "bot",
           enabled: false,
           schedule: { type: "daily", time: "10:00", weekdays: [1] },
         });
@@ -4157,7 +4157,7 @@ describe("harness HTTP API", () => {
       name: "Incoming build",
       prompt: "Review the incoming build event",
       botId: bots.body.bots[0].id,
-      runOn: "maus",
+      runOn: "bot",
     });
     expect(created.status).toBe(201);
     expect(created.body.ingress).toMatchObject({ available: true, baseUrl: WEBHOOK_BASE });

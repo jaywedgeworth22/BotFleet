@@ -351,7 +351,7 @@ export function resolveCloudBackend(
  * every cloud run made VPS routines die in vpsDriverError.  VPS keeps the
  * bot's own engine selection. */
 export function cloudRunUsesBoxAgent(
-  runOn: "maus" | "cloud" | undefined,
+  runOn: "bot" | "cloud" | undefined,
   botCloudBackend: "box" | "vps" | undefined,
   workspaceDefault?: "box" | "vps",
 ): boolean {

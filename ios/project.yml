@@ -114,8 +114,8 @@ targets:
     - path: Widgets
     - path: Shared
     - path: Assets.xcassets
-    - path: App/MausAvatar.swift
-    - path: App/MausFaceData.swift
+    - path: App/BotMascot.swift
+    - path: App/BotFaceData.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.botfleet.widgets

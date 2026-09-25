@@ -15,15 +15,16 @@ import {
 import { foldPrompts, gapEndsAt, withinGap } from "./trigger-gap.ts";
 import { routineFailureCode, routineFailurePhase, type RoutineOutcomeCode, type RoutineFailurePhase } from "../shared/routine-outcomes.ts";
 import { canonicalTimeZone, nextZonedOccurrence } from "../shared/time-zone.ts";
+import { normalizeRunOn, type RoutineRunOn } from "../shared/run-on.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
   | { type: "daily"; time: string; weekdays: number[]; timeZone?: string };
 
-/** `cloud` runs the agent itself inside the bot's Box VM. `maus` keeps
- * using the provider selected on the MAUS and only borrows its configured
- * computer tools, if any. */
-export type RoutineRunOn = "maus" | "cloud";
+/** `cloud` runs the agent itself inside the bot's Box VM. `bot` keeps
+ * using the provider selected on this BotFleet setup and only borrows its
+ * configured computer tools, if any. */
+export type { RoutineRunOn } from "../shared/run-on.ts";
 
 export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "resource";
 
@@ -320,8 +321,10 @@ function sanitizeInput(input: RoutineInput): Omit<Routine, "id" | "createdAt" | 
   if (!name) throw new Error("Give the routine a name");
   if (!prompt) throw new Error("Tell the bot what to do");
   if (!botId) throw new Error("Choose a bot");
-  const runOn = input.runOn ?? "maus";
-  if (runOn !== "maus" && runOn !== "cloud") throw new Error("Choose where this routine runs");
+  const runOn = normalizeRunOn(input.runOn);
+  if (input.runOn != null && input.runOn !== "bot" && input.runOn !== "cloud" && input.runOn !== "maus") {
+    throw new Error("Choose where this routine runs");
+  }
   const schedule = input.schedule.type === "daily" && input.scheduleTimeZoneSource === "host"
     ? { type: "daily" as const, time: input.schedule.time, weekdays: input.schedule.weekdays }
     : input.schedule;
@@ -363,14 +366,21 @@ export class RoutineManager {
     this.options = options;
     this.file = options.file ?? join(DATA_DIR, "routines.json");
     this.now = options.now ?? Date.now;
+    let runOnMigrated = false;
     try {
       const disk = JSON.parse(readFileSync(this.file, "utf8")) as Partial<RoutineFile>;
-      this.routines = Array.isArray(disk.routines)
-        ? disk.routines.map((routine) => ({ ...routine, runOn: routine.runOn ?? "maus" }))
-        : [];
-      this.runs = Array.isArray(disk.runs)
-        ? disk.runs.map((run) => ({ ...run, runOn: run.runOn ?? "maus" }))
-        : [];
+      const rawRoutines = Array.isArray(disk.routines) ? disk.routines : [];
+      const rawRuns = Array.isArray(disk.runs) ? disk.runs : [];
+      this.routines = rawRoutines.map((routine) => {
+        const runOn = normalizeRunOn(routine.runOn);
+        if ((routine as { runOn?: unknown }).runOn !== runOn) runOnMigrated = true;
+        return { ...routine, runOn };
+      });
+      this.runs = rawRuns.map((run) => {
+        const runOn = normalizeRunOn(run.runOn);
+        if ((run as { runOn?: unknown }).runOn !== runOn) runOnMigrated = true;
+        return { ...run, runOn };
+      });
       this.routineRequestReceipts = Array.isArray(disk.routineRequestReceipts)
         ? disk.routineRequestReceipts.filter((receipt): receipt is RoutineRequestReceipt =>
             typeof receipt?.requestId === "string" &&
@@ -401,6 +411,7 @@ export class RoutineManager {
       this.runs = [];
       this.routineRequestReceipts = [];
     }
+    if (runOnMigrated) this.save();
     // A local process cannot still own these turns after a full restart.
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
@@ -504,7 +515,7 @@ export class RoutineManager {
         run.finishedAt = this.now();
         this.emitRun(run);
         if (run.threadId) {
-          await this.options.interruptTurn?.(run.botId, run.threadId, run.runOn ?? "maus").catch(() => {});
+          await this.options.interruptTurn?.(run.botId, run.threadId, normalizeRunOn(run.runOn)).catch(() => {});
         }
         cancelled.push({ ...run });
       }
@@ -705,7 +716,7 @@ export class RoutineManager {
       run.finishedAt = this.now();
       run.error = "The assigned bot was deleted";
       this.emitRun(run);
-      if (run.threadId) void this.options.interruptTurn?.(run.botId, run.threadId, run.runOn ?? "maus").catch(() => {});
+      if (run.threadId) void this.options.interruptTurn?.(run.botId, run.threadId, normalizeRunOn(run.runOn)).catch(() => {});
       changed = true;
     }
     if (changed) this.save();
@@ -746,7 +757,7 @@ export class RoutineManager {
     receivedAt: number;
   }): RoutineRun {
     if (this.options.botState(input.botId) === "missing") {
-      throw Object.assign(new Error("The assigned MAUS no longer exists"), { status: 410 });
+      throw Object.assign(new Error("The assigned bot no longer exists"), { status: 410 });
     }
     const snoozed = this.isBotSnoozed(input.botId);
     const run: RoutineRun = {
@@ -788,7 +799,7 @@ export class RoutineManager {
     receivedAt: number;
   }): RoutineRun {
     if (this.options.botState(input.botId) === "missing") {
-      throw Object.assign(new Error("The assigned MAUS no longer exists"), { status: 410 });
+      throw Object.assign(new Error("The assigned bot no longer exists"), { status: 410 });
     }
     const snoozed = this.isBotSnoozed(input.botId);
     const run: RoutineRun = {
@@ -850,7 +861,7 @@ export class RoutineManager {
     // The later turn.completed cannot close the check-in: handleRuntimeEvent
     // only matches running/waiting runs, and this one is now cancelled.
     if (run.sentryCheckInId) this.options.checkInFinish?.(run, run.sentryCheckInId, false);
-    if (run.threadId) await this.options.interruptTurn?.(run.botId, run.threadId, run.runOn ?? "maus").catch(() => {});
+    if (run.threadId) await this.options.interruptTurn?.(run.botId, run.threadId, normalizeRunOn(run.runOn)).catch(() => {});
     queueMicrotask(() => void this.tick());
     return { ...run };
   }
@@ -1100,7 +1111,7 @@ export class RoutineManager {
             run.botId,
             threadId,
             prompt,
-            run.runOn ?? "maus",
+            normalizeRunOn(run.runOn),
             scheduledTriggerSource,
             (message) => this.failThread(threadId, message, "dispatch_failed"),
           );
@@ -1231,7 +1242,7 @@ export class RoutineManager {
       prompt: routine.prompt,
       durationMinutes: routine.durationMinutes,
       botId: routine.botId,
-      runOn: routine.runOn ?? "maus",
+      runOn: normalizeRunOn(routine.runOn),
       scheduledFor,
       status: "queued",
       manual,

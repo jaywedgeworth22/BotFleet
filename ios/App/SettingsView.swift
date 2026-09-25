@@ -638,10 +638,10 @@ private struct ComputerSettingsRow: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(MausPalette.color("blue").opacity(0.14))
+                    .fill(BotPalette.color("blue").opacity(0.14))
                     .frame(width: 38, height: 38)
                 Image(systemName: "laptopcomputer")
-                    .foregroundStyle(MausPalette.color("blue"))
+                    .foregroundStyle(BotPalette.color("blue"))
             }
             .accessibilityHidden(true)
 

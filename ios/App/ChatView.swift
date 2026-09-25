@@ -299,7 +299,7 @@ struct ChatView: View {
                             StreamingBubble(text: nil, reasoning: thinking, color: current.color)
                                 .id(Self.liveBubbleId)
                         } else if current.busy {
-                            TypingIndicatorView(tintColor: MausPalette.color(current.color))
+                            TypingIndicatorView(tintColor: BotPalette.color(current.color))
                                 .id(Self.liveBubbleId)
                                 .accessibilityLabel("\(current.name) is working")
                         }
@@ -387,8 +387,8 @@ struct ChatView: View {
                         ChatAvatarView(
                             chat: current,
                             size: 36,
-                            state: MausState.forChat(current, in: session.state),
-                            animated: MausState.forChat(current, in: session.state).showsActivity
+                            state: BotState.forChat(current, in: session.state),
+                            animated: BotState.forChat(current, in: session.state).showsActivity
                         )
                         .overlay(alignment: .bottomTrailing) {
                             if let currentDriverKind {
@@ -701,7 +701,7 @@ struct ChatView: View {
                     commands: current.isBot
                         ? CommandSkillHUDView.defaultCommands
                         : CommandSkillHUDView.defaultCommands.filter { $0.id != "computer" && $0.id != "tasks" },
-                    accentColor: MausPalette.color(current.color)
+                    accentColor: BotPalette.color(current.color)
                 ) { command in
                     switch command.id {
                     case "computer":
@@ -734,7 +734,7 @@ struct ChatView: View {
                 .padding(.horizontal, 4)
                 .transition(.opacity)
             } else if draft.isEmpty && !hasPendingApproval {
-                PredictiveActionChipsView(accentColor: MausPalette.color(current.color)) { chip in
+                PredictiveActionChipsView(accentColor: BotPalette.color(current.color)) { chip in
                     draft = chip.prompt
                     composerFocused = true
                 }
@@ -1391,7 +1391,7 @@ struct TextBubble: View {
                 if let speaker, !mine {
                     Text(speaker.name)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(MausPalette.color(speaker.color))
+                        .foregroundStyle(BotPalette.color(speaker.color))
                 }
                 // Bots get markdown, you do not — the same split the desktop
                 // makes. Markdown you did not intend is worse than markdown
@@ -1626,7 +1626,7 @@ struct ActivityRunView: View {
     }
 
     private var tint: Color {
-        MausPalette.color(chat.color)
+        BotPalette.color(chat.color)
     }
 
     var body: some View {
@@ -1750,7 +1750,7 @@ struct CardView: View {
     /// choice above so the two cannot drift apart.
     private static func isRefusal(_ option: String) -> Bool { OptionCard.isRefusal(option) }
 
-    private var tint: Color { MausPalette.color(chat.color) }
+    private var tint: Color { BotPalette.color(chat.color) }
 
     var body: some View {
         if let card = message.card {
@@ -1915,7 +1915,7 @@ struct StreamingBubble: View {
                     AgentThoughtChamberView(
                         reasoning: String(reasoning.suffix(2_000)),
                         botName: "Bot",
-                        mascotColor: MausPalette.color(color),
+                        mascotColor: BotPalette.color(color),
                         isStreaming: true
                     )
                 }
