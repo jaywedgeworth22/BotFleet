@@ -10,6 +10,7 @@ import {
   deleteThread,
   insertMessage,
   readThread,
+  readThreadTail,
   searchMessages,
   setActiveLeaf,
   updateMessage,
@@ -141,6 +142,36 @@ describe("message-db", () => {
 
     // room attribution rides along
     expect(searchMessages("spoke")[0].from).toBe("Scout");
+  });
+
+  it("readThreadTail returns only the newest rows and reports hasMore", () => {
+    for (let i = 0; i < 5; i++) insertMessage("tail1", msg(`m${i}`, `text ${i}`));
+    const page = readThreadTail("tail1", legacy("tail1"), 2);
+    expect(page.messages.map((m) => m.id)).toEqual(["m3", "m4"]);
+    expect(page.hasMore).toBe(true);
+    // the full read agrees on order — the tail is really the newest end
+    expect(readThread("tail1", legacy("tail1")).messages.map((m) => m.id)).toEqual(["m0", "m1", "m2", "m3", "m4"]);
+  });
+
+  it("readThreadTail reports hasMore:false when the whole thread fits in the page", () => {
+    insertMessage("tail2", msg("a", "one"));
+    insertMessage("tail2", msg("b", "two"));
+    setActiveLeaf("tail2", "b");
+    const page = readThreadTail("tail2", legacy("tail2"), 5);
+    expect(page.messages.map((m) => m.id)).toEqual(["a", "b"]);
+    expect(page.hasMore).toBe(false);
+    expect(page.activeLeafId).toBe("b");
+  });
+
+  it("readThreadTail falls back to a full legacy import on first touch", () => {
+    writeFileSync(legacy("tail3"), JSON.stringify([msg("a", "one"), msg("b", "two"), msg("c", "three")]));
+    // a never-before-touched thread has no sqlite rows to bound a SQL LIMIT
+    // read over, so the one-time legacy import returns the whole thread —
+    // the caller (Store.messagesTail) decides whether to slice further.
+    const page = readThreadTail("tail3", legacy("tail3"), 2);
+    expect(page.messages.map((m) => m.id)).toEqual(["a", "b", "c"]);
+    expect(page.hasMore).toBeUndefined();
+    expect(existsSync(`${legacy("tail3")}.imported`)).toBe(true);
   });
 
   it("Store round-trips branching through the DB across a restart", () => {

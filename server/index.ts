@@ -19,6 +19,7 @@ import { extname, join } from "node:path";
 
 import { z } from "zod";
 import { ScreenPollers } from "./screen-poller.ts";
+import { ReplayBuffer, SLOW_CLIENT_BYTE_LIMIT, wants, writeToClient, type SseClient } from "./sse-broadcast.ts";
 import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import { DEFAULT_ROOM_TERMINOLOGY, resolveRoomLabels } from "../shared/terminology.ts";
 import {
@@ -1166,9 +1167,20 @@ function slimMessage(message: Message): Message | Record<string, unknown> {
 
 /** `limit === undefined` is the original, unpaginated shape. */
 function messagePage(threadId: string, limit: number | undefined, before?: string | null) {
+  if (limit === undefined) return { messages: store.messagesFor(threadId) };
+  // The common case — GET /api/bots hydrating every bot and group's newest
+  // page at once — never needs the rest of the transcript. Read just this
+  // page at the SQL boundary instead of materializing and caching the
+  // whole thread, which was pulling every thread in the database into the
+  // heap for the life of the process (HS12/HS21). Scrollback past a known
+  // message still needs the full, already-ordered array to find `before`'s
+  // index, so that path is unchanged.
+  if (!before) {
+    const tail = store.messagesTail(threadId, limit);
+    return { messages: tail.messages.map(slimMessage), hasMore: tail.hasMore };
+  }
   const all = store.messagesFor(threadId);
-  if (limit === undefined) return { messages: all };
-  const end = before ? all.findIndex((msg) => msg.id === before) : -1;
+  const end = all.findIndex((msg) => msg.id === before);
   const stop = end === -1 ? all.length : end;
   const start = Math.max(0, stop - limit);
   return { messages: all.slice(start, stop).map(slimMessage), hasMore: start > 0 };
@@ -1187,21 +1199,17 @@ function messageWindow(threadId: string, messageId: string, limit: number) {
 }
 
 // ── SSE fan-out to clients ─────────────────────────────────────────────
-/** One connected client, and what it asked to be sent. */
-interface SseClient {
-  res: ServerResponse;
-  /** Live screen frames carry a base64 desktop capture every few seconds
-   * while a bot works. A client that isn't showing the computer panel —
-   * a phone on cellular, most of all — should not pay for them. */
-  screens: boolean;
-  screenBotIds: Set<string> | null;
-}
+// SseClient, wants(), writeToClient(), and ReplayBuffer live in
+// sse-broadcast.ts so the backpressure and byte-cap-eviction paths — hard
+// to exercise through a real socket without genuinely stalling a client —
+// get a fast, deterministic unit test (HS16, HS17).
 const sseClients = new Set<SseClient>();
 
-/** Every frame is numbered, and the last few hundred are kept, so a client
- * whose connection dropped can ask for what it missed instead of
- * re-downloading every transcript. The desktop reconnects in milliseconds
- * and barely needs this; a phone reconnects every time it unlocks.
+/** Every frame is numbered, and the last few hundred (or 4 MB, whichever
+ * is smaller) are kept, so a client whose connection dropped can ask for
+ * what it missed instead of re-downloading every transcript. The desktop
+ * reconnects in milliseconds and barely needs this; a phone reconnects
+ * every time it unlocks.
  *
  * The stream id makes the cursor safe across restarts: sequence numbers
  * begin again at 1 on boot, so a cursor from a previous run must be
@@ -1210,11 +1218,9 @@ const sseClients = new Set<SseClient>();
  * correctly through its own Last-Event-ID with no client code at all. */
 const STREAM_ID = randomUUID().slice(0, 8);
 const REPLAY_MAX = 500;
+const REPLAY_MAX_BYTES = 4 * 1024 * 1024; // 4 MB — see ReplayBuffer.push
 let lastSeq = 0;
-const replayBuffer: Array<{ seq: number; kind: string; frame: string | null }> = [];
-
-/** Screen frames are the only kind a client can decline. */
-const wants = (client: SseClient, kind: string) => kind !== "screen" || client.screens;
+const replayBuffer = new ReplayBuffer(REPLAY_MAX, REPLAY_MAX_BYTES);
 
 /** `<streamId>:<seq>` — opaque to clients, and the only thing they need to
  * remember to resume. Returns null when it belongs to another run. */
@@ -1234,14 +1240,15 @@ function broadcast(payload: Record<string, unknown>) {
   // Live desktop captures can each be hundreds of kilobytes and become stale
   // as soon as the next one arrives. Keep their sequence slots so resume-gap
   // detection stays honest, but never retain their base64 payloads.
-  replayBuffer.push({ seq, kind, frame: kind === "screen" ? null : frame });
-  if (replayBuffer.length > REPLAY_MAX) replayBuffer.shift();
+  replayBuffer.push(seq, kind, frame);
+  const botId = String(payload.botId);
   for (const client of [...sseClients]) {
-    if (!wants(client, kind)) continue;
-    if (kind === "screen" && client.screenBotIds && !client.screenBotIds.has(String(payload.botId))) continue;
-    try {
-      client.res.write(frame);
-    } catch {
+    const result = writeToClient(client, frame, kind, botId);
+    if (result === "slow-end") {
+      console.warn(`[sse] client exceeded ${SLOW_CLIENT_BYTE_LIMIT} buffered bytes; disconnecting so it reconnects and resumes from its cursor`);
+      sseClients.delete(client);
+      screenPollers.viewerChanged();
+    } else if (result === "error") {
       sseClients.delete(client);
       screenPollers.viewerChanged();
     }
@@ -7216,11 +7223,18 @@ const server = createServer(async (req, res) => {
         res,
         screens: url.searchParams.get("screens") === "on",
         screenBotIds: url.searchParams.has("botId") ? new Set(url.searchParams.getAll("botId")) : null,
+        slow: false,
       };
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
         connection: "keep-alive",
+      });
+      // Backpressure clears once the socket has drained, whether it was
+      // this client's own slow write or an unrelated burst that filled the
+      // buffer (HS16).
+      res.on("drain", () => {
+        client.slow = false;
       });
 
       // Resume, if the client offered a cursor we can honour. `?since=` is
@@ -7233,7 +7247,7 @@ const server = createServer(async (req, res) => {
       const resumed =
         since !== null &&
         since <= lastSeq &&
-        (replayBuffer.length === 0 ? since === lastSeq : replayBuffer[0].seq <= since + 1);
+        (replayBuffer.entries.length === 0 ? since === lastSeq : replayBuffer.entries[0].seq <= since + 1);
       res.write(
         `data: ${JSON.stringify({
           kind: "hello",
@@ -7245,7 +7259,7 @@ const server = createServer(async (req, res) => {
         })}\n\n`,
       );
       if (resumed) {
-        for (const buffered of replayBuffer) {
+        for (const buffered of replayBuffer.entries) {
           if (buffered.seq > since && buffered.frame && wants(client, buffered.kind)) res.write(buffered.frame);
         }
       }
