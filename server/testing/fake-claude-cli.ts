@@ -118,9 +118,17 @@ let turnRunning = false;
 let steered: string[] = [];
 let stdinEnded = false;
 
+// The harness delivers out-of-band context (the volatile half of the system
+// prompt — drivers/prompt-split.ts) as a leading <system-reminder> block
+// inside the user turn.  The real CLI reads that block as context, not as
+// the message, so the echo below replies to the text after it: a test that
+// asserts on the reply sees the user's words, never the harness's note.
+const stripSystemReminder = (text: string): string =>
+  text.replace(/^<system-reminder>\n[\s\S]*?\n<\/system-reminder>(?:\n\n|$)/, "");
+
 const promptText = (prompt: JsonValue): string => {
   const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
-  return typeof m?.content === "string" ? m.content : "";
+  return typeof m?.content === "string" ? stripSystemReminder(m.content) : "";
 };
 
 const finishIfDone = () => {
