@@ -99,7 +99,7 @@ const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 // inherit it from electron-builder's appId; set it here so unpackaged runs
 // still match.
 if (process.platform === "win32") {
-  app.setAppUserModelId("com.botfleet.app");
+  app.setAppUserModelId("app.botfleet.macos");
 }
 let desktopViewerWindow = null;
 let desktopViewerOwner = null;

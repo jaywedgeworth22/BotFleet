@@ -227,7 +227,7 @@ final class Session: ObservableObject {
     /// paired client can be rebuilt after unlock.
     private var pendingNotification: NotificationTarget?
 
-    static let connectionKey = "companion.connection"
+    static let connectionKey = CompanionConnectionStore.connectionKey
 
     // MARK: - Pairing
 
@@ -304,9 +304,16 @@ final class Session: ObservableObject {
     /// only the first should ever send someone back to the pairing screen.
     private func restore() {
         restorePending = false
-        guard let data = UserDefaults.standard.data(forKey: Self.connectionKey),
-              let saved = try? JSONDecoder().decode(Connection.self, from: data)
+        guard let loaded = CompanionConnectionStore.loadConnectionData(),
+              let saved = try? JSONDecoder().decode(Connection.self, from: loaded.data)
         else { return }
+        // Same-container dual-compat: a standard-only blob is promoted into
+        // the app-group suite so a later sibling install (or relaunch) can
+        // import it once the legacy export path also writes here.
+        CompanionConnectionStore.promoteStandardToSharedIfNeeded(
+            source: loaded.source,
+            data: loaded.data
+        )
 
         let stored: String?
         do {
@@ -393,9 +400,8 @@ final class Session: ObservableObject {
                 forKey: CompanionOnboardingPreferences.pendingNotificationOnboardingKey
             )
         } saveConnection: {
-            UserDefaults.standard.set(
-                try? JSONEncoder().encode(stored),
-                forKey: Self.connectionKey
+            CompanionConnectionStore.saveConnectionData(
+                try? JSONEncoder().encode(stored)
             )
         }
 
@@ -472,7 +478,7 @@ final class Session: ObservableObject {
             after: .signedOut
         )
         if let id = connection?.id { Keychain.remove(id) }
-        UserDefaults.standard.removeObject(forKey: Self.connectionKey)
+        CompanionConnectionStore.saveConnectionData(nil)
         UserDefaults.standard.removeObject(
             forKey: CompanionOnboardingPreferences.pendingNotificationOnboardingKey
         )
@@ -799,7 +805,7 @@ final class Session: ObservableObject {
               updated.activeEndpoint?.url != winner.url else { return }
         updated.promote(winner)
         connection = updated
-        UserDefaults.standard.set(try? JSONEncoder().encode(updated), forKey: Self.connectionKey)
+        CompanionConnectionStore.saveConnectionData(try? JSONEncoder().encode(updated))
     }
 
     /// Learn routes enabled after this phone originally paired. The endpoint
@@ -823,10 +829,7 @@ final class Session: ObservableObject {
 
                 updated.reconcile(metadata)
                 self.connection = updated
-                UserDefaults.standard.set(
-                    try? JSONEncoder().encode(updated),
-                    forKey: Self.connectionKey
-                )
+                CompanionConnectionStore.saveConnectionData(try? JSONEncoder().encode(updated))
 
                 // Keep the currently live route first until this stream ends.
                 // CandidateRotation applies the same no-downgrade policy used
@@ -857,7 +860,7 @@ final class Session: ObservableObject {
         ) else { return false }
         updated.resetRoutePolicy(selecting: endpoint)
         connection = updated
-        UserDefaults.standard.set(try? JSONEncoder().encode(updated), forKey: Self.connectionKey)
+        CompanionConnectionStore.saveConnectionData(try? JSONEncoder().encode(updated))
         rotation = CandidateRotation(endpoints: updated.orderedEndpoints)
         if let token {
             client = CompanionClient(connection: updated.dialing(endpoint), token: token)
@@ -2373,7 +2376,7 @@ final class Session: ObservableObject {
 
     func consumeNotificationChat() { notificationChat = nil }
 
-    /// Lock-screen Live Activity (and any `botfleet://chat` URL) lands on
+    /// Lock-screen Live Activity (and any `botfleet-ios://chat` / legacy `botfleet://chat` URL) lands on
     /// the named bot, switching task when the thread is not the active one.
     func openChat(botId: String, threadId: String) async {
         guard let target = NotificationTarget(botId: botId, threadId: threadId) else { return }
