@@ -15,6 +15,14 @@ struct ProviderMarkView: View {
     var size: CGFloat = 20
 
     static func resolvedDriverKind(for driverKind: String, model: String?) -> String {
+        // Antigravity runs Gemini-family and Claude-family models, but the
+        
+        // provider is still Antigravity. Keep the driver identity for both
+        
+        // its mark and VoiceOver label instead of renaming it from model text.
+        
+        if driverKind == "antigravity" || driverKind == "antigravityAgent" { return driverKind }
+        
         guard let model = model?.lowercased() else { return driverKind }
         if model.contains("minimax") { return "minimax" }
         if model.contains("qwen") { return "qwenAgent" }
@@ -22,7 +30,9 @@ struct ProviderMarkView: View {
         if model.contains("claude") { return "claude" }
         if model.contains("deepseek") { return "deepseek" }
         if model.contains("gpt") || model.contains("o1") || model.contains("o3") || model.contains("o4") { return "openai" }
-        if model.contains("gemini") || model.contains("antigravity") { return "gemini" }
+        if model.contains("antigravity") { return "antigravity" }
+        
+        if model.contains("gemini") { return "gemini" }
         return driverKind
     }
 
