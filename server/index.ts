@@ -252,6 +252,8 @@ import {
   type TaskRecord,
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
+import { speechUsageTotals } from "./tts/usage.ts";
+import { VOICE_SUMMARY_PROMPT } from "../shared/voice-summary.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { fitListToBudget, serializedPreview } from "./serialized-preview.ts";
 import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
@@ -3535,6 +3537,7 @@ async function startTurn(
           : undefined,
         system:
           persona +
+          (cfg.tts?.optimizedSummary ? VOICE_SUMMARY_PROMPT : "") +
           computerSystemPrompt(granted_mounts, {
             boxAgent: instance.driverKind === "boxAgent",
             hostPlatform: process.platform,
@@ -4998,6 +5001,7 @@ async function runGroupMemberTurn(
       : undefined;
   const roomSystem =
     system +
+    (cfg.tts?.optimizedSummary ? VOICE_SUMMARY_PROMPT : "") +
     // Same sentence the 1:1 lane sends, in the same position: a computer the
     // bot is never told about is one it reaches for by accident.
     computerSystemPrompt(turnComputers.mounts, {
@@ -6509,7 +6513,7 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(data);
 }
 
-function readBody(req: IncomingMessage): Promise<any> {
+function readBody(req: IncomingMessage, maxBytes = 1_000_000): Promise<any> {
   return new Promise((resolve, reject) => {
     let data = "";
     let bytes = 0;
@@ -6523,7 +6527,7 @@ function readBody(req: IncomingMessage): Promise<any> {
     req.on("data", (c) => {
       if (done) return;
       bytes += typeof c === "string" ? Buffer.byteLength(c) : c.length;
-      if (bytes > 1_000_000) {
+      if (bytes > maxBytes) {
         // Keep draining the socket, but stop retaining attacker-controlled
         // bytes. Destroying the request here prevents the caller from
         // receiving the useful 413 response.
@@ -10931,12 +10935,11 @@ const server = createServer(async (req, res) => {
         const check = await box.verifyToken(newBoxToken.trim());
         if (!check.ok) return json(res, 400, { error: check.message });
       }
-      // same rule for a voice key — and check it against the provider the
-      // patch SELECTS, not the one already saved, or pasting a Cartesia key
-      // while switching from MiniMax validates against the wrong service
+      // Check the new key against the effective selected provider, including
+      // the existing choice when the patch changes only the key.
       const newTts = patch.tts;
       if (newTts?.key?.trim()) {
-        const check = await tts.verifyKey(newTts.key.trim(), { tts: newTts });
+        const check = await tts.verifyKey(newTts.key.trim(), { tts: { ...cfg.tts, ...newTts } });
         if (!check.ok) return json(res, 400, { error: check.message });
       }
       // The secret store is canonical for the names it holds, so a save of one
@@ -11175,6 +11178,9 @@ const server = createServer(async (req, res) => {
     // the same reason approvalKey does — it is the piece most likely to be
     // tuned against real transcripts, and it belongs next to the transform
     // that produced it.
+    if (method === "GET" && path === "/api/tts/usage") {
+      return json(res, 200, { totals: speechUsageTotals(), unit: "characters", note: "Speech providers bill by characters; these are not model tokens." });
+    }
     if (method === "POST" && path === "/api/tts/prepare") {
       const body = await readBody(req);
       return json(res, 200, {
@@ -11219,21 +11225,23 @@ const server = createServer(async (req, res) => {
       }
     }
     // ── voice clone (MiniMax only) ────────────────────────────────────
-    // Requires the owner nonce so only the operator can clone voices.
+    // Uses the same authenticated workspace-settings boundary as key changes.
+    // Never treat an arbitrary nonce as proof of ownership.
     if (method === "POST" && path === "/api/tts/voice-clone") {
-      const body = await readBody(req);
-      const nonce = typeof body?.nonce === "string" ? body.nonce : "";
-      if (!harnessOwnerProof(harnessOwner, nonce)) {
-        return json(res, 403, { error: "Operator nonce required to clone a voice" });
-      }
+      // The clone clip is up to 20 MB; base64 expands it to ~27 MB.
+      // Only this route accepts the larger body, after the normal host/origin gate.
+      const body = await readBody(req, 28_000_000);
       const voiceId = typeof body?.voiceId === "string" ? body.voiceId : "";
-      if (voiceId.length < 8) {
-        return json(res, 400, { error: "voice_id must be at least 8 characters" });
+      if (!/^[A-Za-z][A-Za-z0-9_-]{6,62}[A-Za-z0-9]$/.test(voiceId)) {
+        return json(res, 400, { error: "Voice ID must be 8–64 characters, start with a letter, and contain only letters, numbers, - or _ (not at the end)" });
       }
       const audioFile = body?.audioFile as string | undefined; // base64
+      const filename = typeof body?.filename === "string" ? body.filename : "";
       if (!audioFile) return json(res, 400, { error: "audioFile required" });
+      if (!/\.(mp3|m4a|wav)$/i.test(filename)) return json(res, 400, { error: "Use MP3, M4A, or WAV audio" });
+      if (audioFile.length > 28_000_000) return json(res, 413, { error: "Audio clip must be 20 MB or less" });
       try {
-        const result = await tts.cloneVoice(cfg, { voiceId, audioBase64: audioFile });
+        const result = await tts.cloneVoice(cfg, { voiceId, audioBase64: audioFile, filename });
         return json(res, 200, { voiceId: result.id });
       } catch (e) {
         return json(res, 502, { error: e instanceof Error ? e.message : String(e) });
