@@ -199,6 +199,14 @@ describe("ACP decodeConfig", () => {
     expect("initTimeoutMs" in GrokAgentDriver.decodeConfig({})).toBe(false);
   });
 
+  it("accepts only bounded prompt idle deadlines", () => {
+    expect(GrokAgentDriver.decodeConfig({ promptIdleMs: 1_000 }).promptIdleMs).toBe(1_000);
+    expect(GrokAgentDriver.decodeConfig({ promptIdleMs: 20 * 60_000 }).promptIdleMs).toBe(20 * 60_000);
+    expect(GrokAgentDriver.decodeConfig({ promptIdleMs: 999 }).promptIdleMs).toBeUndefined();
+    expect(GrokAgentDriver.decodeConfig({ promptIdleMs: 1_000.5 }).promptIdleMs).toBeUndefined();
+    expect(GrokAgentDriver.decodeConfig({ promptIdleMs: 20 * 60_000 + 1 }).promptIdleMs).toBeUndefined();
+  });
+
   it("advertises local CUA and qdrant in full-auto mode, because a host turn runs brokered", async () => {
     const fullAuto = await GrokAgentDriver.create({
       instanceId: "grok-full-auto",
@@ -257,6 +265,8 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_STATE;
     delete process.env.FAKE_ACP_RETRY_SCALE;
     delete process.env.FAKE_ACP_INIT_DELAY_MS;
+    delete process.env.FAKE_ACP_DRIP_MS;
+    delete process.env.FAKE_ACP_DRIP_COUNT;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -395,6 +405,69 @@ describe("ACP turns (fake CLI)", () => {
         // expected once the deadline cleanup has reaped it
       }
     }
+  });
+
+  it("keeps a turn alive past the idle window as long as it keeps streaming", async () => {
+    process.env.FAKE_ACP_DRIP_MS = "30";
+    process.env.FAKE_ACP_DRIP_COUNT = "8";
+    // each gap (30 ms) is well under the idle window (150 ms), but the
+    // whole turn (8 * 30 ms = 240 ms) runs well past it — proving renewal,
+    // not just a generous deadline
+    await create(GrokAgentDriver, "drip", { promptIdleMs: 150 });
+    await instance.adapter.sendTurn({ threadId: "t-idle-drip", text: "keep talking" });
+
+    const done = await recorder.until((event) => event.type === "turn.completed", 3_000);
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder.events.filter((event) => event.type === "content.delta")).toHaveLength(8);
+    expect(recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
+  });
+
+  it("settles a fully silent prompt as a stall once the idle window elapses", async () => {
+    // promptTimeoutMs stays at its real 18-minute default — only the idle
+    // guard is short here, so this proves the idle path fires on its own,
+    // independent of the hard ceiling.
+    await create(GrokAgentDriver, "cancel-exits", { promptIdleMs: 150 });
+    await instance.adapter.sendTurn({ threadId: "t-idle-stall", text: "never finishes" });
+
+    const done = await recorder.until((event) => event.type === "turn.completed", 3_000);
+    expect(done).toMatchObject({ ok: false, stopReason: "prompt_stall" });
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((event) => event.type === "runtime.error")).toHaveLength(1);
+    expect(recorder.events.find((event) => event.type === "runtime.error")?.message).toMatch(/no output for/i);
+    expect(instance.adapter.hasSession("t-idle-stall")).toBe(false);
+  });
+
+  it("still enforces the hard ceiling even while the agent keeps streaming", async () => {
+    process.env.FAKE_ACP_DRIP_MS = "20";
+    // no FAKE_ACP_DRIP_COUNT: drips forever, so the idle guard (5 s, never
+    // reached in this test) never has a reason to fire — only the 150 ms
+    // hard ceiling can end this turn.
+    await create(GrokAgentDriver, "drip", { promptIdleMs: 5_000, promptTimeoutMs: 150 });
+    await instance.adapter.sendTurn({ threadId: "t-hard-ceiling-drip", text: "keep talking forever" });
+
+    const done = await recorder.until((event) => event.type === "turn.completed", 3_000);
+    expect(done).toMatchObject({ ok: false, stopReason: "prompt_timeout" });
+    expect(recorder.events.some((event) => event.type === "content.delta")).toBe(true);
+    expect(instance.adapter.hasSession("t-hard-ceiling-drip")).toBe(false);
+  });
+
+  it("does not expire the idle guard while a person is answering a permission ask", async () => {
+    await create(GrokAgentDriver, "permission", { promptIdleMs: 150 });
+    await instance.adapter.sendTurn({ threadId: "t-idle-permission", text: "go" });
+
+    const opened = await recorder.until((event) => event.type === "request.opened");
+    // sit on the unanswered ask for several idle windows — waiting for a
+    // person must not read as a wedged agent
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(recorder.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+    await instance.adapter.respondToRequest("t-idle-permission", (opened as any).requestId, { behavior: "allow" });
+    const done = await recorder.until((event) => event.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    // the answer resumes the agent — confirm the idle guard does not fire
+    // on some stale deadline left over from before the ask was resolved
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
   });
 
   it("emits each assistant text block before the tool that follows it", async () => {
