@@ -645,6 +645,50 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(2);
   });
 
+  it("keeps the warm process across a roster whose live state moved, replaces it when membership did", async () => {
+    // DR1.  `turn.system` is passed as --append-system-prompt and hashed into
+    // `argsKey`, the spawn contract that decides whether the live process may
+    // take the next turn.  The Chief of Staff roster used to interpolate each
+    // teammate's `busy` flag into that string, so an unrelated peer starting a
+    // turn tore the Chief's CLI down and respawned it with --resume.  The
+    // roster is membership-only now; this pins the driver half of the deal —
+    // an identical system prompt reuses, a changed one does not.
+    await create();
+    const dump = join(scratch, "roster-dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const roster = ["Current Work section team:", "- Quill — Writer", "- Patch — Engineer"].join("\n");
+
+    await instance.adapter.sendTurn({ threadId: "t-roster", text: "one", system: roster });
+    await recorder.until((e) => e.type === "turn.completed");
+    const spawnedOnce = readFileSync(dump, "utf8");
+    const announced = (recorder.events.find((e) => e.type === "session.started") as { sessionId: string }).sessionId;
+
+    // Patch is busy now — the roster text is byte-identical, so nothing respawns.
+    const second = await instance.adapter.sendTurn({
+      threadId: "t-roster",
+      text: "two",
+      system: roster,
+      resumeCursor: announced,
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    expect(readFileSync(dump, "utf8")).toBe(spawnedOnce);
+
+    // A teammate joins: that IS a new spawn contract, and the CLI is replaced.
+    rmSync(dump);
+    const joined = `${roster}\n- Ledger — Analyst`;
+    const third = await instance.adapter.sendTurn({
+      threadId: "t-roster",
+      text: "three",
+      system: joined,
+      resumeCursor: announced,
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === third.turnId);
+    const respawn = JSON.parse(readFileSync(dump, "utf8"));
+    expect(respawn.argv).toContain("--append-system-prompt");
+    expect(respawn.argv).toContain(joined);
+    expect(respawn.argv).toContain("--resume");
+  });
+
   it("denies late broker asks between retained turns without opening a zombie card", async () => {
     await create();
     await instance.adapter.sendTurn({ threadId: "t-retained-late", text: "one" });

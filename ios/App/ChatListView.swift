@@ -429,6 +429,7 @@ struct ChatListView: View {
         case .live: return "\(name) · connected"
         case .connecting: return "\(name) · connecting…"
         case .offline: return "\(name) · offline"
+        case .macOffline: return "\(name) · Mac offline"
         case .unauthorized: return "\(name) · unpaired"
         case .unpaired: return "Not paired"
         }
@@ -993,6 +994,12 @@ struct StatusBanner: View {
                         }
                     }
                 }
+            case .macOffline:
+                // No `openMacApp` follow-up here on purpose: that call goes
+                // through the same paired route that has been failing with
+                // gateway errors, so it would just fail the same way.  The
+                // banner's default tap already retries via `session.refresh()`.
+                banner("Your Mac is not running BotFleet", systemImage: "wifi.slash", tint: .orange)
             case .unauthorized:
                 banner("This phone was unpaired on the computer.", systemImage: "lock.slash", tint: .red)
             }

@@ -129,6 +129,7 @@ describe("what it may not", () => {
       "autoApprove",
       "autoReview",
       "composio",
+      "connectorTools",
       "computers",
       "cloudBackend",
       "autoStartVps",

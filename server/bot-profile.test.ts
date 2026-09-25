@@ -81,3 +81,66 @@ describe("parseBotProfilePatch (both modes)", () => {
     });
   });
 });
+
+// connectorTools (Finding 1a/1d): per-bot Composio tool grants, validated at
+// this same boundary so a malformed PATCH — from either surface — never
+// reaches the store. See server/connector-verdict.ts for how it is enforced.
+describe("parseBotProfilePatch (connectorTools)", () => {
+  it("accepts a star grant, an explicit tool list, and multiple services", () => {
+    const result = parseBotProfilePatch(
+      { connectorTools: { gmail: { tools: "*" }, slack: { tools: ["SLACK_POST_MESSAGE"] } } },
+      true,
+    );
+    expect(result).toEqual({
+      ok: true,
+      patch: { connectorTools: { gmail: { tools: "*" }, slack: { tools: ["SLACK_POST_MESSAGE"] } } },
+    });
+  });
+
+  it("accepts the empty record — denies every connected-app tool without touching composio", () => {
+    expect(parseBotProfilePatch({ connectorTools: {} }, true)).toEqual({ ok: true, patch: { connectorTools: {} } });
+  });
+
+  it("null clears a bot back to legacy all-tools, the same shape as avatarUrl/cwd", () => {
+    expect(parseBotProfilePatch({ connectorTools: null }, true)).toEqual({ ok: true, patch: { connectorTools: undefined } });
+  });
+
+  it("omitting the field entirely leaves it out of the patch — existing grants are untouched", () => {
+    const result = parseBotProfilePatch({ name: "Mira" }, true);
+    expect(result.ok).toBe(true);
+    expect(result.ok && "connectorTools" in result.patch).toBe(false);
+  });
+
+  it("rejects malformed grants", () => {
+    for (const bad of [
+      { connectorTools: "gmail" },
+      { connectorTools: { Gmail: { tools: "*" } } }, // slug must be lowercase
+      { connectorTools: { gmail: "*" } }, // must be a { tools } object
+      { connectorTools: { gmail: { tools: "*", extra: 1 } } }, // no extra keys
+      { connectorTools: { gmail: { tools: [] } } }, // empty list — omit the service instead
+      { connectorTools: { gmail: { tools: ["gmail_send_email"] } } }, // must be upper-snake
+      { connectorTools: { gmail: { tools: [42] } } },
+      { connectorTools: { gmail: { tools: "everything" } } },
+    ]) {
+      const result = parseBotProfilePatch(bad as never, true);
+      expect(result.ok, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("rejects more services or tools than the caps allow", () => {
+    const tooManyServices: Record<string, { tools: "*" }> = {};
+    for (let i = 0; i < 65; i++) tooManyServices[`svc${i}`] = { tools: "*" };
+    expect(parseBotProfilePatch({ connectorTools: tooManyServices } as never, true).ok).toBe(false);
+
+    const tooManyTools = Array.from({ length: 501 }, (_, i) => `GMAIL_TOOL_${i}`);
+    expect(parseBotProfilePatch({ connectorTools: { gmail: { tools: tooManyTools } } } as never, true).ok).toBe(false);
+  });
+
+  it("validates identically in lenient mode — the desktop's broad PATCH shares this boundary", () => {
+    expect(parseBotProfilePatch({ connectorTools: { gmail: "*" } } as never, false).ok).toBe(false);
+    expect(parseBotProfilePatch({ connectorTools: { gmail: { tools: "*" } } }, false)).toEqual({
+      ok: true,
+      patch: { connectorTools: { gmail: { tools: "*" } } },
+    });
+  });
+});

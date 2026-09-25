@@ -24,6 +24,16 @@ STAMP="${BOTFLEET_HEAL_STAMP:-$ROOT/.botfleet-heal-stamp}"
 LOG_FILE="${BOTFLEET_SERVER_LOG:-$HOME/Library/Logs/botfleet/server.log}"
 LOG_MAX_BYTES=$((20 * 1024 * 1024))
 PREFIX="[botfleet-server-start]"
+# Consecutive-failure ledger.  launchd's KeepAlive.SuccessfulExit=false plus
+# ThrottleInterval 5 respawns this job every 5-7s forever on any non-zero
+# exit, which turns a persistently broken checkout (node_modules deleted by
+# the disk janitor, a bad deploy) into a restart storm.  After enough
+# consecutive failures inside one rolling window we exit 0 instead, so
+# launchd stops; com.jay.mac-process-watch kickstarts the job every 120s
+# while health is down, which is the intended slow retry from then on.
+FAIL_LEDGER="${BOTFLEET_FAIL_LEDGER:-$HOME/Library/Caches/BotFleet/server-start-failures}"
+FAIL_WINDOW_SECONDS="${BOTFLEET_FAIL_WINDOW_SECONDS:-3600}"
+FAIL_STORM_THRESHOLD="${BOTFLEET_FAIL_STORM_THRESHOLD:-20}"
 
 usage() {
   cat <<EOF
@@ -73,6 +83,43 @@ record_heal_attempt() {
   date +%s >"$STAMP"
 }
 
+# Called on every path that reaches a known-good state: the port already
+# answers, or dependencies are confirmed present and the server is about to
+# start.  Clears the storm ledger so a later failure starts counting fresh.
+reset_fail_ledger() {
+  rm -f "$FAIL_LEDGER" 2>/dev/null || true
+}
+
+# Record one failed attempt and decide whether the launchd restart loop needs
+# to be stopped.  Always exits the script: 1 for an ordinary failure (launchd
+# retries again after ThrottleInterval), 0 once $FAIL_STORM_THRESHOLD
+# consecutive failures land inside $FAIL_WINDOW_SECONDS (logs the fix once).
+fail_or_stop_storm() {
+  local now count start
+  now="$(date +%s)"
+  count=0
+  start="$now"
+  if [ -f "$FAIL_LEDGER" ]; then
+    read -r count start <"$FAIL_LEDGER" 2>/dev/null || { count=0; start="$now"; }
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    case "$start" in ''|*[!0-9]*) start="$now" ;; esac
+    if [ "$((now - start))" -gt "$FAIL_WINDOW_SECONDS" ]; then
+      count=0
+      start="$now"
+    fi
+  fi
+  count=$((count + 1))
+  mkdir -p "$(dirname "$FAIL_LEDGER")" 2>/dev/null || true
+  printf '%s %s\n' "$count" "$start" >"$FAIL_LEDGER" 2>/dev/null || true
+  if [ "$count" -ge "$FAIL_STORM_THRESHOLD" ]; then
+    log_err "botfleet-server-start has failed $count times in the last $((FAIL_WINDOW_SECONDS / 60)) minutes; giving up so launchd stops restarting it."
+    log_err "FIX: cd $ROOT && $PNPM install --frozen-lockfile   (see the failure logged above for the exact cause)"
+    log_err "com.jay.mac-process-watch retries this job every 120s while health is down; that is the intended slow retry now."
+    exit 0
+  fi
+  exit 1
+}
+
 needs_module_heal() {
   if [ ! -d "$ROOT/node_modules" ]; then
     return 0
@@ -110,11 +157,11 @@ run_install_once() {
 preflight() {
   if [ ! -f "$ROOT/server/index.ts" ]; then
     log_err "missing $ROOT/server/index.ts"
-    exit 1
+    return 1
   fi
   if [ ! -x "$NODE" ]; then
     log_err "missing node at $NODE"
-    exit 1
+    return 1
   fi
 }
 
@@ -161,7 +208,7 @@ maybe_heal_dependencies() {
   if [ "$rc" -eq 1 ]; then
     run_install_once
   elif [ "$rc" -ne 0 ]; then
-    exit 1
+    fail_or_stop_storm
   fi
 }
 
@@ -182,26 +229,31 @@ fi
 # serves).  Skip the healthy-exit shortcut in that mode.
 if [ "$HEAL_ONLY" != true ] && health; then
   log ":${PORT} already healthy; not starting a second harness"
+  reset_fail_ledger
   exit 0
 fi
 
-preflight
-maybe_heal_dependencies
+preflight || fail_or_stop_storm
+maybe_heal_dependencies || fail_or_stop_storm
 
 if [ "$HEAL_ONLY" = true ]; then
   log "self-heal complete; --heal-only set, not starting server"
+  reset_fail_ledger
   exit 0
 fi
 
 if health; then
   log ":${PORT} already healthy after self-heal; not starting a second harness"
+  reset_fail_ledger
   exit 0
 fi
 
 if needs_module_heal; then
   log_err "node_modules still missing after self-heal attempt"
-  exit 1
+  fail_or_stop_storm
 fi
+
+reset_fail_ledger
 
 # Keeps one prior generation (server.log.1); the harness's own log carries
 # no size cap beyond this, so a generation can still be up to LOG_MAX_BYTES.

@@ -244,6 +244,10 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_MODEL_STICKS;
     delete process.env.FAKE_ACP_CONFIG_REPLY_BARE;
     delete process.env.FAKE_ACP_USAGE_ROOT;
+    delete process.env.FAKE_ACP_TRANSIENTS;
+    delete process.env.FAKE_ACP_PARTIAL_FAILS;
+    delete process.env.FAKE_ACP_STATE;
+    delete process.env.FAKE_ACP_RETRY_SCALE;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -796,7 +800,66 @@ describe("ACP turns (fake CLI)", () => {
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: false });
     expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(true);
+    // DR2: "simulated crash before result" carries no transient vocabulary,
+    // so the classifier calls it terminal and no relaunch is attempted.  A
+    // CLI that died for its own reasons must not be tried again.
+    expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
   });
+
+  // DR2.  Every ACP engine — Cursor, Droid, Grok CLI, Hermes, Kimi, DeepSeek,
+  // Qwen, OpenCode, DSH — used to fail the whole turn on one 429 or reset,
+  // which then pushed the bot's fallback chain into a cooldown a single retry
+  // would have avoided.
+  it("auto-retries a transient exit, then completes with exactly one reply", async () => {
+    process.env.FAKE_ACP_TRANSIENTS = "2";
+    process.env.FAKE_ACP_STATE = join(scratch, "acp-launches");
+    process.env.FAKE_ACP_RETRY_SCALE = "0.001";
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-acp-retry", text: "go" });
+
+    // Three real child launches on a loaded machine: give the settle room.
+    await recorder.until((e) => e.type === "turn.completed" && e.ok === true, 25_000);
+    const retries = recorder.events.filter((e) => e.type === "turn.retrying");
+    expect(retries.map((e) => e.attempt)).toEqual([1, 2]);
+    expect(retries.every((e) => e.delayMs > 0 && typeof e.reason === "string")).toBe(true);
+    // one settled reply across all three launches, not one per launch
+    const replies = recorder.events.filter(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text",
+    );
+    expect(replies).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+  }, 40_000);
+
+  it("stops retrying at the attempt cap and settles the turn as failed", async () => {
+    process.env.FAKE_ACP_TRANSIENTS = "9";
+    process.env.FAKE_ACP_STATE = join(scratch, "acp-launches-cap");
+    process.env.FAKE_ACP_RETRY_SCALE = "0.001";
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-acp-cap", text: "go" });
+
+    await recorder.until((e) => e.type === "turn.completed" && e.ok === false, 25_000);
+    expect(recorder.events.filter((e) => e.type === "turn.retrying").map((e) => e.attempt)).toEqual([1, 2]);
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(true);
+  }, 40_000);
+
+  it("never retries a failure that arrived after the agent had already spoken", async () => {
+    // Replay safety comes from PROTOCOL state, not from the error text: the
+    // stderr here is the same transient 503 the test above relaunches on.
+    // What forbids the retry is that a chunk already reached the person.
+    process.env.FAKE_ACP_TRANSIENTS = "1";
+    process.env.FAKE_ACP_PARTIAL_FAILS = "1";
+    process.env.FAKE_ACP_STATE = join(scratch, "acp-launches-partial");
+    process.env.FAKE_ACP_RETRY_SCALE = "0.001";
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-acp-partial", text: "go" });
+
+    const done = await recorder.until((e) => e.type === "turn.completed", 25_000);
+    expect(done).toMatchObject({ ok: false });
+    expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
+    expect(
+      recorder.events.some((e) => e.type === "content.delta" && e.delta === "half an answer"),
+    ).toBe(true);
+  }, 40_000);
 
   it("preserves ACP error codes for provider setup classification", async () => {
     await create(ClassifiedErrorDriver, "auth-required");

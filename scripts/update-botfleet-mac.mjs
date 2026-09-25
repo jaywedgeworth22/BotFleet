@@ -1521,7 +1521,11 @@ function createOperations(config) {
         await run("bash", args, {
           cwd: source.path,
           inherit: true,
-          env: { CSC_IDENTITY_AUTO_DISCOVERY: "true" },
+          // This packages --arm64 --dir for the machine applying the update
+          // (never --x64), so staging both cloudflared architectures here
+          // downloads one only to discard it every run.  See
+          // scripts/prepare-cloudflared.mjs's currentOnlyFromEnv().
+          env: { CSC_IDENTITY_AUTO_DISCOVERY: "true", OMB_CLOUDFLARED_CURRENT: "1" },
         });
       } finally {
         await git(source.path, ["checkout", "--", ...GENERATED_PATHS], { allowFailure: true });

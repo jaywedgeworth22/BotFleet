@@ -11,7 +11,7 @@ import {
   type LocalAutoConsentCapability,
 } from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -100,6 +100,13 @@ import {
 import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
+import {
+  connectorCallFromFrame,
+  connectorRefusalText,
+  connectorUnrecognizedText,
+  evaluateConnectorTools,
+  filterConnectorToolsList,
+} from "./connector-verdict.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { botFleetStatusSystemPrompt } from "./botfleet-status-capsule.ts";
 import {
@@ -170,7 +177,9 @@ import {
   NATIVE_DIR,
 } from "./config.ts";
 import {
+  appendBounded,
   describeSweep,
+  startOrphanTranscriptSweeps,
   startTranscriptRetentionSweeps,
   sweepTranscriptRetention,
   removeTranscriptLogs,
@@ -224,7 +233,7 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 // precedence; this only reports what the secret map structurally cannot see.
 import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
-import { searchMessages } from "./message-db.ts";
+import { DEFAULT_MAX_DEAD_SHARE, pruneDeadThreads, searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
 import { _loadPending, discardDelegations, drainDelegations, pendingDelegationSnapshot, pendingThreads, queueDelegation, type QueueResult } from "./delegations.ts";
 import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage, queuedMessageCount } from "./steer-queue.ts";
@@ -264,6 +273,8 @@ import {
   listMemoryTopics,
   isMemoryTopicName,
   memorySystemPrompt,
+  describeWorkspaceSweep,
+  sweepOrphanedWorkspaces,
 } from "./workspace.ts";
 import {
   readMemoryFile,
@@ -280,6 +291,7 @@ import {
   SECTION_CONTEXT_MAX_BYTES,
 } from "./section-context.ts";
 import {
+  buildSkillsIndex,
   installSkill,
   listSkills,
   readSkillFile,
@@ -368,6 +380,9 @@ const updateControl = createUpdateControl({
 // fence and long before `server.listen`, so no request ever waits on it, and
 // a stat-only no-op on every boot after the first.
 const transcriptDirs = { eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR };
+// HS7: errors.log's own cap, matching decision-log.ts's rotation so this
+// append-only audit file cannot grow forever like it used to.
+const ERRORS_LOG_MAX_BYTES = 4 * 1024 * 1024;
 const bootTranscriptSweep = describeSweep(sweepTranscriptRetention(transcriptDirs));
 if (bootTranscriptSweep) console.log(bootTranscriptSweep);
 // A harness that stays up for weeks outlives its boot sweep; this catches a
@@ -1011,6 +1026,68 @@ const bootSelection = await defaultSelection();
 const store = new Store(() => bootSelection);
 store.seedIfEmpty();
 export { store };
+
+// HS1/HS2/HS3: everything above bounds or trims what a LIVE thread's log,
+// workspace, or DB rows may grow to. Nothing before this ever asked whether
+// a thread, task, group, or bot still exists at all — only an explicit
+// delete (deleteBot, deleteGroup, deleteTask) ever called
+// removeTranscriptLogs, rmSync on a workspace, or deleteThread, so a bot
+// deleted while the harness was down, or removed by a build before this
+// existed, left its transcripts, workspace, and DB rows on disk forever.
+// `liveThreadIds` mirrors the set Store's own legacy-import pass builds at
+// construction (bots' active + task threads, groups' active + task
+// threads) — computed fresh on every call, never cached, so a thread
+// created or deleted after boot is still read correctly a day later.
+function liveThreadIds(): Set<string> {
+  return new Set([
+    ...store.bots.flatMap((b) => [b.threadId, ...(b.tasks ?? []).map((t) => t.threadId)]),
+    ...store.groups.flatMap((g) => [g.threadId, ...(g.tasks ?? []).map((t) => t.threadId)]),
+  ]);
+}
+// One flag covers all three sweeps: a preview before trusting a brand-new
+// class of delete against real data.
+const retentionDryRun = process.env.OMB_RETENTION_DRY_RUN === "1";
+const stopOrphanTranscriptSweeps = startOrphanTranscriptSweeps(transcriptDirs, liveThreadIds, console.log, {
+  dryRun: retentionDryRun,
+});
+// Workspaces and messages.db are swept once, shortly after boot, off the
+// request path — no recurring timer to unref, because a harness restart (29
+// in two days per the audit) already re-runs this often enough on its own.
+setTimeout(() => {
+  const workspaceResult = sweepOrphanedWorkspaces(new Set(store.bots.map((b) => b.id)), { dryRun: retentionDryRun });
+  const workspaceLine = describeWorkspaceSweep(workspaceResult);
+  if (workspaceLine) console.log(workspaceLine);
+
+  try {
+    // pruneDeadThreads has its own dry-run mode (unlike the two sweeps
+    // above at the time they were written) — always call it, rather than
+    // skipping outright under OMB_RETENTION_DRY_RUN=1, so a preview shows
+    // real candidate counts instead of nothing.  Its own refusals (an empty
+    // live set against a nonempty database, or dead threads crossing half
+    // of it) protect the database even when dry run is off; both are
+    // reported the same way here either way.
+    const prune = pruneDeadThreads(liveThreadIds(), { dryRun: retentionDryRun });
+    if (prune.refused === "empty-live-set") {
+      console.log(
+        "[retention] pruneDeadThreads refused: the live thread set is empty against a nonempty messages.db " +
+          "— this usually means bots.json/groups.json failed to load, not that every bot was deleted.  Skipped.",
+      );
+    } else if (prune.refused === "dead-share-too-large") {
+      console.log(
+        `[retention] pruneDeadThreads refused: dead threads are more than ${Math.round(DEFAULT_MAX_DEAD_SHARE * 100)}% ` +
+          "of messages.db, which looks more like a store that failed to load than organic cleanup.  Skipped.",
+      );
+    } else if (prune.messagesDeleted || prune.threadStateDeleted) {
+      const verb = prune.dryRun ? "would prune" : "pruned";
+      console.log(
+        `[retention] ${verb} ${prune.messagesDeleted} message row(s) and ${prune.threadStateDeleted} thread_state row(s) for dead threads` +
+          `${prune.vacuumed ? "; VACUUMed messages.db" : ""}`,
+      );
+    }
+  } catch (error) {
+    console.error("[retention] pruneDeadThreads failed", error instanceof Error ? error.message : String(error));
+  }
+}, 60_000).unref?.();
 
 /** A bot as a client may see it: no provider session bookkeeping.
  *
@@ -2338,7 +2415,13 @@ bus.subscribe((event: RuntimeEvent) => {
       try {
         const logPath = join(DATA_DIR, "errors.log");
         const entry = `[${new Date().toISOString()}] botId=${bot?.id || "unknown"} threadId=${event.threadId}\n${sanitized}\n\n`;
-        appendFileSync(logPath, entry, { mode: 0o600 });
+        // HS7: this used to be a bare appendFileSync with no rotation, unlike
+        // decision-log.ts's 4 MB rotation for the same kind of unbounded,
+        // append-only audit file. appendBounded is the shared primitive
+        // (server/transcript-retention.ts): same cap, same rotate-then-append
+        // shape, still synchronous — this call site was already synchronous
+        // and on the runtime-event fold, not a request.
+        appendBounded(logPath, entry, ERRORS_LOG_MAX_BYTES, { mode: 0o600 });
       } catch (err) {
         console.error("Failed to write to errors.log", err);
       }
@@ -7007,6 +7090,91 @@ const server = createServer(async (req, res) => {
       }
       if (method === "POST" && path === "/api/internal/connectors/mcp") {
         const body = await readBody(req);
+        // COMMS_TOKEN is one shared secret for every /api/internal/ caller,
+        // so it alone does not say which bot is relaying. composio.ts's
+        // mcpIntegration names the bot on these headers on every spawn —
+        // see its OMB_CONNECTOR_UPSTREAM_HEADERS comment. A call that
+        // cannot be attributed to a live, composio-enabled bot cannot be
+        // checked against that bot's grants, so it is refused outright
+        // rather than treated as the legacy all-tools case. Re-reading the
+        // live bot (rather than trusting a value cached at spawn time) means
+        // turning Connected Apps off wins over a request that authenticated
+        // while it was still on.
+        const headerBotId = req.headers[composio.CONNECTOR_BOT_ID_HEADER];
+        const headerThreadId = req.headers[composio.CONNECTOR_THREAD_ID_HEADER];
+        const callerBotId = Array.isArray(headerBotId) ? headerBotId[0] : headerBotId;
+        const callerThreadId = Array.isArray(headerThreadId) ? headerThreadId[0] : headerThreadId;
+        const callerBot = callerBotId ? store.bot(callerBotId) : undefined;
+        if (!callerBot || callerBot.composio === false || !composio.configured(cfg)) {
+          return json(res, 403, { error: "connected apps are not enabled for this bot" });
+        }
+        const threadIdForLog = callerThreadId || callerBot.threadId;
+        // Per-bot tool grants (Finding 1): verdict every tools/call frame
+        // against the calling bot's connectorTools before it reaches
+        // Composio. A bot with no grants record keeps the legacy all-tools
+        // behavior; a grants record makes every unrecognized shape a deny.
+        // Rows are fire-and-forget: a log failure must never take the call
+        // (or its refusal) down with it.
+        const call = connectorCallFromFrame(body);
+        if (call.kind === "unrecognized") {
+          appendDecision(DATA_DIR, {
+            threadId: threadIdForLog,
+            botId: callerBot.id,
+            botName: callerBot.name,
+            tool: call.invoked,
+            summary: call.reason,
+            decision: "user-denied",
+            source: "connector-scope",
+            rule: "connectorTools",
+          });
+          const refusal = connectorUnrecognizedText(call.invoked, call.reason);
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+          return res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: (body as { id?: unknown }).id ?? null,
+            result: { content: [{ type: "text", text: refusal }], isError: true },
+          }));
+        }
+        if (call.kind === "tools") {
+          const verdict = evaluateConnectorTools(call.names, callerBot.connectorTools);
+          if (!verdict.allowed) {
+            for (const denial of verdict.denials) {
+              appendDecision(DATA_DIR, {
+                threadId: threadIdForLog,
+                botId: callerBot.id,
+                botName: callerBot.name,
+                tool: denial.tool,
+                summary: denial.service === null
+                  ? "tool name does not name a service"
+                  : denial.onGrantedService
+                    ? "tool is not in this service's grant"
+                    : "service is not granted",
+                decision: "user-denied",
+                source: "connector-scope",
+                rule: denial.service ? "connectorTools." + denial.service : "connectorTools",
+              });
+            }
+            const refusal = connectorRefusalText(verdict.denials);
+            res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+            return res.end(JSON.stringify({
+              jsonrpc: "2.0",
+              id: (body as { id?: unknown }).id ?? null,
+              result: { content: [{ type: "text", text: refusal }], isError: true },
+            }));
+          }
+          // One row per allowed call, naming the first target: the audit
+          // trail reads "which bot ran what", not one row per tool.
+          appendDecision(DATA_DIR, {
+            threadId: threadIdForLog,
+            botId: callerBot.id,
+            botName: callerBot.name,
+            tool: call.names[0],
+            summary: ("allowed " + call.names.join(", ")).slice(0, 240),
+            decision: "user-approved",
+            source: "connector-scope",
+            rule: verdict.rule,
+          });
+        }
         const upstream = await composio.relayMcp(
           cfg,
           body,
@@ -7019,6 +7187,29 @@ const server = createServer(async (req, res) => {
           "cache-control": "no-store",
         };
         if (upstream.transportSessionId) headers["mcp-session-id"] = upstream.transportSessionId;
+        // tools/list is the model's menu: a restricted bot must never see a
+        // tool it cannot call (Finding 1c). Best-effort — a body this
+        // handler cannot parse as the expected shape is relayed unfiltered
+        // rather than broken, because the hard boundary is the tools/call
+        // verdict above, not this listing.
+        if (
+          (body as { method?: unknown }).method === "tools/list" &&
+          upstream.status === 200 &&
+          callerBot.connectorTools !== undefined
+        ) {
+          try {
+            const parsed = JSON.parse(Buffer.from(upstream.bytes).toString("utf8")) as {
+              result?: { tools?: unknown };
+            };
+            if (parsed.result && Array.isArray(parsed.result.tools)) {
+              parsed.result.tools = filterConnectorToolsList(parsed.result.tools, callerBot.connectorTools);
+              res.writeHead(upstream.status, headers);
+              return res.end(Buffer.from(JSON.stringify(parsed)));
+            }
+          } catch {
+            // fall through and relay the unfiltered response
+          }
+        }
         res.writeHead(upstream.status, headers);
         return res.end(Buffer.from(upstream.bytes));
       }
@@ -8788,7 +8979,10 @@ const server = createServer(async (req, res) => {
     m = path.match(/^\/api\/bots\/([\w-]+)\/skills$/);
     if (m && method === "GET") {
       if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, { skills: listSkills(m[1]) });
+      // notIndexed: enabled skills the index budget left out (Finding 2) —
+      // still enabled, just not named in the prompt line, so the panel can
+      // warn instead of the drop staying invisible.
+      return json(res, 200, { skills: listSkills(m[1]), notIndexed: buildSkillsIndex(m[1]).omitted });
     }
     if (m && method === "POST") {
       if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
@@ -11696,6 +11890,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
     stopTranscriptSweeps();
+    stopOrphanTranscriptSweeps();
     routines?.stop();
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();
