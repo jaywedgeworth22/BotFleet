@@ -632,6 +632,7 @@ export class UsageTelemetryManager {
       ],
     };
     const posted = await this.postBatch(endpoint, config.token, batch);
+    posted.onPersisted?.();
     return { ok: posted.ok, error: posted.error, ingestUrl: endpoint };
   }
 
@@ -654,7 +655,7 @@ export class UsageTelemetryManager {
       this.outbox.enqueue(usageTelemetryDestinationHash(endpoint), batch);
       return;
     }
-    void this.postBatch(endpoint, config.token, batch);
+    void this.postBatch(endpoint, config.token, batch).then((posted) => posted.onPersisted?.());
   }
 
   async dispose(): Promise<void> {
@@ -665,7 +666,7 @@ export class UsageTelemetryManager {
     endpoint: string,
     token: string,
     batch: DurableTelemetryBatch,
-  ): Promise<{ ok: boolean; error: string | null; acknowledged: boolean; rejected: number; terminalStatus?: TerminalHttpStatus }> {
+  ): Promise<{ ok: boolean; error: string | null; acknowledged: boolean; rejected: number; terminalStatus?: TerminalHttpStatus; onPersisted?: () => void }> {
     try {
       const res = await fetch(endpoint, {
         method: "POST",
@@ -702,13 +703,17 @@ export class UsageTelemetryManager {
           this.failureLog.report("rejected", `ingest rejected ${rejected} of ${received || rejected} events`);
           return { ok: false, error, acknowledged: true, rejected };
         }
-        this.totalSent += 1;
         this.lastError = null;
         // Healthy again: print any pending "N failed since…" summary now
         // rather than let it wait out the full window, and start the next
         // incident (if any) with its own fresh first line.
         this.failureLog.reset();
-        return { ok: true, error: null, acknowledged: true, rejected: 0 };
+        // Counted by whoever owns durability: the outbox runs this only
+        // after it has persisted the ack, the direct path right away.
+        const onPersisted = () => {
+          this.totalSent += 1;
+        };
+        return { ok: true, error: null, acknowledged: true, rejected: 0, onPersisted };
       }
       const error = `Usage Monitor returned HTTP ${res.status}`;
       this.totalFailed += 1;
