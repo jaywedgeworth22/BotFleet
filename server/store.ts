@@ -100,6 +100,8 @@ export interface Message {
   automationSource?: "schedule" | "manual" | "webhook" | "resource";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
+  /** Persisted audio clips for this exact reply, in playback order. */
+  audio?: Array<{ path: string; mime: string }>;
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
@@ -521,6 +523,8 @@ export interface BotRecord {
    * Off by default: a hosted voice costs money per character, so speaking
    * is something you turn on, never something that happens to you. */
   speakReplies?: boolean;
+  /** Selected playback endpoints. Legacy true means Mac only. */
+  speechDevices?: Array<"mac" | "iphone">;
   /** This bot's own voice id, so a room of bots doesn't sound like one
    * person. Falls back to the app-wide voice in config. */
   voice?: string;
