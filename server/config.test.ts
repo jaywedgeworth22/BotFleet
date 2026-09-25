@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DATA_DIR,
   migrateComputerProvidersConfig,
+  migrateLegacyElevenLabsTtsProvider,
   allowedBotComputers,
   filterAllowedComputers,
   instanceConfigs,
@@ -698,7 +699,7 @@ describe("credential env preference", () => {
     expect(cfg.xai).toEqual({ key: "env-xai", url: "https://api.example.test/v1" });
     expect(cfg.box).toEqual({ token: "env-box" });
     expect(cfg.opencodeGo).toEqual({ apiKey: "env-ocg" });
-    expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator" });
+    expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator", provider: "elevenlabs" });
     expect(cfg.imageGen).toEqual({ key: "env-image" });
     expect(cfg.deepseek).toEqual({ key: "env-deepseek", url: "https://env.example.test" });
   });
@@ -716,6 +717,7 @@ describe("credential env preference", () => {
     const cfg = loadConfig();
     expect(cfg.xai?.key).toBe("file-xai");
     expect(cfg.tts?.key).toBe("file-tts");
+    expect(cfg.tts?.provider).toBe("elevenlabs");
     expect(cfg.imageGen?.key).toBe("file-image");
     expect(cfg.deepseek?.key).toBe("file-deepseek");
   });
@@ -1510,5 +1512,39 @@ describe("migrateComputerProvidersConfig", () => {
     const cfg: AppConfig = { botDefaults: { allowedComputers: [], computerProviders: { ...providers }, vpsMode: null } };
     expect(migrateComputerProvidersConfig(cfg)).toBe(false);
     expect(cfg.botDefaults?.computerProviders).toEqual(providers);
+  });
+});
+
+
+describe("legacy voice provider migration", () => {
+  it("pins an unmarked key-only install, without persisting a keychain secret to config.json", () => {
+    const cfg: AppConfig = { tts: { key: "old-eleven-key" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(true);
+    expect(cfg.tts?.provider).toBe("elevenlabs");
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+  });
+
+  it("retains explicitly selected MiniMax, ElevenLabs and system providers", () => {
+    for (const provider of ["minimax", "elevenlabs", "system"] as const) {
+      const cfg: AppConfig = { tts: { key: "marked-key", provider } };
+      expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+      expect(cfg.tts?.provider).toBe(provider);
+    }
+  });
+
+  it("waits for the encrypted-store key overlay before selecting the legacy provider", () => {
+    const cfg: AppConfig = { tts: { key: "", voice: "legacy voice" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+    cfg.tts!.key = "from-keychain";
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(true);
+    expect(cfg.tts?.provider).toBe("elevenlabs");
+  });
+
+  it("does not infer an old provider from voice alone or an empty key", () => {
+    for (const tts of [{ voice: "Rachel" }, { key: "   ", voice: "Rachel" }]) {
+      const cfg: AppConfig = { tts };
+      expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+      expect(cfg.tts?.provider).toBeUndefined();
+    }
   });
 });
