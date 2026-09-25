@@ -48,13 +48,14 @@ export interface ErrorClassification {
 //
 //   HTTP_STATUS_CONTEXT is the cue that has to be within a few characters
 //     of the digits: "HTTP ", "status", "code:", "error:".  Anything
-//     further away is body text, not a status.
+//     further away is body text, not a status.  The digits may sit in
+//     parens or brackets right after the cue: "API error (503)", "status [502]".
 //
 // The looser "rate limit exceeded", "RESOURCE_EXHAUSTED", "free tier
 // limit", "out of credits", "insufficient balance" phrases stay as
 // explicit disjunction arms — every test case in retry.test.ts still
 // matches one of them.
-const HTTP_STATUS_CONTEXT = "\\b(?:https?://|status|http|code|error)\\b[^\\s\\n]{0,4}[:=\\s]\\s*";
+const HTTP_STATUS_CONTEXT = "\\b(?:https?://|status|http|code|error)\\b[^\\s\\n]{0,4}(?:[:=\\s]\\s*[(\\[]?|[(\\[])";
 
 function hasHttpStatusCode(text: string, code: RegExp): boolean {
   // Matches "<context> <digits>": "HTTP 503", "status: 503",
@@ -77,7 +78,7 @@ const TRANSIENT_PATTERNS: Array<{ pattern: RegExp; reason: TransientReason }> = 
   // anchored to a status-code cue) — leaving `\b5\d{2}\b` here would
   // otherwise fire on "section 503 of the changelog", exactly the kind
   // of false positive the audit flagged.
-  { pattern: /\binternal server error\b|\bbad gateway\b|\bservice unavailable\b/i, reason: "server_error" },
+  { pattern: /\binternal server error\b|\bbad gateway\b|\bservice (?:temporarily )?unavailable\b/i, reason: "server_error" },
   {
     pattern:
       /\b(?:econnreset|econnrefused|epipe|etimedout|eai_again|connection reset|connection refused|socket hang up|network error|fetch failed)\b/i,
