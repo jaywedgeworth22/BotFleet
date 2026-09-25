@@ -1,16 +1,20 @@
 name: Sentry Deploy
 
 # Additive only: after a green CI run on main, attach a production *deploy*
-# record for the botfleet Sentry project using the full git SHA. Vercel hosts
+# record for the botfleet Sentry project using the full git SHA.  Vercel hosts
 # apps/site (and related web surfaces); org Vercel integration 494377 does not
-# currently mark production deploys. Does NOT call `releases new`.
+# currently mark production deploys.  Does NOT call `releases new`.
 #
 # The deploy record also carries a "seat:<seat> pr:#<number>" tag in its
-# --name field, so the Sentry deploy UI shows which fleet agent shipped this
-# deploy and via which PR. Derived by looking up the PR that produced the
-# merge commit (this workflow runs on `workflow_run` after CI on `main`, so
+# --name field, so the Sentry deploy UI shows which PR shipped this deploy
+# and the prefix of the branch it came from.  That prefix is often a fleet
+# seat (claude/, grok/, minimax/, ...) but not always -- some BotFleet
+# branches use a bot-persona or fix-type prefix instead (instinct/, fixer/,
+# fix/, ...), so read it as "branch prefix," not a guaranteed seat name.
+# Derived by looking up the PR that produced the merge commit (this workflow
+# runs on `workflow_run` after CI on `main`, so
 # `github.event.workflow_run.head_branch` is just "main" -- the originating
-# branch has to be recovered via the GitHub API). Pattern and rationale:
+# branch has to be recovered via the GitHub API).  Pattern and rationale:
 # jaywedgeworth22/Usage-Monitor docs/rollouts/2026-09-24-deploy-seat-tagging.md
 # (also implemented there in .github/workflows/sentry-deploy.yml, PR #1536).
 #
@@ -84,6 +88,11 @@ jobs:
           case "$HEAD_REF" in
             */*) SEAT="${HEAD_REF%%/*}" ;;
           esac
+          # Sentry's deploy `name` field caps at 64 chars (DeploySerializer
+          # max_length=64); SEAT is an unbounded branch prefix, so cap it well
+          # short of that to guarantee "seat:<seat> pr:#<number>" always fits
+          # and never turns a working untagged deploy record into a 400.
+          SEAT="${SEAT:0:24}"
           echo "Deploying PR #${PR_NUMBER} from branch '${HEAD_REF}' (seat=${SEAT})"
           {
             echo "pr_number=${PR_NUMBER}"
