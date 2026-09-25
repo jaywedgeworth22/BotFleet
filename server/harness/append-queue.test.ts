@@ -131,6 +131,36 @@ describe("BoundedAppendQueue", () => {
     expect(written).toEqual(["good-1", "good-2"]);
   });
 
+  it("a throwing handler never rejects the drain", async () => {
+    // The drain promise is only awaited at shutdown, so a rejection would sit
+    // unhandled for the life of the process — and that takes the harness down
+    // on Node 24.  A tee that cannot write is a degraded log, never a reason
+    // to stop the fleet.
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const written: string[] = [];
+    const queue = new BoundedAppendQueue<string>(
+      async (_file, data) => {
+        if (data.includes("bad")) throw new Error("disk full");
+        written.push(data.trim());
+      },
+      {
+        onWritten: () => {
+          throw new Error("handler exploded");
+        },
+        onWriteError: () => {
+          throw new Error("handler exploded harder");
+        },
+      },
+    );
+
+    queue.enqueue("a.log", "good\n", "good");
+    queue.enqueue("a.log", "bad\n", "bad");
+    queue.enqueue("a.log", "good-2\n", "good-2");
+    await expect(queue.flush()).resolves.toBeUndefined();
+    expect(written).toEqual(["good", "good-2"]);
+    errors.mockRestore();
+  });
+
   it("flush waits for work enqueued while it was already waiting", async () => {
     const writer = controlledWriter();
     const queue = new BoundedAppendQueue<string>(writer.write);
