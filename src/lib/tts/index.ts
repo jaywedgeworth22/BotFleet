@@ -31,6 +31,7 @@ interface SpeakOptions {
   voiceId?: string;
   botId?: string;
   messageId?: string;
+  threadId?: string;
 }
 
 type TtsPrepareBody = { ready?: boolean; utterances?: string[]; error?: string };
@@ -105,6 +106,31 @@ export class Speaker {
     this.request = controller;
     const live = () => this.token === mine && !controller.signal.aborted;
 
+    if (opts.messageId && opts.botId) {
+      this.set({ status: "preparing", botId: opts.botId, messageId: opts.messageId });
+      try {
+        // The server owns the message text and selected voice. Repeated taps
+        // retrieve the same paid clips rather than synthesizing them again.
+        const threadId = opts.threadId;
+        if (!threadId) throw new Error("The message thread is unavailable.");
+        const endpoint = `/api/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(opts.messageId)}/audio`;
+        const response = await fetch(endpoint, { method: "POST", signal: controller.signal });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `Voice service returned ${response.status}`);
+        const { audio } = await response.json() as { audio: Array<{ path: string; mime: string }> };
+        for (let i = 0; i < audio.length && live(); i++) {
+          const clip = await fetch(`${endpoint}/${i}`, { signal: controller.signal });
+          if (!clip.ok) throw new Error(`Voice clip could not be loaded (${clip.status}).`);
+          this.set({ status: "speaking", botId: opts.botId, messageId: opts.messageId });
+          if (!(await this.play(await clip.blob(), live))) throw new Error("The voice clip could not be played.");
+        }
+        if (live()) this.set(IDLE);
+      } catch (error) {
+        if (live()) this.set({ ...IDLE, error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        if (this.request === controller) this.request = null;
+      }
+      return;
+    }
     this.set({ status: "preparing", botId: opts.botId, messageId: opts.messageId });
     let utterances: string[];
     try {
