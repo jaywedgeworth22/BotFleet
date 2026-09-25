@@ -433,11 +433,12 @@ if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   usageQuotaPoller.start();
 }
 setImmediate(() => {
-  try {
-    rollingSpendTracker.init(EVENTS_DIR);
-  } catch {
+  // Streamed and cursored (server/rolling-spend.ts): a boot reads the bytes
+  // appended since the last one, not every events file inside the 7-day
+  // window, so this no longer stalls the loop for seconds on a large history.
+  void rollingSpendTracker.init(EVENTS_DIR).catch(() => {
     // Non-fatal spend history scan failure
-  }
+  });
 });
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
@@ -2529,6 +2530,9 @@ bus.subscribe((event: RuntimeEvent) => {
             instanceId: actualSelection.instanceId,
             costUsd: event.cost,
             billingMode: event.billingMode,
+            // The same turn is also in the canonical event log, which the next
+            // boot folds in; the id is what keeps it one turn and not two.
+            eventId: event.eventId,
           });
         }
         const currentTask = store.tasks(bot.id).find((t) => t.threadId === event.threadId);
@@ -2645,6 +2649,7 @@ bus.subscribe((event: RuntimeEvent) => {
               instanceId: actualSelection.instanceId,
               costUsd: event.cost,
               billingMode: event.billingMode,
+              eventId: event.eventId,
             });
           }
         }
@@ -11546,6 +11551,10 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     usageQuotaPoller.stop();
     infisical.stop();
     webhookIngress?.server.close();
-    void Promise.all([registry.disposeAll(), telemetry.dispose()]).finally(() => process.exit(0));
+    // bus.flush() is here because the canonical event log is no longer written
+    // on the publish path: the tee queues and one writer drains it, so the
+    // last few records of every live thread are in memory when a SIGTERM
+    // arrives and exiting without draining would lose them.
+    void Promise.all([registry.disposeAll(), telemetry.dispose(), bus.flush()]).finally(() => process.exit(0));
   });
 }

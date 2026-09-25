@@ -36,6 +36,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { appendFile, rename as renameFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 /** Cap for `native/<threadId>.ndjson`.  The native tee is the chatty half —
@@ -195,6 +196,57 @@ export function appendBounded(
   let size = currentSize(file);
   if (size > 0 && size + bytes > maxBytes && rotate(file)) size = 0;
   append(file, data, options);
+  rememberSize(file, size + bytes);
+}
+
+/** The one call that touches disk in `appendBoundedAsync`, named so the seam
+ * the event bus injects is one concrete signature rather than an overloaded
+ * builtin.  `fs.promises.appendFile` satisfies it, and so does a synchronous
+ * stub in a test that wants the write to fail. */
+export type AppendWriter = (file: string, data: string, options: { mode?: number }) => void | Promise<void>;
+
+async function currentSizeAsync(file: string): Promise<number> {
+  const cached = liveSizes.get(file);
+  if (cached !== undefined) return cached;
+  try {
+    return (await stat(file)).size;
+  } catch {
+    return 0;
+  }
+}
+
+async function rotateAsync(file: string): Promise<boolean> {
+  try {
+    await renameFile(file, rotatedPath(file));
+    liveSizes.delete(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `appendBounded` with nothing synchronous left in it — same cap, same
+ * rotation, same size cache, off the caller's stack.
+ *
+ * The event bus publishes on the harness's only thread and the log it feeds
+ * carries whole file contents a tool read, so a multi-megabyte append used to
+ * stall every other bot's turn, the SSE fan-out and `/api/health` alike.
+ *
+ * Ordering is the caller's job: this must be driven by ONE in-flight write at
+ * a time (`server/harness/append-queue.ts`), because the size bookkeeping and
+ * the rotation decision are a read-modify-write over shared state and two
+ * concurrent appends to one file would interleave them. */
+export async function appendBoundedAsync(
+  file: string,
+  data: string,
+  maxBytes: number,
+  options: { mode?: number } = {},
+  append: AppendWriter = appendFile,
+): Promise<void> {
+  const bytes = Buffer.byteLength(data);
+  let size = await currentSizeAsync(file);
+  if (size > 0 && size + bytes > maxBytes && (await rotateAsync(file))) size = 0;
+  await append(file, data, options);
   rememberSize(file, size + bytes);
 }
 
