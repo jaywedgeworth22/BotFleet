@@ -47,6 +47,7 @@ import { appendDecision, readDecisions } from "./decision-log.ts";
 import { cwdConfinementError, protectedCwdDirs, realOrResolved, validateBotCwd, type CwdConfinement } from "./bot-cwd.ts";
 import { resolveStaticFile } from "./static-files.ts";
 import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
+import { incomingRecording, recordingReview } from "./recorded-message.ts";
 import { openBotFleetDesktop } from "./desktop-open.ts";
 import { IdempotencyCache } from "./idempotency.ts";
 import { initializeHarnessOwnership, harnessOwnerProof } from "../electron/harness-ownership.mjs";
@@ -2951,6 +2952,7 @@ async function startTurn(
     cardContinuation?: boolean;
     /** Earlier text message this user turn is replying to. */
     replyTo?: Message;
+    recording?: Message["recording"];
     onDispatchError?: (message: string) => void;
     /** Override engine for this turn (model fallback).  Persistence is the caller's job. */
     modelSelection?: ModelSelection;
@@ -3119,6 +3121,7 @@ async function startTurn(
           kind: "text",
           text,
           replyToId: opts?.replyTo?.id,
+          recording: opts?.recording,
           automationSource: opts?.automationSource,
         });
   }
@@ -5230,7 +5233,7 @@ async function runGroupMemberTurn(
   return true;
 }
 
-function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
+function startGroupTurn(groupId: string, text: string, replyTo?: Message, recording?: Message["recording"]) {
   const group = store.group(groupId);
   if (!group) throw Object.assign(new Error("no such group"), { status: 404 });
   if (roomSetupPending(group)) {
@@ -5239,7 +5242,7 @@ function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
   // Capture the active thread once. Every queued responder below is bound to
   // this task even if another client asks to switch later.
   const threadId = group.threadId;
-  store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId: replyTo?.id });
+  store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId: replyTo?.id, recording });
   if (!group.dm) store.titleGroupTaskFromFirstMessage(group.id, text, threadId);
 
   const members = group.memberIds
@@ -7313,6 +7316,30 @@ const server = createServer(async (req, res) => {
       return json(res, 200, messagePage(threadId, limit ?? DEFAULT_PAGE, before));
     }
 
+    // A note about a recorded message is not a conversation edit: it cannot
+    // fork the thread, rerun the bot, or rewrite the recognizer's original.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/recording-review$/);
+    if (m && method === "PATCH") {
+      if (!store.botByThread(m[1]) && !store.groupByThread(m[1])) return json(res, 404, { error: "no such conversation" });
+      const message = store.messagesFor(m[1]).find((row) => row.id === m![2]);
+      if (message?.role !== "user" || !message.recording) return json(res, 404, { error: "no such recording" });
+      const body = await readBody(req);
+      const review = recordingReview(message.recordingReview, body);
+      if (!review) return json(res, 400, { error: "correction or comment must be text up to 12000 characters" });
+      return json(res, 200, { message: store.patchMessage(m[1], m[2], { recordingReview: review }) });
+    }
+
+    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/recording$/);
+    if (m && method === "GET") {
+      if (!store.botByThread(m[1]) && !store.groupByThread(m[1])) return json(res, 404, { error: "no such conversation" });
+      const message = store.messagesFor(m[1]).find((row) => row.id === m![2]);
+      const file = message?.role === "user" ? message.recording?.path.match(/^\/api\/attachments\/([\w-]+\.wav)$/)?.[1] : undefined;
+      const stored = file ? readAttachment(file) : null;
+      if (!stored || stored.mime !== "audio/wav") return json(res, 404, { error: "no such recording" });
+      res.writeHead(200, { "content-type": "audio/wav", "content-length": String(stored.bytes.byteLength), "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+      return res.end(stored.bytes);
+    }
+
     // the pixels of one screen message, fetched only when something shows it
     m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/image$/);
     if (m && method === "GET") {
@@ -8243,6 +8270,8 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
         return json(res, 400, { error: "threadId must be a task id" });
       }
+      const recording = body.recording === undefined ? undefined : incomingRecording(body.recording) ?? undefined;
+      if (body.recording !== undefined && !recording) return json(res, 400, { error: "recording must be a saved WAV attachment" });
       const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
       if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const expectedThreadId = body.threadId ?? group.threadId;
@@ -8270,7 +8299,7 @@ const server = createServer(async (req, res) => {
 
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
       const reply = await replyOnce(scopedIdempotencyKey, async () => {
-        startGroupTurn(group.id, text, replyTo);
+        startGroupTurn(group.id, text, replyTo, recording);
         return { status: 202, body: { ok: true } };
       });
       return json(res, reply.status, reply.body);
@@ -8981,6 +9010,8 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
         return json(res, 400, { error: "threadId must be a task id" });
       }
+      const recording = body.recording === undefined ? undefined : incomingRecording(body.recording) ?? undefined;
+      if (body.recording !== undefined && !recording) return json(res, 400, { error: "recording must be a saved WAV attachment" });
       const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
       if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const expectedThreadId = body.threadId ?? bot.threadId;
@@ -9011,6 +9042,9 @@ const server = createServer(async (req, res) => {
 
       const replyTo = resolveReplyTarget(bot.threadId, body.replyToId);
       const deliver = async (): Promise<RouteReply> => {
+        // Steering/queueing does not preserve message metadata. A recorded
+        // turn waits for idle rather than pretending its audio was retained.
+        if (recording && bot.busy) return { status: 409, body: { error: "wait for the current turn before sending a recording" } };
         // Claude can accept the message inside its live turn. If the write
         // loses a race with turn settlement, or the engine cannot steer, the
         // existing server-side queue records it atomically for the next turn.
@@ -9041,7 +9075,7 @@ const server = createServer(async (req, res) => {
           });
           return { status: 202, body: { ok: true, queued: true, queueId: queued.id, threadId: bot.threadId } };
         }
-        await startTurn(bot.id, text, { replyTo });
+        await startTurn(bot.id, text, { replyTo, recording });
         return { status: 202, body: { ok: true } };
       };
       // A retried send must not run the instruction twice: the key is scoped
@@ -9082,7 +9116,7 @@ const server = createServer(async (req, res) => {
       // auto-delivered routine/webhook/resource instruction — Regenerate
       // and edit-last both retarget the same turn-starter on an
       // automation-only thread, so both roles are editable here.
-      if (!source || (source.role !== "user" && source.role !== "system") || source.kind !== "text") {
+      if (!source || (source.role !== "user" && source.role !== "system") || source.kind !== "text" || source.recording) {
         return json(res, 404, { error: "only user or system-instruction messages can be edited" });
       }
       if (!registry.get(bot.modelSelection.instanceId)) {
