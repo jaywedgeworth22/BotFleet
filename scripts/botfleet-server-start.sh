@@ -6,6 +6,13 @@
 # Starts the detached checkout harness, exits 0 when :8799 is already healthy,
 # and self-heals once when node_modules is missing or imports fail with
 # ERR_MODULE_NOT_FOUND / Cannot find package.
+#
+# Log rotation (OP7): launchd owns server.log as this process's
+# StandardOutPath/StandardErrorPath for its whole life, so the harness
+# itself can never rotate the file out from under its own open file
+# descriptor.  This script can: it runs BEFORE exec'ing the harness, when
+# nothing holds the path open yet (the health check above already confirmed
+# no harness is currently serving), so rotating here is safe.
 set -euo pipefail
 
 ROOT="${BOTFLEET_SERVER_ROOT:-$HOME/apps/botfleet-server}"
@@ -14,6 +21,8 @@ NODE="${BOTFLEET_NODE:-/opt/homebrew/bin/node}"
 PNPM="${BOTFLEET_PNPM:-pnpm}"
 HEAL_MINUTES="${BOTFLEET_HEAL_MINUTES:-15}"
 STAMP="${BOTFLEET_HEAL_STAMP:-$ROOT/.botfleet-heal-stamp}"
+LOG_FILE="${BOTFLEET_SERVER_LOG:-$HOME/Library/Logs/botfleet/server.log}"
+LOG_MAX_BYTES=$((20 * 1024 * 1024))
 PREFIX="[botfleet-server-start]"
 # Consecutive-failure ledger.  launchd's KeepAlive.SuccessfulExit=false plus
 # ThrottleInterval 5 respawns this job every 5-7s forever on any non-zero
@@ -44,6 +53,16 @@ log() {
 
 log_err() {
   echo "$PREFIX $*" >&2
+}
+
+rotate_log_if_large() {
+  [ -f "$LOG_FILE" ] || return 0
+  local size
+  size=$(/usr/bin/stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)
+  if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+    log "rotating $LOG_FILE (${size} bytes) to server.log.1"
+    mv -f "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null || true
+  fi
 }
 
 stamp_recent() {
@@ -235,5 +254,12 @@ if needs_module_heal; then
 fi
 
 reset_fail_ledger
+
+# Keeps one prior generation (server.log.1); the harness's own log carries
+# no size cap beyond this, so a generation can still be up to LOG_MAX_BYTES.
+# Runs last, right before we actually become the writer: every branch above
+# this point can still exit without ever touching the log file.
+rotate_log_if_large
+
 cd "$ROOT"
 exec "$NODE" --experimental-strip-types server/index.ts
