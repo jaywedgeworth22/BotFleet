@@ -122,7 +122,7 @@ export class BoundedAppendQueue<Context> {
     // and a re-entrant `enqueue` mid-loop would be mutating the array this
     // loop is walking.
     this.reportDrops(false);
-    for (const context of evicted) this.onDropped(context);
+    for (const context of evicted) this.guarded(() => this.onDropped(context));
   }
 
   /** Resolves when everything queued at the moment of the call has been
@@ -142,6 +142,19 @@ export class BoundedAppendQueue<Context> {
     };
   }
 
+  /** Nothing a handler does may reject the drain.  The drain promise is only
+   * awaited at shutdown, so a rejection would sit unhandled for the life of
+   * the process — and an unhandled rejection takes the harness down on Node
+   * 24.  A tee that cannot write is a degraded log; it is never a reason to
+   * stop the fleet. */
+  private guarded(run: () => void): void {
+    try {
+      run();
+    } catch (error) {
+      console.error("append-queue: an entry handler threw", error);
+    }
+  }
+
   private async drain(): Promise<void> {
     try {
       while (this.queue.length > 0) {
@@ -149,9 +162,9 @@ export class BoundedAppendQueue<Context> {
         this.queuedBytes -= next.bytes;
         try {
           await this.write(next.file, next.data);
-          this.onWritten(next.context);
+          this.guarded(() => this.onWritten(next.context));
         } catch (error) {
-          this.onWriteError(next.context, error);
+          this.guarded(() => this.onWriteError(next.context, error));
         }
       }
     } finally {
@@ -164,9 +177,11 @@ export class BoundedAppendQueue<Context> {
     const at = this.now();
     if (!force && at - this.lastReportAt < DROP_REPORT_INTERVAL_MS) return;
     const entries = this.dropsSinceReport === 1 ? "1 entry" : `${this.dropsSinceReport} entries`;
-    this.report(
-      `append-queue: dropped ${entries} (${this.dropBytesSinceReport} bytes) from the event log tee — ` +
-        `writes are behind the fleet and the queue is capped at ${this.maxQueuedBytes} bytes.  Live delivery is unaffected.`,
+    this.guarded(() =>
+      this.report(
+        `append-queue: dropped ${entries} (${this.dropBytesSinceReport} bytes) from the event log tee — ` +
+          `writes are behind the fleet and the queue is capped at ${this.maxQueuedBytes} bytes.  Live delivery is unaffected.`,
+      ),
     );
     this.lastReportAt = at;
     this.dropsSinceReport = 0;
