@@ -349,8 +349,9 @@ describe("Store", () => {
 
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({});
+  });
 
-it("clearResumeCursor drops only the cursor it names, durably", () => {
+  it("clearResumeCursor drops only the cursor it names, durably", () => {
     const store = new Store(selection);
     const bot = store.createBot();
     store.setResumeCursor(bot.id, "codex", "thread-rejected", bot.threadId);
