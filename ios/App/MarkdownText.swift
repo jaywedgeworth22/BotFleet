@@ -88,10 +88,14 @@ struct MarkdownText: View {
                 // Horizontal scroll rather than wrapping: wrapped code is
                 // harder to read than code you have to push sideways, and
                 // indentation is most of what a snippet is saying.
+                //
+                // CodeBlockTextView (UITextView) is used instead of Text so
+                // that text layout runs via TextKit 2 off the main thread.
+                // Text + monospaced font calls NSAttributedString.boundingRect
+                // synchronously on the main thread, which blocks for 2000 ms+
+                // on large code blocks and triggers an AppHang.
                 ScrollView(.horizontal, showsIndicators: false) {
-                    (Text(text) + caretText(tail))
-                        .font(.system(size: 14, design: .monospaced))
-                        .textSelection(.enabled)
+                    CodeBlockTextView(text: text, caret: tail)
                 }
             }
             .padding(10)
