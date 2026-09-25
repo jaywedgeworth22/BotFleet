@@ -123,12 +123,30 @@ function multiExecuteCall(invoked: string, args: unknown): ConnectorCall {
       }
       names.push(slug);
     }
-    return { kind: "tools", invoked, names };
+    return batchCall(invoked, names);
   }
   if (typeof singleSlug === "string" && singleSlug) {
-    return { kind: "tools", invoked, names: [singleSlug] };
+    return batchCall(invoked, [singleSlug]);
   }
   return { kind: "unrecognized", invoked, reason: "the arguments named no tools to execute" };
+}
+
+/** Run each batch slug through the same checks a direct call gets:
+ * meta-tools and connection cards are ungated (dropped from the verdict),
+ * and a slug that is not a Composio tool name is refused as unrecognized
+ * instead of being judged by its prefix. A batch of only ungated slugs
+ * passes through, like the same calls made directly. */
+function batchCall(invoked: string, slugs: string[]): ConnectorCall {
+  const names: string[] = [];
+  for (const slug of slugs) {
+    if (isUngatedToolName(slug)) continue;
+    if (!CONNECTOR_TOOL_NAME_PATTERN.test(slug)) {
+      return { kind: "unrecognized", invoked, reason: "an entry in the tools list is not a Composio tool name" };
+    }
+    names.push(slug);
+  }
+  if (names.length === 0) return { kind: "passthrough" };
+  return { kind: "tools", invoked, names };
 }
 
 /** Judge distinct target names against a bot's grants. grants undefined
