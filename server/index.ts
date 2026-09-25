@@ -2559,7 +2559,11 @@ bus.subscribe((event: RuntimeEvent) => {
           quotaCooldowns.clear(fallbackBot.id, actualSelection.instanceId, actualSelection.model);
         } else if (
           actualSelection.instanceId &&
-          (event.stopReason === "prompt_timeout" || event.stopReason === "resume_failed")
+          // A hard-ceiling timeout and an idle stall are both a forcibly
+          // cancelled, possibly wedged ACP session — its resume cursor is
+          // no more trustworthy than the one a failed resume already
+          // invalidates.
+          (event.stopReason === "prompt_timeout" || event.stopReason === "prompt_stall" || event.stopReason === "resume_failed")
         ) {
           store.setResumeCursor(fallbackBot.id, actualSelection.instanceId, undefined, event.threadId);
         }
