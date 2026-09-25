@@ -80,8 +80,8 @@ export function MermaidBlock({ code, streaming }: MermaidBlockProps) {
           // source up and stay quiet until the stream settles and re-runs
           // this effect
           if (!alive || streaming) return;
-          const message = cause instanceof Error ? cause.message : String(cause);
-          setError(message.length > 300 ? `${message.slice(0, 300)}…` : message);
+          console.warn("Mermaid diagram could not be drawn", cause);
+          setError("This diagram could not be drawn. The source is below.");
         });
     };
     // Either path is a genuinely new diagram (different code, or the skin
@@ -127,14 +127,15 @@ export function MermaidBlock({ code, streaming }: MermaidBlockProps) {
         <button
           onClick={copy}
           className="rounded p-1 text-ink-secondary hover:bg-raised hover:text-ink"
-          title="Copy Diagram Source"
+          title={copied ? "Copied" : "Copy Diagram Source"}
+          aria-label={copied ? "Copied" : "Copy Diagram Source"}
         >
           {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
         </button>
       </div>
       {error && (
         <p role="alert" className="px-3 pt-2 text-[12px] text-danger">
-          Diagram could not be rendered: {error}
+          {error}
         </p>
       )}
       {svg && !error ? (

@@ -56,6 +56,10 @@ describe("MermaidBlock", () => {
 
   it("copies the diagram source, not the rendered SVG", () => {
     expect(SRC).toContain("navigator.clipboard?.writeText(code)");
+    const html = renderToStaticMarkup(createElement(MermaidBlock, { code: "flowchart LR\nA-->B", streaming: false }));
+    expect(html).toContain('aria-label="Copy Diagram Source"');
+    expect(SRC).toContain("This diagram could not be drawn. The source is below.");
+    expect(SRC).not.toContain("cause.message");
   });
 
   // Sentry bug-prediction review on PR #633: the non-streaming render path
