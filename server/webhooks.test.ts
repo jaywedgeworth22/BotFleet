@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -272,18 +272,75 @@ describe("WebhookManager", () => {
   it("coalesces a burst of non-receive-path saves into one write, and flushNow() flushes it", () => {
     const h = harness();
     const created = create(h.manager);
-    // The debounced save has not landed yet — proves this burst does not
-    // each write synchronously the way the pre-fix save() did.
-    expect(existsSync(h.file)).toBe(false);
+    // create() is durable on return (it hands out a secret); the updates that
+    // follow are not, so the file still holds the name create() wrote.
     h.manager.update(created.webhook.id, { name: "Renamed once" });
     h.manager.update(created.webhook.id, { name: "Renamed twice" });
-    expect(existsSync(h.file)).toBe(false);
+    expect(JSON.parse(readFileSync(h.file, "utf8")).webhooks[0].name).toBe("New lead");
 
     h.manager.flushNow();
 
-    expect(existsSync(h.file)).toBe(true);
-    const disk = JSON.parse(readFileSync(h.file, "utf8"));
-    expect(disk.webhooks[0].name).toBe("Renamed twice");
+    expect(JSON.parse(readFileSync(h.file, "utf8")).webhooks[0].name).toBe("Renamed twice");
+  });
+
+  it("has a new webhook's secret on disk before create() returns — no flush, as if the process died", () => {
+    const h = harness();
+    const { webhook, secret } = create(h.manager);
+    // No flushNow(): a fresh manager reads exactly what a crash would leave.
+    const afterCrash = new WebhookManager(h.options);
+    expect(afterCrash.authorize(webhook.endpointId, secret)).toBe(true);
+  });
+
+  it("has a rotated secret on disk before rotateSecret() returns, so the old one is already dead", () => {
+    const h = harness();
+    const { webhook, secret: oldSecret } = create(h.manager);
+    const rotated = h.manager.rotateSecret(webhook.id)!;
+    const afterCrash = new WebhookManager(h.options);
+    expect(afterCrash.authorize(webhook.endpointId, rotated.secret)).toBe(true);
+    expect(afterCrash.authorize(webhook.endpointId, oldSecret)).toBe(false);
+  });
+
+  it("writes a new delivery receipt before receive() returns even when nothing else was pending", () => {
+    const h = harness();
+    const { webhook, secret } = create(h.manager);
+    h.manager.flushNow(); // nothing dirty: the receipt is the only change
+    const event = { payload: { id: 7 }, deliveryId: "only-change" };
+    expect(h.manager.receive(webhook.endpointId, secret, event).duplicate).toBe(false);
+
+    const afterCrash = new WebhookManager(h.options);
+    expect(afterCrash.receive(webhook.endpointId, secret, event)).toMatchObject({ deliveryId: "only-change", duplicate: true });
+    expect(h.queued).toHaveLength(1);
+  });
+
+  it("fails create() and rotateSecret() without handing out a secret when the write fails, and rolls memory back", () => {
+    const h = harness();
+    const { webhook, secret } = create(h.manager);
+    const dir = join(h.file, "..");
+    // Replace the data directory with a plain file: every write now throws.
+    rmSync(dir, { recursive: true, force: true });
+    writeFileSync(dir, "");
+    try {
+      expect(() => create(h.manager)).toThrow();
+      expect(h.manager.list()).toHaveLength(1);
+      expect(() => h.manager.rotateSecret(webhook.id)).toThrow();
+      expect(h.manager.authorize(webhook.endpointId, secret)).toBe(true);
+    } finally {
+      rmSync(dir, { force: true });
+    }
+  });
+
+  it("keeps a pending save marked dirty when its write fails, so the next flush still lands it", () => {
+    const h = harness();
+    const created = create(h.manager);
+    h.manager.update(created.webhook.id, { name: "Survives a failed write" });
+    const dir = join(h.file, "..");
+    rmSync(dir, { recursive: true, force: true });
+    writeFileSync(dir, "");
+    expect(() => h.manager.flushNow()).toThrow();
+
+    rmSync(dir, { force: true });
+    h.manager.flushNow();
+    expect(JSON.parse(readFileSync(h.file, "utf8")).webhooks[0].name).toBe("Survives a failed write");
   });
 
   it("caps attempt retention at 500 and the payload preview at 512 characters, keeping the newest", () => {

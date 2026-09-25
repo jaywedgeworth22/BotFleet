@@ -1390,8 +1390,20 @@ export class RoutineManager {
   private scheduleFlush(): void {
     this.dirty = true;
     if (this.saveTimer) return;
-    this.saveTimer = setTimeout(() => this.flushNow(), SAVE_DEBOUNCE_MS);
+    this.saveTimer = setTimeout(() => this.flushFromTimer(), SAVE_DEBOUNCE_MS);
     this.saveTimer.unref?.();
+  }
+
+  /** The debounce timer's flush.  A throw here would be an uncaught exception
+   * in a timer callback, so a failed write is logged instead; `dirty` stays
+   * set, and the next save() or the shutdown flush retries the whole file. */
+  private flushFromTimer(): void {
+    this.saveTimer = null;
+    try {
+      this.flushNow();
+    } catch (error) {
+      console.error("routines: debounced save failed; the next save or shutdown retries it", error);
+    }
   }
 
   /** Synchronous, immediate write-through — bypasses the debounce for
@@ -1406,7 +1418,6 @@ export class RoutineManager {
       this.saveTimer = null;
     }
     if (!this.dirty) return;
-    this.dirty = false;
     mkdirSync(dirname(this.file), { recursive: true });
     const now = this.now();
     const botSnoozes: Record<string, number | null> = {};
@@ -1426,5 +1437,8 @@ export class RoutineManager {
       routineRequestReceipts: this.routineRequestReceipts,
       ...(Object.keys(botSnoozes).length > 0 ? { botSnoozes } : {}),
     } satisfies RoutineFile));
+    // Cleared only after the write lands: a failed write throws (so
+    // commitMutation can roll back) with the pending state still marked.
+    this.dirty = false;
   }
 }

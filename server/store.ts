@@ -974,8 +974,20 @@ export class Store {
   private saveBots() {
     this.botsDirty = true;
     if (this.saveBotsTimer) return;
-    this.saveBotsTimer = setTimeout(() => this.flushBotsNow(), BOTS_SAVE_DEBOUNCE_MS);
+    this.saveBotsTimer = setTimeout(() => this.flushBotsFromTimer(), BOTS_SAVE_DEBOUNCE_MS);
     this.saveBotsTimer.unref?.();
+  }
+
+  /** The debounce timer's flush.  A throw here would be an uncaught exception
+   * in a timer callback, so a failed write is logged instead; `botsDirty`
+   * stays set, and the next saveBots() or the shutdown flush retries it. */
+  private flushBotsFromTimer(): void {
+    this.saveBotsTimer = null;
+    try {
+      this.flushBotsNow();
+    } catch (error) {
+      console.error("store: debounced bots.json save failed; the next save or shutdown retries it", error);
+    }
   }
 
   /** Synchronous, immediate write-through — used by patchBot() for the
@@ -984,18 +996,20 @@ export class Store {
    * asserting on-disk state right after a mutation (including a fresh
    * `new Store` against the same files, which reads whatever is on disk
    * right now), and by the shutdown path so a pending coalesced save is
-   * never lost when the process exits. A no-op when nothing is dirty. */
+   * never lost when the process exits. A no-op when nothing is dirty.
+   * `botsDirty` is cleared only after the write succeeds, so a failed write
+   * throws with the pending change still marked for the next try. */
   flushBotsNow(): void {
     if (this.saveBotsTimer) {
       clearTimeout(this.saveBotsTimer);
       this.saveBotsTimer = null;
     }
     if (!this.botsDirty) return;
-    this.botsDirty = false;
     // busy/activity never survive a restart (reset on load above) and
     // change on every turn transition, so they are excluded here rather
     // than debounced — nothing to coalesce for state nobody reads back.
     writeFileAtomic(BOTS_FILE, JSON.stringify(this.bots.map(({ busy, activity, ...bot }) => bot), null, 2));
+    this.botsDirty = false;
   }
 
   private saveGroups() {

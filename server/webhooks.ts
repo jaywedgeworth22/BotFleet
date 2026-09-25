@@ -927,7 +927,17 @@ export class WebhookManager {
       deliveryCount: 0,
     };
     this.webhooks.unshift(trigger);
-    this.save();
+    // The caller is about to receive the only copy of this secret, so its
+    // hash must be on disk before we return — a crash inside a debounce
+    // window would otherwise hand out a secret no restarted harness accepts.
+    // If the write fails, undo the insert so memory never runs ahead of disk.
+    try {
+      this.saveNow();
+    } catch (error) {
+      const at = this.webhooks.indexOf(trigger);
+      if (at !== -1) this.webhooks.splice(at, 1);
+      throw error;
+    }
     this.emit(trigger);
     return { webhook: publicTrigger(trigger), secret };
   }
@@ -976,9 +986,19 @@ export class WebhookManager {
     const trigger = this.webhooks.find((candidate) => candidate.id === id);
     if (!trigger) return null;
     const secret = newSecret();
+    const previous = { secretHash: trigger.secretHash, updatedAt: trigger.updatedAt };
     trigger.secretHash = hashSecret(secret);
     trigger.updatedAt = this.now();
-    this.save();
+    // Same contract as create(): the new hash is durable before the secret is
+    // returned, so a crash cannot leave the rotated-out secret valid on disk
+    // after the caller was told it was replaced.  A failed write restores the
+    // old hash and throws instead of returning a secret that never landed.
+    try {
+      this.saveNow();
+    } catch (error) {
+      Object.assign(trigger, previous);
+      throw error;
+    }
     this.emit(trigger);
     return { webhook: publicTrigger(trigger), secret };
   }
@@ -1131,8 +1151,9 @@ export class WebhookManager {
     // makes a retried delivery idempotent. It must be durable before the
     // HTTP 202 is returned, or a restart between accepting this delivery and
     // a debounced flush would forget it, and the sender's retry would be
-    // treated as new. Every other save() in this file can coalesce safely.
-    this.flushNow();
+    // treated as new.  create() and rotateSecret() make the same exception
+    // for newly issued secrets; every other save() here can coalesce.
+    this.saveNow();
     this.emit(trigger);
     return { runId: run.id, deliveryId, duplicate: false };
   }
@@ -1229,27 +1250,47 @@ export class WebhookManager {
   private save(): void {
     this.dirty = true;
     if (this.saveTimer) return;
-    this.saveTimer = setTimeout(() => this.flushNow(), SAVE_DEBOUNCE_MS);
+    this.saveTimer = setTimeout(() => this.flushFromTimer(), SAVE_DEBOUNCE_MS);
     this.saveTimer.unref?.();
+  }
+
+  /** Mark dirty and write through now.  For the few mutations that must be
+   * durable before the call returns; throws if the write fails. */
+  private saveNow(): void {
+    this.dirty = true;
+    this.flushNow();
+  }
+
+  /** The debounce timer's flush.  A throw here would be an uncaught exception
+   * in a timer callback, so a failed write is logged instead; `dirty` stays
+   * set, and the next save() or the shutdown flush retries the whole file. */
+  private flushFromTimer(): void {
+    this.saveTimer = null;
+    try {
+      this.flushNow();
+    } catch (error) {
+      console.error("webhooks: debounced save failed; the next save or shutdown retries it", error);
+    }
   }
 
   /** Synchronous, immediate write-through — used by the receive path for the
    * new-delivery record (see dispatch()), by tests asserting on-disk state
    * right after a mutation, and by the shutdown path so a pending coalesced
    * save is never lost when the process exits. A no-op when nothing is
-   * dirty. */
+   * dirty.  `dirty` is cleared only after the write succeeds, so a failed
+   * write throws with the pending mutation still marked for the next try. */
   flushNow(): void {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     if (!this.dirty) return;
-    this.dirty = false;
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(
       this.file,
       JSON.stringify({ version: 1, webhooks: this.webhooks, deliveries: this.deliveries, attempts: this.attempts } satisfies WebhookFile),
       { mode: 0o600 },
     );
+    this.dirty = false;
   }
 }
