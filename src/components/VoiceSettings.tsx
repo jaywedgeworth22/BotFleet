@@ -334,6 +334,12 @@ export function VoiceSettings({
       )}
 
       <div className="mt-4 border-t border-hairline/40 pt-4">
+        <div className="text-[13px] font-medium text-ink">Speech to text</div>
+        <p className="mt-1 text-[12px] text-ink-secondary">iPhone microphone dictation uses Apple on-device recognition when this language and device support it. Recordings sent from iPhone keep the original audio and transcript on their message.</p>
+        <p className="mt-1 text-[12px] text-ink-secondary">Cloud fallback and translation are not configured. Siri and iOS 27 speech features still need device testing.</p>
+      </div>
+
+      <div className="mt-4 border-t border-hairline/40 pt-4">
         <div className="text-[13px] font-medium text-ink">Play replies on</div>
         <p className="mt-0.5 text-[11.5px] text-ink-secondary">Choose where this bot speaks as answers arrive. Voice clips stay on their messages for replay.</p>
         <div className="mt-3 flex gap-4">
