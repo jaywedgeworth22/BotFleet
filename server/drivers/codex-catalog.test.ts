@@ -60,13 +60,14 @@ describe("decodeCodexSelection", () => {
 describe("readCodexModelCatalog", () => {
   it("keeps the static fallback aligned with the current visible Codex rows", () => {
     expect(STATIC_CODEX_MODELS).toEqual({
-      default: "gpt-5.6-luna",
+      default: "gpt-6-luna",
       options: [
         { id: "gpt-6-astra", label: "GPT-6 Astra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
-        { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-6-sol", label: "GPT-6 Sol", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
         { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
-        { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-6-luna", label: "GPT-6 Luna", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
         { id: "gpt-5.5", label: "GPT-5.5", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
+        { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", effortLevels: ["low", "medium", "high", "xhigh"], supportsEffort: true },
       ],
     });
   });
@@ -191,7 +192,7 @@ model = "gpt-5.4"
     });
   });
 
-  it.each(["gpt-6-sol", "gpt-6-luna", "gpt-5.3-codex-spark"])(
+  it.each(["gpt-5.4"])(
     "keeps saved legacy OAuth selection %s without making it a fallback recommendation",
     async (model) => {
       const home = scratchHome({ "config.toml": `model = "${model}"\n` });
@@ -206,11 +207,11 @@ model = "gpt-5.4"
 
   it("preserves profile models when the main provider defaults to OpenAI", async () => {
     const home = scratchHome({
-      "config.toml": 'model = "gpt-5.6-sol"\n',
+      "config.toml": 'model = "gpt-6-sol"\n',
       "legacy.config.toml": 'model = "gpt-5.4"\n',
     });
     const catalog = await readCodexModelCatalog({ HOME: home });
-    expect(catalog.default).toBe("gpt-5.6-sol");
+    expect(catalog.default).toBe("gpt-6-sol");
     expect(catalog.options).toContainEqual({
       id: encodeCodexSelection("openai", "gpt-5.4"),
       label: "gpt-5.4",
@@ -266,9 +267,9 @@ name = "oMLX"
 `,
     });
     const catalog = await readCodexModelCatalog({ HOME: home });
-    // Keep the intended inexpensive Luna default on a slug the installed
-    // Codex OAuth catalog actually exposes; Astra remains selectable.
-    expect(catalog.default).toBe("gpt-5.6-luna");
+    // Default is GPT-6 Luna (the owner-facing default most owners reach
+    // for first); Astra still appears as a selectable option.
+    expect(catalog.default).toBe("gpt-6-luna");
     expect(catalog.options.every((option) => !option.custom)).toBe(true);
   });
 });
