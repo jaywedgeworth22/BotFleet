@@ -1122,8 +1122,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         version,
         expiresAt: Date.now() + 30_000,
         result: new Promise<boolean>((resolve) => {
-          execCli(config.cli, ["--help"], { timeout: 3000, env }, (error, stdout) => {
-            resolve(!error && /(?:^|\s)--strict-mcp-config(?:\s|$)/m.test(stdout));
+          // Some Claude CLI builds exit with a non-zero code from --help but
+          // still print usage to stdout or stderr.  Scan both regardless of
+          // exit status; if the flag is absent the text simply won't match.
+          execCli(config.cli, ["--help"], { timeout: 3000, env }, (_error, stdout, stderr) => {
+            resolve(/(?:^|\s)--strict-mcp-config(?:\s|$)/m.test(stdout + "\n" + (stderr ?? "")));
           });
         }),
       };

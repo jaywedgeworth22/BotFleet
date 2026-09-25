@@ -468,6 +468,25 @@ utilityParentPort?.on("message", (event) => {
 const bus = new EventBus();
 export { bus };
 bus.attach(registry.instances());
+// Eagerly probe each claudeAgent instance so a missing or outdated Claude CLI
+// is visible in the boot log rather than silently failing on the first turn.
+setImmediate(() => {
+  for (const instance of registry.instances()) {
+    if (instance.driverKind !== "claudeAgent") continue;
+    void instance.snapshot().then((snap) => {
+      if (snap.state === "unavailable") {
+        console.error(
+          `[botfleet] claudeAgent "${instance.instanceId}" is unavailable at boot: ${snap.reason ?? "unknown reason"}`,
+        );
+      }
+    }).catch((err: unknown) => {
+      console.error(
+        `[botfleet] claudeAgent "${instance.instanceId}" snapshot probe failed at boot:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+  }
+});
 // The in-process permission broker.  A CLI engine asks for permission over
 // its own protocol; a chat-completions driver runs its tool rounds in this
 // process and has no protocol to ask over, so this publishes the SAME
