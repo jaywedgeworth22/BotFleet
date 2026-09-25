@@ -253,7 +253,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { speechUsageTotals } from "./tts/usage.ts";
-import { VOICE_SUMMARY_PROMPT } from "../shared/voice-summary.ts";
+import { VOICE_SUMMARY_PROMPT, spokenReply } from "../shared/voice-summary.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { fitListToBudget, serializedPreview } from "./serialized-preview.ts";
 import { boundNativeTranscript, boundRoomContextLines, buildTurnContext, engineIsFresh } from "./turn-context.ts";
@@ -6863,6 +6863,9 @@ function endRuntimeQuiesce() {
   return { ...currentRuntimeReadiness(), quiescing: false };
 }
 
+// A concurrent Mac/iPhone request must never bill twice for the same reply.
+// The lock is process-local; the persisted message's audio list survives restarts.
+const voiceJobs = new Map<string, Promise<Array<{ path: string; mime: string }>>>();
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -11170,6 +11173,63 @@ const server = createServer(async (req, res) => {
       } finally {
         localAutoConsentConfigBusy = false;
         providerConfigBusy = false;
+      }
+    }
+
+    // Message-linked speech is generated only once, then served as immutable
+    // clips. The thread/message guard prevents guessed ids from creating work.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/audio(?:\/(\d+))?$/);
+    if (m && (method === "POST" || method === "GET")) {
+      const [, threadId, messageId, clipIndex] = m;
+      if (!store.botByThread(threadId) && !store.groupByThread(threadId)) return json(res, 404, { error: "no such conversation" });
+      const message = store.messagesFor(threadId).find((row) => row.id === messageId);
+      if (message?.role !== "bot" || message.kind !== "text" || !message.text?.trim()) return json(res, 404, { error: "no such reply" });
+      if (method === "GET") {
+        if (clipIndex === undefined) return json(res, 405, { error: "clip index required" });
+        const clip = message.audio?.[Number(clipIndex)];
+        const stored = clip?.path.match(/^\/api\/attachments\/([\w.-]+)$/);
+        const audio = stored ? readAttachment(stored[1]!) : null;
+        if (!audio || !clip || !["audio/mpeg", "audio/wav"].includes(audio.mime)) return json(res, 404, { error: "no such voice clip" });
+        res.writeHead(200, { "content-type": audio.mime, "content-length": String(audio.bytes.byteLength), "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+        return res.end(audio.bytes);
+      }
+      if (clipIndex !== undefined) return json(res, 405, { error: "POST the message audio route" });
+      if (message.audio?.length && message.audio.length === toUtterances(spokenReply(message.text)).length && message.audio.every((clip) => {
+        const name = clip.path.match(/^\/api\/attachments\/([\w.-]+)$/)?.[1];
+        return name && attachmentExists(name);
+      })) return json(res, 200, { audio: message.audio });
+      const owner = message.from?.botId ? store.bot(message.from.botId) : store.botByThread(threadId);
+      if (!owner) return json(res, 404, { error: "no voice owner" });
+      if (cfg.tts?.provider !== "system" && workspaceCredentialPending(cfg, "ttsKey")) return json(res, 409, { error: "Voice synthesis is waiting for its encrypted credential" });
+      const utterances = toUtterances(spokenReply(message.text));
+      if (!utterances.length || utterances.length > 64 || utterances.join("").length > 12000) return json(res, 413, { error: "reply exceeds voice clip limit" });
+      const key = `${threadId}:${messageId}`;
+      let job = voiceJobs.get(key);
+      if (!job) {
+        job = (async () => {
+          const clips: Array<{ path: string; mime: string }> = [];
+          for (const clip of message.audio ?? []) {
+            const name = clip.path.match(/^\/api\/attachments\/([\w.-]+)$/)?.[1];
+            if (!name || !attachmentExists(name)) break;
+            clips.push(clip);
+          }
+          if (clips.length !== (message.audio?.length ?? 0)) store.patchMessage(threadId, messageId, { audio: [...clips] });
+          for (const utterance of utterances.slice(clips.length)) {
+            const audio = await tts.speak(cfg, utterance, owner.voice);
+            if (!["audio/mpeg", "audio/wav"].includes(audio.mime)) throw new Error("The voice engine returned an unsupported audio format.");
+            const saved = saveAttachment(Buffer.from(audio.bytes), audio.mime);
+            clips.push({ path: `/api/attachments/${saved.path.split(/[\/]/).pop()}`, mime: saved.mime });
+            store.patchMessage(threadId, messageId, { audio: [...clips] });
+          }
+          return clips;
+        })();
+        voiceJobs.set(key, job);
+        void job.finally(() => voiceJobs.delete(key)).catch(() => {});
+      }
+      try { return json(res, 200, { audio: await job }); }
+      catch (error) {
+        if (error instanceof tts.NoVoiceConfigured) return json(res, 409, { error: error.message });
+        return json(res, 502, { error: error instanceof Error ? error.message : String(error) });
       }
     }
 
