@@ -20,7 +20,7 @@ export function VoiceSettings({
   onPatch,
 }: {
   bot: Bot;
-  onPatch: (patch: Partial<Pick<Bot, "voice" | "speakReplies">>) => void;
+  onPatch: (patch: Partial<Pick<Bot, "voice" | "speakReplies" | "speechDevices">>) => void;
 }) {
   const { state, dispatch } = useStore();
   const tts = state.config?.tts;
@@ -333,30 +333,20 @@ export function VoiceSettings({
         </div>
       )}
 
-      <div className="mt-4 flex items-center justify-between gap-4 border-t border-hairline/40 pt-4">
-        <div>
-          <div className="text-[13px] font-medium text-ink">Read replies aloud</div>
-          <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-            Speak this bot's answers as they arrive, even from another chat.
-          </div>
+      <div className="mt-4 border-t border-hairline/40 pt-4">
+        <div className="text-[13px] font-medium text-ink">Play replies on</div>
+        <p className="mt-0.5 text-[11.5px] text-ink-secondary">Choose where this bot speaks as answers arrive. Voice clips stay on their messages for replay.</p>
+        <div className="mt-3 flex gap-4">
+          {([['mac', 'Mac'], ['iphone', 'iPhone (app open)']] as const).map(([device, label]) => {
+            const selected = bot.speechDevices ? bot.speechDevices.includes(device) : device === 'mac' && Boolean(bot.speakReplies);
+            return <label key={device} className="flex items-center gap-2 text-[13px] text-ink">
+              <input type="checkbox" checked={selected} onChange={() => {
+                const devices = bot.speechDevices ?? (bot.speakReplies ? ['mac'] : []);
+                onPatch({ speechDevices: selected ? devices.filter((item) => item !== device) : [...devices, device] });
+              }} />{label}
+            </label>;
+          })}
         </div>
-        <button
-          role="switch"
-          aria-checked={Boolean(bot.speakReplies)}
-          aria-label="Read this bot's replies aloud"
-          onClick={() => onPatch({ speakReplies: !bot.speakReplies })}
-          className={cn(
-            "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
-            bot.speakReplies ? "bg-accent" : "bg-control",
-          )}
-        >
-          <span
-            className={cn(
-              "absolute top-[3px] size-5 rounded-full bg-white transition-all",
-              bot.speakReplies ? "left-[21px]" : "left-[3px]",
-            )}
-          />
-        </button>
       </div>
 
       <div className="mt-4 flex items-center justify-between gap-4 border-t border-hairline/40 pt-4">
