@@ -61,6 +61,68 @@ struct ChatView: View {
     private var threadId: String { current.threadId }
 
     private var messages: [Message] {
+//
+// The transcript is whatever the harness folded — settled text, tool chips,
+// option cards, screenshots. This renders those and nothing else; it does
+// not re-derive anything from provider events, because the server already
+// did that and having two folds is how two clients start disagreeing.
+import SwiftUI
+import CompanionCore
+// Unconditional, because the uses below are: `Color(uiColor:)` and
+// `UIImage(data:)` are reached on every path through this file. A
+// `canImport` guard around the import alone does not make the file portable
+// — it only moves the failure from "no such module" to "no such type", and
+// hides that this view is iOS-only behind something that looks like it
+// isn't. The App target is iOS; CompanionCore is where the portable half
+// lives.
+import UIKit
+import AVFoundation
+import PhotosUI
+import UniformTypeIdentifiers
+
+struct ChatView: View {
+    let chat: Chat
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var draft = ""
+    @State private var pendingAttachments: [PendingChatAttachment] = []
+    @State private var showingTasks = false
+    @State private var showingRoutines = false
+    @State private var showingComputer = false
+    @State private var showingPlus = false
+    @State private var showingCompose = false
+    @State private var showingProfile = false
+    @State private var showCommandHUD = false
+    @State private var pickingPhoto = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var pickingFile = false
+    @State private var sending = false
+    @State private var shareFile: ShareFile?
+    @FocusState private var composerFocused: Bool
+    @StateObject private var dictation = SpeechDictation()
+
+    /// The live bubble's scroll target. A constant because there is at most
+    /// one per chat and it has no message id to borrow.
+    static let liveBubbleId = "companion.live"
+
+    /// The live chat record, so busy/unread stay current as frames land.
+    private var current: Chat {
+        switch chat {
+        case let .bot(bot): return session.state.bot(bot.id).map(Chat.bot) ?? chat
+        case let .room(room):
+            return session.state.rooms.first { $0.id == room.id }.map(Chat.room) ?? chat
+        }
+    }
+
+    /// A bot receives a new thread when its task changes. Navigation keeps
+    /// the original Chat value, so every transcript lookup must follow the
+    /// live record instead of the snapshot that opened this screen.
+    private var threadId: String { current.threadId }
+
+    private var messages: [Message] {
         session.state.visibleTranscript(forThread: threadId)
     }
 
@@ -98,7 +160,9 @@ struct ChatView: View {
 
     private var currentDriverKind: String? {
         guard let selection = currentModelSelection else { return nil }
-        return session.instanceDriverKinds[selection.instanceId] ?? selection.instanceId
+        // Instance IDs are caller-chosen labels, not provider kinds. If the
+        // registry is cold, omit the mark rather than guessing a provider.
+        return session.instanceDriverKinds[selection.instanceId]
     }
 
     /// VoiceOver for the header identity button. The explicit button label
@@ -1069,7 +1133,9 @@ struct MessageRow: View {
 
     private var senderDriverKind: String? {
         guard let selection = senderModelSelection else { return nil }
-        return session.instanceDriverKinds[selection.instanceId] ?? selection.instanceId
+        // A cold registry cannot tell whether a named instance runs this model's
+        // native driver or a different one. Do not mislabel the sender's mark.
+        return session.instanceDriverKinds[selection.instanceId]
     }
 
     @ViewBuilder
