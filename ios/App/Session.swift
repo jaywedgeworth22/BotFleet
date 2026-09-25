@@ -896,7 +896,7 @@ final class Session: ObservableObject {
     // harness so the phone does not invent a second fold.
 
     @discardableResult
-    func send(_ text: String, to chat: Chat, attachments: [PendingChatAttachment] = []) async -> Bool {
+    func send(_ text: String, to chat: Chat, attachments: [PendingChatAttachment] = [], recording: (data: Data, transcript: String)? = nil) async -> Bool {
         guard let client else { return false }
         do {
             var prompt = text
@@ -914,6 +914,13 @@ final class Session: ObservableObject {
                 prompt = ChatAttachments.composeMessage(text: text, attachments: uploaded)
             }
             guard !prompt.isEmpty else { return false }
+            let savedRecording: IncomingRecording?
+            if let recording {
+                let path = try await client.uploadRecording(recording.data)
+                savedRecording = IncomingRecording(path: path, transcript: recording.transcript)
+            } else {
+                savedRecording = nil
+            }
             let threadId: String
             switch chat {
             case let .bot(bot): threadId = bot.threadId
@@ -928,7 +935,8 @@ final class Session: ObservableObject {
                         text: prompt,
                         toBot: bot.id,
                         threadId: threadId,
-                        idempotencyKey: localId
+                        idempotencyKey: localId,
+                        recording: savedRecording
                     )
                     if result.queued == true, let queueId = result.queueId, !queueId.isEmpty {
                         let dest = result.threadId ?? bot.threadId
@@ -944,7 +952,8 @@ final class Session: ObservableObject {
                         text: prompt,
                         toRoom: room.id,
                         threadId: threadId,
-                        idempotencyKey: localId
+                        idempotencyKey: localId,
+                        recording: savedRecording
                     )
                 }
                 return true
@@ -1711,6 +1720,38 @@ final class Session: ObservableObject {
             }
             if self?.voiceGeneration == generation { self?.stopVoice() }
         }
+    }
+
+    func playRecording(_ message: Message, threadId: String) {
+        if speakingMessageId == message.id { stopVoice(); return }
+        guard message.recording != nil, let client else { return }
+        stopVoice()
+        speakingMessageId = message.id
+        let generation = voiceGeneration
+        voiceTask = Task { [weak self] in
+            do {
+                let data = try await client.recording(threadId: threadId, messageId: message.id)
+                try Task.checkCancellation()
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .spokenAudio)
+                try audioSession.setActive(true)
+                let player = try AVAudioPlayer(data: data)
+                guard player.prepareToPlay(), player.play() else { throw APIError.transport("Recording could not be played.") }
+                self?.voicePlayer = player
+                while player.isPlaying && !Task.isCancelled {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+            } catch {
+                if !Task.isCancelled { self?.recordActionError(error) }
+            }
+            if self?.voiceGeneration == generation { self?.stopVoice() }
+        }
+    }
+
+    func saveRecordingReview(_ message: Message, threadId: String, correction: String, comment: String) async {
+        guard let client else { return }
+        do { _ = try await client.reviewRecording(threadId: threadId, messageId: message.id, correction: correction, comment: comment) }
+        catch { recordActionError(error) }
     }
 
     func previewVoice(_ voiceId: String, for bot: Bot) async -> Data? {
