@@ -22,6 +22,7 @@ import { ScreenPollers } from "./screen-poller.ts";
 import { ReplayBuffer, SLOW_CLIENT_BYTE_LIMIT, wants, writeToClient, type SseClient } from "./sse-broadcast.ts";
 import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import { DEFAULT_ROOM_TERMINOLOGY, resolveRoomLabels } from "../shared/terminology.ts";
+import { isThreadSnoozed, SNOOZE_UNTIL_ACTIVITY } from "../shared/thread-snooze.ts";
 import {
   allowsMultipleBotThreads,
   parseConversationMode,
@@ -1096,9 +1097,18 @@ setTimeout(() => {
  * paired phone has even less business holding provider session identifiers
  * than the desktop window did. Stripped here rather than at each call site
  * so a new broadcast cannot forget. */
-const wireTask = ({ resumeCursors, lastInstanceId, ...task }: TaskRecord) => {
+const wireTask = ({ resumeCursors, lastInstanceId, snoozedUntil, ...task }: TaskRecord) => {
   const last = store.messagesFor(task.threadId).at(-1);
-  return { ...task, lastActivity: last?.at ?? task.createdAt, lastMessage: last };
+  // Time-based snoozes heal on read against the HARNESS clock, so a phone
+  // whose clock is minutes off still agrees with the desktop about whether
+  // a thread is asleep.  The 0 sentinel is not a time and survives every
+  // read; only activity in the thread clears that one.
+  return {
+    ...task,
+    ...(isThreadSnoozed(snoozedUntil) ? { snoozedUntil } : {}),
+    lastActivity: last?.at ?? task.createdAt,
+    lastMessage: last,
+  };
 };
 const wireGroupTask = (task: GroupTaskRecord) => {
   const last = store.messagesFor(task.threadId).at(-1);
@@ -1227,6 +1237,21 @@ store.onChange((change) => {
       break;
   }
 });
+
+/** A timed thread snooze ends on the wall clock, and nothing else was going
+ * to notice.  Sweeping on a minute keeps the deadline honest for a desktop
+ * or phone that has been sitting open: the store's own emit above turns each
+ * woken bot into an SSE frame, so the row folds back into update order
+ * without anyone touching that bot.  A minute is the resolution the presets
+ * need — they land on the hour and on the morning, never on a second. */
+const SNOOZE_SWEEP_MS = 60_000;
+setInterval(() => {
+  try {
+    store.wakeExpiredThreadSnoozes();
+  } catch (error) {
+    console.error("[snooze] sweep failed", error instanceof Error ? error.message : String(error));
+  }
+}, SNOOZE_SWEEP_MS).unref?.();
 
 // ── message pages ──────────────────────────────────────────────────────
 // GET /api/bots hands back every bot with its entire transcript, which is
@@ -1919,6 +1944,19 @@ function isUnattended(botId?: string | null): boolean {
   return true;
 }
 let routines: RoutineManager | null = null;
+
+/** Whether alerts for this thread are muted right now.
+ *
+ * Two snoozes compose here, and only in this direction: a bot-wide snooze
+ * (`server/routines.ts`, what "snooze bot on stop" leaves behind) covers
+ * every thread under it, while a thread's own snooze covers only itself.
+ * Waking a thread never wakes its bot — the person who stopped a bot did not
+ * ask for it back.  Resolved at the call site so `buildNotification` stays a
+ * pure policy function with no clock and no store of its own. */
+const threadAlertsSnoozed = (botId: string, threadId: string): boolean =>
+  routines?.isBotSnoozed(botId) === true
+  || isThreadSnoozed(store.taskByThread(botId, threadId)?.snoozedUntil);
+
 const localVmOwnerBusy = (botId: string) => store.bot(botId)?.busy === true;
 const localVmLeases = new LocalVmLeasePool(30 * 60_000);
 const localVmLifecycleBusy = new Set<string>();
@@ -2361,6 +2399,7 @@ bus.subscribe((event: RuntimeEvent) => {
           buildNotification(permission ? "approval" : "question", asker, event.threadId, event.summary, {
             requestId: event.requestId,
             tool: event.tool,
+            snoozed: threadAlertsSnoozed(asker.id, event.threadId),
           }),
         );
       };
@@ -2707,7 +2746,10 @@ bus.subscribe((event: RuntimeEvent) => {
         } else if (routineRun?.status !== "failed") {
           // the frame carries the bot's avatar so every desktop client can
           // show the notification under that bot's own face
-          notify(buildNotification("done", bot, event.threadId, reply, { avatarUrl: bot.avatarUrl }));
+          notify(buildNotification("done", bot, event.threadId, reply, {
+            avatarUrl: bot.avatarUrl,
+            snoozed: threadAlertsSnoozed(bot.id, event.threadId),
+          }));
         }
         if (screenPollers.has(bot.id)) {
           // the last live frame becomes a settled inline screen message —
@@ -3833,7 +3875,10 @@ routines = new RoutineManager({
     const bot = store.bot(run.botId);
     if (!bot) return;
     const detail = run.error ? `${run.routineName}: ${run.error}` : run.routineName;
-    notify(buildNotification("routine-failed", bot, run.threadId ?? bot.threadId, detail));
+    const failedThreadId = run.threadId ?? bot.threadId;
+    notify(buildNotification("routine-failed", bot, failedThreadId, detail, {
+      snoozed: threadAlertsSnoozed(bot.id, failedThreadId),
+    }));
   },
   checkInStart: checkInRoutineStart,
   checkInFinish: checkInRoutineFinish,
@@ -7244,7 +7289,9 @@ const server = createServer(async (req, res) => {
           // worth a buzz: the bot is blocked on the person's hands, which
           // is exactly the "blocked on you" rule notify.ts encodes
           notify(
-            buildNotification("takeover", bot, bot.threadId, snapshot.helpReason ?? "asked you to take over"),
+            buildNotification("takeover", bot, bot.threadId, snapshot.helpReason ?? "asked you to take over", {
+              snoozed: threadAlertsSnoozed(bot.id, bot.threadId),
+            }),
           );
           return json(res, 200, { held: snapshot.held, helpOpen: snapshot.helpReason !== null, requestId });
         }
@@ -9626,6 +9673,24 @@ const server = createServer(async (req, res) => {
         const fresh = botWithThread(store.bot(m[1])!);
         broadcast({ kind: "bot", bot: fresh });
         return json(res, 200, { task: wireTask(updated) });
+      }
+      // Put one thread to sleep, or wake it.  `null` is how waking travels,
+      // because an absent field has always meant "leave it alone" on this
+      // route — and `0` is a real value here, the until-activity sentinel,
+      // not an empty one.  A bot-wide snooze is a different, wider thing and
+      // is not touched from here: waking a thread never wakes its bot.
+      if (Object.prototype.hasOwnProperty.call(body, "snoozedUntil")) {
+        const raw = body.snoozedUntil;
+        if (raw !== null && !(typeof raw === "number" && Number.isFinite(raw) && raw >= SNOOZE_UNTIL_ACTIVITY)) {
+          return json(res, 400, {
+            error: "snoozedUntil must be a timestamp, 0 to snooze until activity, or null to wake it now",
+          });
+        }
+        const snoozed = store.patchTask(m[1], m[2], { snoozedUntil: raw as number | null });
+        if (!snoozed) return json(res, 404, { error: "no such task" });
+        const fresh = botWithThread(store.bot(m[1])!);
+        broadcast({ kind: "bot", bot: fresh });
+        return json(res, 200, { task: wireTask(snoozed) });
       }
       const task = store.renameTask(m[1], m[2], String(body.title ?? ""));
       if (!task) return json(res, 404, { error: "no such task" });

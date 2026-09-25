@@ -73,12 +73,20 @@ export function buildNotification(
   bot: NotifyBot,
   threadId: string,
   detail: string,
-  extra?: { avatarUrl?: string; requestId?: string; tool?: string },
+  extra?: { avatarUrl?: string; requestId?: string; tool?: string; snoozed?: boolean },
 ): Notification | null {
   // The toggle means what it says: off is off, including for approvals.
   // A bot whose notifications you turned off can still block waiting for
   // you — that is the choice you made, and the chat still shows the card.
   if (bot.notifications === false) return null;
+  // A snoozed thread is an alert the person asked not to get yet — either
+  // this thread's own snooze or the bot-wide one it sits under.  Only the
+  // banner is suppressed: nothing here owns unread, so the sidebar badge,
+  // the transcript and any waiting approval card all still arrive, and the
+  // moment the snooze ends the thread is loud again with no backlog to
+  // replay.  Callers resolve the state (`shared/thread-snooze.ts`) so this
+  // stays a pure policy function with no clock of its own.
+  if (extra?.snoozed === true) return null;
 
   const body = summarize(detail);
   const title =

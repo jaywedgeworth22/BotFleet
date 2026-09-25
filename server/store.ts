@@ -14,6 +14,7 @@ import { newId, type CloudBackend, type ModelSelection, type ThreadId, type Turn
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { botAvatarProfile, type BotAvatarCrop } from "../shared/bot-avatar.ts";
+import { isSnoozeExpired, SNOOZE_UNTIL_ACTIVITY } from "../shared/thread-snooze.ts";
 import type { ConnectorToolGrant } from "../shared/connector-tools.ts";
 import type { RoutineRequestCardData } from "../shared/routine-request.ts";
 import type { ToolKind } from "../shared/tool-activity.ts";
@@ -273,6 +274,11 @@ export interface TaskRecord {
    * falling through to the run-history fallback (which fails once the
    * source task is gone) and minting a duplicate. */
   automationKeyAliases?: string[];
+  /** This thread is asleep: 0 sleeps until the thread does anything again,
+   * a timestamp sleeps until that moment, and absent means awake.  Narrower
+   * than the bot-wide snooze in `server/routines.ts` — the bot keeps working
+   * its other threads.  See `shared/thread-snooze.ts`. */
+  snoozedUntil?: number;
 }
 
 export interface TaskUsage {
@@ -798,6 +804,10 @@ export class Store {
    * cadence instead of being starved. */
   private saveBotsTimer: ReturnType<typeof setTimeout> | null = null;
   private botsDirty = false;
+  /** Thread ids sleeping on the until-activity sentinel.  `appendMessage`
+   * is the hot path every turn runs through, so it asks this rather than
+   * walking the roster for a snooze that is almost never there. */
+  private readonly threadsAwaitingActivity = new Set<string>();
 
   /** `opts.threadCacheLimit` only exists so tests can force evictions
    * without creating dozens of real threads; production always takes the
@@ -848,6 +858,13 @@ export class Store {
       if (b.avatarCrop !== undefined && avatar.avatarCrop !== b.avatarCrop) {
         delete b.avatarCrop;
         botsMigrated = true;
+      }
+      // A snooze IS durable — unlike busy, it is a decision the person made,
+      // and a relaunch must not wake every thread they put to sleep.  Only
+      // the until-activity index is rebuilt here; expired deadlines heal on
+      // read and are swept by `wakeExpiredThreadSnoozes`.
+      for (const task of b.tasks ?? []) {
+        if (task.snoozedUntil === SNOOZE_UNTIL_ACTIVITY) this.threadsAwaitingActivity.add(task.threadId);
       }
     }
     for (const b of this.bots) {
@@ -1540,6 +1557,11 @@ export class Store {
       }
     }
     this.emit({ type: "message", threadId, message: full });
+    // A message landing here IS the "new activity" an until-activity snooze
+    // waits for — whoever caused it, a person, a routine or the bot itself.
+    // Every path that adds to a transcript funnels through here, so this one
+    // hook is the whole alarm.  A timed snooze is left to its clock.
+    if (this.threadsAwaitingActivity.has(threadId)) this.wakeThreadOnActivity(threadId);
     // The first-run quiz is not a live ask. Talking past it hides it so the
     // transcript is just the greeting plus what they said. Cards with a
     // requestId are permission/question prompts and stay until answered.
@@ -2016,8 +2038,12 @@ export class Store {
     return this.patchTask(botId, threadId, { title });
   }
 
-  /** Rename and/or set a per-thread model.  `modelSelection: null` clears
-   * the override so the bot's engine is used again. */
+  /** Rename, set a per-thread model, or put the thread to sleep.
+   *
+   * `modelSelection: null` clears the override so the bot's engine is used
+   * again; `snoozedUntil: null` wakes the thread now.  An omitted field
+   * always means "leave it alone", which is why waking travels as an
+   * explicit null rather than as an absent key. */
   patchTask(
     botId: string,
     threadId: string,
@@ -2025,6 +2051,7 @@ export class Store {
       title?: string;
       modelSelection?: ModelSelection | null;
       activeModelSelection?: ModelSelection | null;
+      snoozedUntil?: number | null;
     },
   ): TaskRecord | null {
     const task = this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
@@ -2040,9 +2067,53 @@ export class Store {
       if (patch.activeModelSelection === null) delete task.activeModelSelection;
       else task.activeModelSelection = patch.activeModelSelection;
     }
+    if (patch.snoozedUntil !== undefined) {
+      if (patch.snoozedUntil === null) delete task.snoozedUntil;
+      else task.snoozedUntil = patch.snoozedUntil;
+      if (task.snoozedUntil === SNOOZE_UNTIL_ACTIVITY) this.threadsAwaitingActivity.add(threadId);
+      else this.threadsAwaitingActivity.delete(threadId);
+    }
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task;
+  }
+
+  /** End an until-activity snooze because the thread just did something.
+   *
+   * Self-healing: a thread that has since been deleted or merged away leaves
+   * the index, so a stale id costs one lookup once and never again. */
+  private wakeThreadOnActivity(threadId: string): void {
+    this.threadsAwaitingActivity.delete(threadId);
+    const bot = this.bots.find((b) => b.tasks?.some((t) => t.threadId === threadId));
+    const task = bot?.tasks?.find((t) => t.threadId === threadId);
+    if (!bot || !task || task.snoozedUntil !== SNOOZE_UNTIL_ACTIVITY) return;
+    delete task.snoozedUntil;
+    this.saveBots();
+    this.emit({ type: "bot", botId: bot.id });
+  }
+
+  /** Drop every snooze whose deadline has passed, so a woken thread returns
+   * to plain update order without waiting for someone to touch its bot.
+   *
+   * Clients heal expired deadlines on read as well — the harness clock is
+   * the authority and a device's may be skewed — but a desktop or phone left
+   * open needs the change to ARRIVE, which is what the emit here is for.
+   * Returns the bots that changed so a caller can log or assert on it. */
+  wakeExpiredThreadSnoozes(now = Date.now()): string[] {
+    const woken: string[] = [];
+    for (const bot of this.bots) {
+      let changed = false;
+      for (const task of bot.tasks ?? []) {
+        if (!isSnoozeExpired(task.snoozedUntil, now)) continue;
+        delete task.snoozedUntil;
+        changed = true;
+      }
+      if (changed) woken.push(bot.id);
+    }
+    if (!woken.length) return woken;
+    this.saveBots();
+    for (const botId of woken) this.emit({ type: "bot", botId });
+    return woken;
   }
 
   /** Name a task after its first message, once. */

@@ -240,6 +240,25 @@ public struct BotTask: Codable, Hashable, Sendable {
     public var usage: TaskUsage?
     public var modelSelection: ModelSelection?
     public var activeModelSelection: ModelSelection?
+    /// Asleep until: `0` is the until-activity sentinel and sleeps until the
+    /// thread does anything again, a timestamp sleeps until that moment, and
+    /// nil means awake.  Expired deadlines heal against the harness clock,
+    /// so a snapshot is authoritative; a live frame is never refreshed
+    /// afterwards, which is why `isSnoozed` reads a clock too.  See
+    /// `shared/thread-snooze.ts`.
+    public var snoozedUntil: Double?
+
+    /// Asleep right now.  Narrower than the bot-wide snooze: the bot keeps
+    /// working its other threads while this one is quiet.
+    public func isSnoozed(now: Date = Date()) -> Bool {
+        ThreadSnooze.isSnoozed(snoozedUntil, now: now)
+    }
+
+    /// "Until activity" or the resolved deadline, for the badge under a
+    /// thread's title.  Nil while the thread is awake.
+    public func snoozeLabel(now: Date = Date()) -> String? {
+        ThreadSnooze.label(snoozedUntil, now: now)
+    }
 }
 
 public struct Bot: Codable, Hashable, Identifiable, Sendable {
