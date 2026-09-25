@@ -611,4 +611,47 @@ describe("UsageTelemetryOutbox", () => {
     expect(stored.queue).toHaveLength(2);
     await outbox.dispose();
   });
+  it("emits dead-letter logs, diagnostics and ack counters only after the pass persists", async () => {
+    const path = fixture();
+    const destinationHash = usageTelemetryDestinationHash("https://usage.example.com/api/ingest/usage");
+    let failWrites = false;
+    const lines: string[] = [];
+    const diagnostics: string[] = [];
+    let persistedAcks = 0;
+    const outbox = new UsageTelemetryOutbox({
+      path,
+      maxHeadAttempts: 1,
+      log: (message) => lines.push(message),
+      onDiagnostic: (name) => diagnostics.push(name),
+      writeState: (target, state) => {
+        if (failWrites) throw new Error("disk full");
+        writeFileSync(target, JSON.stringify(state));
+      },
+    });
+    outbox.enqueue(destinationHash, batch("poison"));
+    outbox.enqueue(destinationHash, batch("good"));
+    outbox.configure(() => ({
+      destinationHash,
+      deliver: async (posted) => posted.events[0]!.eventId === "poison"
+        ? { acknowledged: false, rejected: 0 }
+        : { acknowledged: true, rejected: 0, onPersisted: () => { persistedAcks += 1; } },
+    }));
+
+    failWrites = true;
+    await outbox.flushNow();
+    // The pass rolled back: no dead-letter line, no dead_lettered count,
+    // and the ack is not counted, because none of it reached disk.
+    expect(outbox.status()).toMatchObject({ queuedBatches: 2, deadLetterBatches: 0 });
+    expect(lines.filter((line) => line.includes("dead-letter"))).toHaveLength(0);
+    expect(diagnostics).not.toContain("dead_lettered");
+    expect(persistedAcks).toBe(0);
+
+    failWrites = false;
+    await outbox.flushNow();
+    expect(outbox.status()).toMatchObject({ queuedBatches: 0, deadLetterBatches: 1 });
+    expect(lines.filter((line) => line.includes("dead-letter"))).toHaveLength(1);
+    expect(diagnostics.filter((name) => name === "dead_lettered")).toHaveLength(1);
+    expect(persistedAcks).toBe(1);
+    await outbox.dispose();
+  });
 });
