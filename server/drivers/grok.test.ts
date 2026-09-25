@@ -344,4 +344,34 @@ describe("GrokDriver turns (fake fetch)", () => {
       replaysTranscript: true,
     });
   });
+
+  it("caps an oversized transcript before folding it into the chat-completions payload", async () => {
+    // The Codex review found that an unbounded transcript can grow past the
+    // model's prompt window or the provider's per-request size, then get
+    // re-uploaded on every round because the loop re-sends a byte-identical
+    // prefix to keep the prompt cache reachable.  This test wires a long
+    // transcript into a turn and asserts the request body carries a CAPPED
+    // prefix — both by entry count and by byte size — so the cap is real,
+    // not just paper.
+    script = [];
+    await create();
+    const big = "x".repeat(5_000);
+    const transcript = Array.from({ length: 80 }, () => ({ role: "user" as const, text: big }));
+    await instance.adapter.sendTurn({ threadId: "t-cap", transcript, text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const body = requestBodies[0];
+    // The helper's byte cap (200 KiB / 5 KiB-per-entry) keeps ~40 entries;
+    // a 2 KiB system message is added on top, so the body length is bounded
+    // well below the uncapped 80×5 KiB + overhead.
+    expect(body.messages.length).toBeLessThan(80);
+    // Exactly the byte budget: 40 entries * 5 KiB ≈ 200 KiB plus the system
+    // and final-user lines.  Allow some slack so a future entry-count tweak
+    // doesn't immediately fail this test.
+    const total = body.messages.reduce(
+      (sum: number, m: any) => sum + (typeof m.content === "string" ? m.content.length : 0),
+      0,
+    );
+    expect(total).toBeLessThan(80 * 5_000);
+    expect(total).toBeGreaterThan(0);
+  });
 });

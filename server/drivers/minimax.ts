@@ -26,6 +26,7 @@ import { toolFields } from "../tool-fields.ts";
 import { classifyHttpError, httpErrorFor, type HttpErrorClassification } from "./chat-completions/errors.ts";
 import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
 import { costUsd, type ChatCompletionsPriceTable } from "./chat-completions/pricing.ts";
+import { capReplayedTranscript } from "./chat-completions/replay-cap.ts";
 import { genAiProvider, withChatSpan } from "../sentry-ai.ts";
 
 const DRIVER_KIND = "minimax";
@@ -512,9 +513,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       const model = turn.model || models.default;
       // Round 1's prefix.  The loop owns this array from here and only ever
       // APPENDS to it, so rounds 2..N re-send a byte-identical prefix.
+      // The transcript is byte-capped and entry-count-capped first so a
+      // long thread cannot grow past the model's prompt window or the
+      // provider's per-request size — see chat-completions/replay-cap.ts.
+      const cappedTranscript = capReplayedTranscript(turn.transcript);
       const messages: ChatMessage[] = [
         ...(turn.system ? [{ role: "system" as const, content: turn.system }] : []),
-        ...(turn.transcript ?? []).flatMap((m): ChatMessage[] => {
+        ...cappedTranscript.flatMap((m): ChatMessage[] => {
           const res: ChatMessage[] = [];
           if (m.role === "assistant") {
             const assistantMsg: ChatMessage = { role: "assistant", content: m.text || "" };

@@ -19,6 +19,7 @@ import { toolFields } from "../tool-fields.ts";
 import { runTurnLoop, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
 import { toTurnUsage } from "./chat-completions/usage.ts";
 import { httpErrorFor } from "./chat-completions/errors.ts";
+import { capReplayedTranscript } from "./chat-completions/replay-cap.ts";
 
 const DRIVER_KIND = "grok";
 const DEFAULT_URL = "https://api.x.ai/v1";
@@ -200,7 +201,10 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
 
       const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).flatMap((m: any) => {
+        // Byte-cap and entry-cap the transcript before folding it in so a
+        // long thread cannot ship its full history on every round — see
+        // chat-completions/replay-cap.ts.
+        ...capReplayedTranscript(turn.transcript).flatMap((m: any) => {
           const res = [];
           if (m.role === "assistant") {
             const assistantMsg: any = { role: "assistant", content: m.text || "" };
