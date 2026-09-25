@@ -46,6 +46,7 @@ import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
 import { modelChip } from "@/lib/model-chip";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { splitVoiceSummary } from "../../shared/voice-summary";
 import { MentionText } from "./MentionText";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
@@ -277,6 +278,7 @@ function Bubble({
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const text = message.text ?? "";
+  const voiceSections = message.role === "bot" && message.kind === "text" ? splitVoiceSummary(text) : null;
   const toImessageBody = !humanTyped && message.role === "bot" ? stripToImessagePrefix(text) : null;
   const attachedImages = humanTyped ? splitAttachedImages(text) : null;
   const visibleText = attachedImages?.display ?? text;
@@ -538,7 +540,13 @@ function Bubble({
               {toImessageBody !== null && (
                 <div className="mb-1 text-[11px] font-medium text-accent">To iMessage</div>
               )}
-              <ChatMarkdown text={toImessageBody ?? text} />
+              <ChatMarkdown text={voiceSections?.written ?? toImessageBody ?? text} />
+              {voiceSections && (
+                <details className="mt-2 border-t border-hairline/40 pt-2" onClick={(event) => event.stopPropagation()}>
+                  <summary className="cursor-pointer text-[12px] text-ink-secondary">Spoken summary</summary>
+                  <div className="mt-2 text-[13px] text-ink-secondary"><ChatMarkdown text={voiceSections.voice} /></div>
+                </details>
+              )}
             </MessageBoundary>
           )}
         </div>
