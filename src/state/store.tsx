@@ -97,6 +97,7 @@ export interface Message {
   automationSource?: "schedule" | "manual" | "webhook" | "resource";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
+  audio?: Array<{ path: string; mime: string }>;
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
@@ -302,6 +303,7 @@ export interface Bot {
   alwaysAllow?: string[];
   /** speak this bot's replies aloud as they settle */
   speakReplies?: boolean;
+  speechDevices?: Array<"mac" | "iphone">;
   /** this bot's own voice id (falls back to the app-wide one) */
   voice?: string;
   pinned?: boolean;
@@ -2642,11 +2644,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             // the whole point of listening while you do something else. A
             // Auto-speak is disabled during any call. Call mode owns both the
             // singleton speaker and microphone ordering for its whole lifetime.
-            const owner = stateRef.current.bots.find((b) => b.threadId === frame.threadId);
-            if (owner?.speakReplies && currentCall() === null && frame.message.text?.trim()) {
+            const owner = stateRef.current.bots.find((b) => b.threadId === frame.threadId || b.tasks?.some((t) => t.threadId === frame.threadId));
+            if (owner && (owner.speechDevices ? owner.speechDevices.includes("mac") : owner.speakReplies) && currentCall() === null && frame.message.text?.trim()) {
               void speaker.speak(spokenReply(frame.message.text), {
                 botId: owner.id,
                 messageId: frame.message.id,
+                threadId: frame.threadId,
                 voiceId: owner.voice,
               });
             }
