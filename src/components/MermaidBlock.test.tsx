@@ -57,4 +57,17 @@ describe("MermaidBlock", () => {
   it("copies the diagram source, not the rendered SVG", () => {
     expect(SRC).toContain("navigator.clipboard?.writeText(code)");
   });
+
+  // Sentry bug-prediction review on PR #633: the non-streaming render path
+  // called render() without first clearing svg/error, so a settled block
+  // whose code (or theme) changed briefly kept showing the *previous*
+  // diagram or error line while the new render was in flight. The clear
+  // must run unconditionally, before the streaming/non-streaming branch —
+  // not only inside the streaming branch — so both paths drop stale state
+  // the instant the effect re-runs for new code.
+  it("clears stale svg/error state before every render, not only the streaming path", () => {
+    const settleEffect = SRC.slice(SRC.indexOf("useEffect(() => {"), SRC.indexOf("if (streaming) {"));
+    expect(settleEffect).toContain("setSvg(null)");
+    expect(settleEffect).toContain("setError(null)");
+  });
 });

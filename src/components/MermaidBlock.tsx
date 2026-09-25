@@ -84,13 +84,17 @@ export function MermaidBlock({ code, streaming }: MermaidBlockProps) {
           setError(message.length > 300 ? `${message.slice(0, 300)}…` : message);
         });
     };
+    // Either path is a genuinely new diagram (different code, or the skin
+    // flipped so the cached SVG above didn't match) — drop whatever an
+    // earlier code/theme rendered so a stale SVG or error line never shows
+    // while the new one is in flight.
+    setSvg(null);
+    setError(null);
     if (streaming) {
       // an earlier render is of a shorter snapshot — drop it so the
       // growing raw source shows the real content, then wait for the block
       // to hold still. The effect re-runs (and this cleanup clears the
       // timer) on every content change, which is the debounce.
-      setSvg(null);
-      setError(null);
       timer = setTimeout(render, STREAM_SETTLE_MS);
     } else {
       render();
