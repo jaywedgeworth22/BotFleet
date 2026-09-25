@@ -285,7 +285,7 @@ export function selectTurnFallback(input: {
   current?: { instanceId: string; model: string } | null;
 }): TurnFallbackPick | undefined {
   if (input.ok) return undefined;
-  if (input.stopReason === "interrupted" || input.stopReason === "cancelled") return undefined;
+  if (input.stopReason === "interrupted" || input.stopReason === "cancelled" || input.stopReason === "prompt_timeout") return undefined;
   if (input.produced && !input.quotaOrCap) return undefined;
   const chain = input.fallbacks;
   if (!chain?.length) return undefined;

@@ -6066,7 +6066,16 @@ function beginUpdateAdmission(): (() => void) | null {
 
 function beginRuntimeQuiesce() {
   const readiness = currentRuntimeReadiness();
-  if (!readiness.safeToRestart) return { ...readiness, quiescing: false };
+  if (!readiness.safeToRestart) {
+    // Interrupt every active provider turn so it settles promptly instead of
+    // blocking the updater until the 18-minute prompt deadline.  The caller
+    // still receives 409 — quiescence has not been achieved — but the signal
+    // ensures the next poll will find the harness idle.
+    for (const instance of registry.instances()) {
+      instance.adapter.stopAll().catch(() => {});
+    }
+    return { ...readiness, quiescing: false };
+  }
   if (!runtimeQuiescing) {
     // This function has no await before the admission flag.  A request,
     // scheduler tick, or queue drain cannot enter between the final complete
