@@ -1197,6 +1197,22 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("PATCH", "/api/bots/\(botId)/tasks/\(threadId)", body: ["title": title]))
     }
 
+    /// Put one thread to sleep, or wake it: `0` sleeps until the thread's
+    /// next activity, a timestamp in epoch milliseconds until that moment,
+    /// and nil wakes it now.
+    ///
+    /// Waking travels as JSON `null`, not as an omitted field — the harness
+    /// reads an absent key as "leave the snooze alone", which is what lets a
+    /// rename on the same route not disturb one.  `NSNull()` is how that
+    /// null survives `JSONSerialization`.
+    public func snoozeTask(botId: String, threadId: String, snoozedUntil: Double?) async throws {
+        try await send(try makeRequest(
+            "PATCH",
+            "/api/bots/\(botId)/tasks/\(threadId)",
+            body: ["snoozedUntil": snoozedUntil ?? NSNull()]
+        ))
+    }
+
     public func deleteTask(botId: String, threadId: String) async throws -> Bot {
         try await send(try makeRequest("DELETE", "/api/bots/\(botId)/tasks/\(threadId)"), as: BotResponse.self).bot
     }

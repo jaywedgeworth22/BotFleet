@@ -242,6 +242,12 @@ export interface Task {
   activeModelSelection?: ModelSelection;
   /** Stable webhook/routine identity so a re-fire appends here. */
   automationKey?: string;
+  /** This thread is asleep: 0 until it does anything again, a timestamp
+   * until that moment, absent means awake.  The harness drops deadlines it
+   * has already passed, so an arriving snapshot is authoritative — but a
+   * window left open across one is not, which is why the sidebar checks the
+   * clock too.  See `shared/thread-snooze.ts`. */
+  snoozedUntil?: number;
 }
 
 export interface TaskUsage {
@@ -884,6 +890,10 @@ export type Action =
   | { type: "switchTask"; botId: string; threadId: string }
   | { type: "taskSwitched"; bot: Bot }
   | { type: "renameTask"; botId: string; threadId: string; title: string }
+  /** Put one thread to sleep, or wake it.  `null` is the wake — an omitted
+   * field means "leave it alone" on the harness route, and `0` is the real
+   * until-activity sentinel rather than an empty value. */
+  | { type: "snoozeTask"; botId: string; threadId: string; snoozedUntil: number | null }
   | { type: "deleteTask"; botId: string; threadId: string }
   | { type: "newBot" }
   | { type: "botAdded"; bot: Bot }
@@ -1647,6 +1657,18 @@ export function reducer(state: AppState, action: Action): AppState {
           task.threadId === action.threadId ? { ...task, title: action.title } : task,
         ),
       }));
+    // Paint the snooze at once.  The harness answers with the same state and
+    // an SSE frame overwrites this, but a row that only dims a round trip
+    // later reads as a menu that did nothing.
+    case "snoozeTask":
+      return updateBot(state, action.botId, (bot) => ({
+        ...bot,
+        tasks: (bot.tasks ?? []).map((task) => {
+          if (task.threadId !== action.threadId) return task;
+          const { snoozedUntil: _asleep, ...awake } = task;
+          return action.snoozedUntil === null ? awake : { ...task, snoozedUntil: action.snoozedUntil };
+        }),
+      }));
     case "renameGroupTask":
       return {
         ...state,
@@ -2400,6 +2422,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
             method: "PATCH",
             body: JSON.stringify({ title: action.title }),
+          }).catch(showError);
+          break;
+        case "snoozeTask":
+          // The key has to be present for a wake: the harness reads an
+          // absent field as "leave the snooze alone", and JSON.stringify
+          // would drop an undefined.
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ snoozedUntil: action.snoozedUntil }),
           }).catch(showError);
           break;
         case "deleteTask":
