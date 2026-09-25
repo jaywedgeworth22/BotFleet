@@ -153,6 +153,25 @@ describe("Store", () => {
     expect(reloaded.bot(bot.id)?.composio).toBe(false);
   });
 
+  it("persists connectorTools grants and clears them back to legacy via undefined", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    expect(bot.connectorTools).toBeUndefined();
+
+    const grants = { gmail: { tools: "*" as const }, slack: { tools: ["SLACK_POST_MESSAGE"] } };
+    store.patchBot(bot.id, { connectorTools: grants });
+    expect(store.bot(bot.id)?.connectorTools).toEqual(grants);
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)?.connectorTools).toEqual(grants);
+
+    // parseBotProfilePatch's null clear resolves to a patch key present with
+    // value undefined — Object.assign must still apply that key, not skip it.
+    reloaded.patchBot(bot.id, { connectorTools: undefined });
+    expect(reloaded.bot(bot.id)?.connectorTools).toBeUndefined();
+    const reloadedAgain = new Store(selection);
+    expect(reloadedAgain.bot(bot.id)?.connectorTools).toBeUndefined();
+  });
+
   it("rotates colors across created bots", () => {
     const store = new Store(selection);
     const first = store.createBot();

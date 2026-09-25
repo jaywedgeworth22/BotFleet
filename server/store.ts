@@ -14,6 +14,7 @@ import { newId, type CloudBackend, type ModelSelection, type ThreadId, type Turn
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { botAvatarProfile, type BotAvatarCrop } from "../shared/bot-avatar.ts";
+import type { ConnectorToolGrant } from "../shared/connector-tools.ts";
 import type { RoutineRequestCardData } from "../shared/routine-request.ts";
 import type { ToolKind } from "../shared/tool-activity.ts";
 
@@ -548,6 +549,13 @@ export interface BotRecord {
    * start false — a shared persona must not reach the user's Gmail on
    * turn one. */
   composio?: boolean;
+  /** Per-bot Composio tool grants. Unset = legacy all-tools (every
+   * connected service, every tool) — added after bots already existed, so
+   * an untouched bot must keep working exactly as before. An explicit
+   * record — including the empty one — restricts to exactly what it names;
+   * enforced in the /api/internal/connectors/mcp relay (connector-verdict.ts),
+   * never here. See shared/connector-tools.ts for the grant shape. */
+  connectorTools?: Record<string, ConnectorToolGrant>;
   /** Additional repo paths for context. */
   extraCwds?: string[];
   /** Custom user-provided instructions and persistent memory notes. */

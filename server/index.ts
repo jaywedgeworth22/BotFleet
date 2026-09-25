@@ -98,6 +98,13 @@ import {
 import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
+import {
+  connectorCallFromFrame,
+  connectorRefusalText,
+  connectorUnrecognizedText,
+  evaluateConnectorTools,
+  filterConnectorToolsList,
+} from "./connector-verdict.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { botFleetStatusSystemPrompt } from "./botfleet-status-capsule.ts";
 import {
@@ -278,6 +285,7 @@ import {
   SECTION_CONTEXT_MAX_BYTES,
 } from "./section-context.ts";
 import {
+  buildSkillsIndex,
   installSkill,
   listSkills,
   readSkillFile,
@@ -6981,6 +6989,91 @@ const server = createServer(async (req, res) => {
       }
       if (method === "POST" && path === "/api/internal/connectors/mcp") {
         const body = await readBody(req);
+        // COMMS_TOKEN is one shared secret for every /api/internal/ caller,
+        // so it alone does not say which bot is relaying. composio.ts's
+        // mcpIntegration names the bot on these headers on every spawn —
+        // see its OMB_CONNECTOR_UPSTREAM_HEADERS comment. A call that
+        // cannot be attributed to a live, composio-enabled bot cannot be
+        // checked against that bot's grants, so it is refused outright
+        // rather than treated as the legacy all-tools case. Re-reading the
+        // live bot (rather than trusting a value cached at spawn time) means
+        // turning Connected Apps off wins over a request that authenticated
+        // while it was still on.
+        const headerBotId = req.headers[composio.CONNECTOR_BOT_ID_HEADER];
+        const headerThreadId = req.headers[composio.CONNECTOR_THREAD_ID_HEADER];
+        const callerBotId = Array.isArray(headerBotId) ? headerBotId[0] : headerBotId;
+        const callerThreadId = Array.isArray(headerThreadId) ? headerThreadId[0] : headerThreadId;
+        const callerBot = callerBotId ? store.bot(callerBotId) : undefined;
+        if (!callerBot || callerBot.composio === false || !composio.configured(cfg)) {
+          return json(res, 403, { error: "connected apps are not enabled for this bot" });
+        }
+        const threadIdForLog = callerThreadId || callerBot.threadId;
+        // Per-bot tool grants (Finding 1): verdict every tools/call frame
+        // against the calling bot's connectorTools before it reaches
+        // Composio. A bot with no grants record keeps the legacy all-tools
+        // behavior; a grants record makes every unrecognized shape a deny.
+        // Rows are fire-and-forget: a log failure must never take the call
+        // (or its refusal) down with it.
+        const call = connectorCallFromFrame(body);
+        if (call.kind === "unrecognized") {
+          appendDecision(DATA_DIR, {
+            threadId: threadIdForLog,
+            botId: callerBot.id,
+            botName: callerBot.name,
+            tool: call.invoked,
+            summary: call.reason,
+            decision: "user-denied",
+            source: "connector-scope",
+            rule: "connectorTools",
+          });
+          const refusal = connectorUnrecognizedText(call.invoked, call.reason);
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+          return res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: (body as { id?: unknown }).id ?? null,
+            result: { content: [{ type: "text", text: refusal }], isError: true },
+          }));
+        }
+        if (call.kind === "tools") {
+          const verdict = evaluateConnectorTools(call.names, callerBot.connectorTools);
+          if (!verdict.allowed) {
+            for (const denial of verdict.denials) {
+              appendDecision(DATA_DIR, {
+                threadId: threadIdForLog,
+                botId: callerBot.id,
+                botName: callerBot.name,
+                tool: denial.tool,
+                summary: denial.service === null
+                  ? "tool name does not name a service"
+                  : denial.onGrantedService
+                    ? "tool is not in this service's grant"
+                    : "service is not granted",
+                decision: "user-denied",
+                source: "connector-scope",
+                rule: denial.service ? "connectorTools." + denial.service : "connectorTools",
+              });
+            }
+            const refusal = connectorRefusalText(verdict.denials);
+            res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+            return res.end(JSON.stringify({
+              jsonrpc: "2.0",
+              id: (body as { id?: unknown }).id ?? null,
+              result: { content: [{ type: "text", text: refusal }], isError: true },
+            }));
+          }
+          // One row per allowed call, naming the first target: the audit
+          // trail reads "which bot ran what", not one row per tool.
+          appendDecision(DATA_DIR, {
+            threadId: threadIdForLog,
+            botId: callerBot.id,
+            botName: callerBot.name,
+            tool: call.names[0],
+            summary: ("allowed " + call.names.join(", ")).slice(0, 240),
+            decision: "user-approved",
+            source: "connector-scope",
+            rule: verdict.rule,
+          });
+        }
         const upstream = await composio.relayMcp(
           cfg,
           body,
@@ -6993,6 +7086,29 @@ const server = createServer(async (req, res) => {
           "cache-control": "no-store",
         };
         if (upstream.transportSessionId) headers["mcp-session-id"] = upstream.transportSessionId;
+        // tools/list is the model's menu: a restricted bot must never see a
+        // tool it cannot call (Finding 1c). Best-effort — a body this
+        // handler cannot parse as the expected shape is relayed unfiltered
+        // rather than broken, because the hard boundary is the tools/call
+        // verdict above, not this listing.
+        if (
+          (body as { method?: unknown }).method === "tools/list" &&
+          upstream.status === 200 &&
+          callerBot.connectorTools !== undefined
+        ) {
+          try {
+            const parsed = JSON.parse(Buffer.from(upstream.bytes).toString("utf8")) as {
+              result?: { tools?: unknown };
+            };
+            if (parsed.result && Array.isArray(parsed.result.tools)) {
+              parsed.result.tools = filterConnectorToolsList(parsed.result.tools, callerBot.connectorTools);
+              res.writeHead(upstream.status, headers);
+              return res.end(Buffer.from(JSON.stringify(parsed)));
+            }
+          } catch {
+            // fall through and relay the unfiltered response
+          }
+        }
         res.writeHead(upstream.status, headers);
         return res.end(Buffer.from(upstream.bytes));
       }
@@ -8755,7 +8871,10 @@ const server = createServer(async (req, res) => {
     m = path.match(/^\/api\/bots\/([\w-]+)\/skills$/);
     if (m && method === "GET") {
       if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, { skills: listSkills(m[1]) });
+      // notIndexed: enabled skills the index budget left out (Finding 2) —
+      // still enabled, just not named in the prompt line, so the panel can
+      // warn instead of the drop staying invisible.
+      return json(res, 200, { skills: listSkills(m[1]), notIndexed: buildSkillsIndex(m[1]).omitted });
     }
     if (m && method === "POST") {
       if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
