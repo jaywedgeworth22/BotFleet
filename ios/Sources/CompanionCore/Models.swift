@@ -12,6 +12,32 @@
 import Foundation
 
 // MARK: - Messages
+public struct IncomingRecording: Codable, Hashable, Sendable {
+    public var path: String
+    public var mime: String
+    public var transcript: String
+    public var engine: String
+
+    public init(path: String, transcript: String) {
+        self.path = path
+        self.mime = "audio/wav"
+        self.transcript = transcript
+        self.engine = "apple-on-device"
+    }
+}
+
+public struct RecordingReview: Codable, Hashable, Sendable {
+    public var correction: String?
+    public var comment: String?
+    public var updatedAt: Double
+}
+
+public struct SavedTranslation: Codable, Hashable, Sendable {
+    public var language: String
+    public var text: String
+    public var provider: String
+}
+
 public struct VoiceClip: Codable, Hashable, Sendable {
     public var path: String
     public var mime: String
@@ -143,6 +169,9 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var at: Double
     public var text: String?
     public var audio: [VoiceClip]?
+    public var recording: IncomingRecording?
+    public var recordingReview: RecordingReview?
+    public var translation: SavedTranslation?
     /// For a `role == .system` message: what actually fired it —
     /// "schedule", "manual", "webhook", or "resource". Raw string (not an
     /// enum) so an older phone that predates a new trigger kind still
