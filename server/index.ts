@@ -225,7 +225,7 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 // precedence; this only reports what the secret map structurally cannot see.
 import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
-import { pruneDeadThreads, searchMessages } from "./message-db.ts";
+import { DEFAULT_MAX_DEAD_SHARE, pruneDeadThreads, searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
 import { _loadPending, discardDelegations, drainDelegations, pendingDelegationSnapshot, pendingThreads, queueDelegation, type QueueResult } from "./delegations.ts";
 import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage, queuedMessageCount } from "./steer-queue.ts";
@@ -1036,20 +1036,34 @@ setTimeout(() => {
   const workspaceLine = describeWorkspaceSweep(workspaceResult);
   if (workspaceLine) console.log(workspaceLine);
 
-  if (retentionDryRun) {
-    console.log("[retention] dry run — pruneDeadThreads skipped (no delete, no VACUUM)");
-  } else {
-    try {
-      const prune = pruneDeadThreads(liveThreadIds());
-      if (prune.messagesDeleted || prune.threadStateDeleted) {
-        console.log(
-          `[retention] pruned ${prune.messagesDeleted} message row(s) and ${prune.threadStateDeleted} thread_state row(s) for dead threads` +
-            `${prune.vacuumed ? "; VACUUMed messages.db" : ""}`,
-        );
-      }
-    } catch (error) {
-      console.error("[retention] pruneDeadThreads failed", error instanceof Error ? error.message : String(error));
+  try {
+    // pruneDeadThreads has its own dry-run mode (unlike the two sweeps
+    // above at the time they were written) — always call it, rather than
+    // skipping outright under OMB_RETENTION_DRY_RUN=1, so a preview shows
+    // real candidate counts instead of nothing.  Its own refusals (an empty
+    // live set against a nonempty database, or dead threads crossing half
+    // of it) protect the database even when dry run is off; both are
+    // reported the same way here either way.
+    const prune = pruneDeadThreads(liveThreadIds(), { dryRun: retentionDryRun });
+    if (prune.refused === "empty-live-set") {
+      console.log(
+        "[retention] pruneDeadThreads refused: the live thread set is empty against a nonempty messages.db " +
+          "— this usually means bots.json/groups.json failed to load, not that every bot was deleted.  Skipped.",
+      );
+    } else if (prune.refused === "dead-share-too-large") {
+      console.log(
+        `[retention] pruneDeadThreads refused: dead threads are more than ${Math.round(DEFAULT_MAX_DEAD_SHARE * 100)}% ` +
+          "of messages.db, which looks more like a store that failed to load than organic cleanup.  Skipped.",
+      );
+    } else if (prune.messagesDeleted || prune.threadStateDeleted) {
+      const verb = prune.dryRun ? "would prune" : "pruned";
+      console.log(
+        `[retention] ${verb} ${prune.messagesDeleted} message row(s) and ${prune.threadStateDeleted} thread_state row(s) for dead threads` +
+          `${prune.vacuumed ? "; VACUUMed messages.db" : ""}`,
+      );
     }
+  } catch (error) {
+    console.error("[retention] pruneDeadThreads failed", error instanceof Error ? error.message : String(error));
   }
 }, 60_000).unref?.();
 

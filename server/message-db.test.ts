@@ -175,6 +175,16 @@ describe("message-db", () => {
     expect(existsSync(`${legacy("tail3")}.imported`)).toBe(true);
   });
 
+  // Most of these fixtures are 2-3 threads total, so a genuinely dead one is
+  // often "most of the database" by share alone, and every message here is
+  // inserted at Date.now() (fresh).  Tests that are not specifically about
+  // the age gate or the dead-share refusal disable both with NO_GATES; the
+  // dedicated tests below exercise them directly.  UNRELATED_LIVE pads the
+  // live set so it is never empty (the OTHER refusal) without being the
+  // thread under test.
+  const UNRELATED_LIVE = new Set(["unrelated-live-thread"]);
+  const NO_GATES = { maxAgeMs: 0, maxDeadShare: 1 };
+
   it("pruneDeadThreads removes messages and thread_state for dead threads, keeps live ones", () => {
     insertMessage("dead1", msg("m1", "gone"));
     setActiveLeaf("dead1", "m1");
@@ -182,9 +192,11 @@ describe("message-db", () => {
     insertMessage("live1", msg("m3", "keep"));
     setActiveLeaf("live1", "m3");
 
-    const result = pruneDeadThreads(new Set(["live1"]));
+    const result = pruneDeadThreads(new Set(["live1"]), NO_GATES);
+    expect(result.refused).toBeUndefined();
     expect(result.messagesDeleted).toBe(2);
     expect(result.threadStateDeleted).toBe(1); // only dead1 had a thread_state row
+    expect(result.dryRun).toBe(false);
     expect(readThread("dead1", legacy("dead1")).messages).toEqual([]);
     expect(readThread("dead2", legacy("dead2")).messages).toEqual([]);
     expect(readThread("live1", legacy("live1")).messages).toHaveLength(1);
@@ -193,7 +205,10 @@ describe("message-db", () => {
 
   it("pruneDeadThreads removes an orphaned thread_state row with no messages rows too", () => {
     setActiveLeaf("orphan-state", "some-id");
-    const result = pruneDeadThreads(new Set());
+    // No messages behind it, so there is nothing to date — the age gate
+    // does not apply to a thread_state-only row regardless of maxAgeMs.
+    const result = pruneDeadThreads(UNRELATED_LIVE, { maxDeadShare: 1 });
+    expect(result.refused).toBeUndefined();
     expect(result.threadStateDeleted).toBeGreaterThanOrEqual(1);
     expect(readThread("orphan-state", legacy("orphan-state")).activeLeafId).toBeNull();
   });
@@ -201,14 +216,14 @@ describe("message-db", () => {
   it("pruneDeadThreads accepts a plain iterable, not just a Set", () => {
     insertMessage("dead3", msg("m1", "gone"));
     insertMessage("live2", msg("m2", "keep"));
-    pruneDeadThreads(["live2"]); // array, not a Set
+    pruneDeadThreads(["live2"], NO_GATES); // array, not a Set
     expect(readThread("dead3", legacy("dead3")).messages).toEqual([]);
     expect(readThread("live2", legacy("live2")).messages).toHaveLength(1);
   });
 
   it("pruneDeadThreads does not VACUUM when the freed freelist is small", () => {
     insertMessage("dead4", msg("m1", "x"));
-    const result = pruneDeadThreads(new Set());
+    const result = pruneDeadThreads(UNRELATED_LIVE, NO_GATES);
     expect(result.vacuumed).toBe(false);
   });
 
@@ -218,8 +233,66 @@ describe("message-db", () => {
     // (DEFAULT_VACUUM_THRESHOLD_BYTES), which a unit test should not have to
     // allocate tens of megabytes to exercise.
     insertMessage("dead5", msg("m1", "x".repeat(50_000)));
-    const result = pruneDeadThreads(new Set(), { vacuumThresholdBytes: 1 });
+    const result = pruneDeadThreads(UNRELATED_LIVE, { ...NO_GATES, vacuumThresholdBytes: 1 });
     expect(result.vacuumed).toBe(true);
+  });
+
+  it("pruneDeadThreads leaves a dead thread alone until its newest message is old enough", () => {
+    insertMessage("dead-fresh", msg("m1", "just now"));
+    const fresh = pruneDeadThreads(UNRELATED_LIVE, { maxDeadShare: 1 }); // default maxAgeMs (7 days)
+    expect(fresh.refused).toBeUndefined();
+    expect(fresh.messagesDeleted).toBe(0);
+    expect(readThread("dead-fresh", legacy("dead-fresh")).messages).toHaveLength(1);
+
+    // an explicit old `at`, well past the default 7-day bar
+    insertMessage("dead-old", msg("m1", "long ago", { at: Date.now() - 8 * 24 * 60 * 60 * 1000 }));
+    const old = pruneDeadThreads(UNRELATED_LIVE, { maxDeadShare: 1 });
+    expect(old.messagesDeleted).toBe(1);
+    expect(readThread("dead-old", legacy("dead-old")).messages).toEqual([]);
+    // the still-fresh thread from above must not have been swept as a side effect
+    expect(readThread("dead-fresh", legacy("dead-fresh")).messages).toHaveLength(1);
+  });
+
+  it("pruneDeadThreads refuses an empty live set against a nonempty database, dry run or not", () => {
+    insertMessage("real-history", msg("m1", "do not lose this", { at: Date.now() - 30 * 24 * 60 * 60 * 1000 }));
+
+    const real = pruneDeadThreads(new Set());
+    expect(real.refused).toBe("empty-live-set");
+    expect(real.messagesDeleted).toBe(0);
+    expect(readThread("real-history", legacy("real-history")).messages).toHaveLength(1);
+
+    const preview = pruneDeadThreads(new Set(), { dryRun: true });
+    expect(preview.refused).toBe("empty-live-set");
+    expect(preview.messagesDeleted).toBe(0);
+  });
+
+  it("pruneDeadThreads refuses when dead threads are too large a share of the database", () => {
+    // one live thread, four dead ones — 80% dead, past the 50% default
+    insertMessage("keep-me", msg("m1", "keep"));
+    for (const id of ["d1", "d2", "d3", "d4"]) {
+      insertMessage(id, msg("m1", "old", { at: Date.now() - 30 * 24 * 60 * 60 * 1000 }));
+    }
+    const result = pruneDeadThreads(new Set(["keep-me"]));
+    expect(result.refused).toBe("dead-share-too-large");
+    expect(result.messagesDeleted).toBe(0);
+    for (const id of ["d1", "d2", "d3", "d4"]) {
+      expect(readThread(id, legacy(id)).messages).toHaveLength(1);
+    }
+  });
+
+  it("pruneDeadThreads dry run reports what a real run would delete, without deleting", () => {
+    insertMessage("dead-preview", msg("m1", "old enough", { at: Date.now() - 10 * 24 * 60 * 60 * 1000 }));
+    setActiveLeaf("dead-preview", "m1");
+
+    const preview = pruneDeadThreads(UNRELATED_LIVE, { maxDeadShare: 1, dryRun: true });
+    expect(preview).toMatchObject({ messagesDeleted: 1, threadStateDeleted: 1, vacuumed: false, dryRun: true });
+    expect(preview.refused).toBeUndefined();
+    // nothing actually removed
+    expect(readThread("dead-preview", legacy("dead-preview")).messages).toHaveLength(1);
+
+    const real = pruneDeadThreads(UNRELATED_LIVE, { maxDeadShare: 1 });
+    expect(real).toMatchObject({ messagesDeleted: 1, threadStateDeleted: 1, dryRun: false });
+    expect(readThread("dead-preview", legacy("dead-preview")).messages).toEqual([]);
   });
 
   it("Store round-trips branching through the DB across a restart", () => {
