@@ -24,7 +24,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { toolFields } from "../tool-fields.ts";
 import { classifyHttpError, httpErrorFor, type HttpErrorClassification } from "./chat-completions/errors.ts";
-import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
+import { runTurnLoop, DEFAULT_TURN_LOOP_BUDGET, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
 import { costUsd, type ChatCompletionsPriceTable } from "./chat-completions/pricing.ts";
 import { capReplayedTranscript } from "./chat-completions/replay-cap.ts";
 import { genAiProvider, withChatSpan } from "../sentry-ai.ts";
@@ -653,6 +653,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // Only `timeoutMs` is read from this; the provider payload is built
         // separately above from name/description/parameters.
         tools: turn.tools,
+        // Unattended turns (webhook- or resource-triggered) may need much
+        // longer than the 180s interactive ceiling to stream a full reasoning
+        // + code response (e.g. the Compiler bot analysing a CI failure).
+        // Use the wall-clock budget as the per-request ceiling so the wall
+        // clock remains the sole binding constraint, matching the design
+        // intent documented in efficiency-and-connectivity.md.
+        budget: turn.unattended ? { requestTimeoutMs: DEFAULT_TURN_LOOP_BUDGET.wallClockMs } : undefined,
         toolHost: turn.toolHost,
         // The harness's permission broker, carried across on the same
         // per-turn service object caller identity rides on.  The driver
