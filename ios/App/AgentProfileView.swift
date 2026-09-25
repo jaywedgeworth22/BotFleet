@@ -322,6 +322,16 @@ struct AgentProfileView: View {
                     }
                 }
 
+                Section("Speech to text") {
+                    Label("Apple on-device dictation", systemImage: "waveform")
+                    Text("Recordings you send from this iPhone keep their original audio and transcript on the message. Available languages depend on this device.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("Cloud fallback and translation are not configured. Siri and iOS 27 speech features still need device testing.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let tasks = current.tasks, !tasks.isEmpty {
                     let totalTurns = tasks.compactMap { $0.usage?.turns }.reduce(0, +)
                     let totalInput = tasks.compactMap { $0.usage?.input }.reduce(0, +)
