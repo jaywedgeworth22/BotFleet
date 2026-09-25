@@ -328,6 +328,21 @@ import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
 import { installTestParentWatchdog } from "./test-parent-watchdog.ts";
 import { installTimestampedConsole } from "./console-timestamps.ts";
+import {
+  BOOT_RESUME_CONCURRENCY,
+  BOOT_RESUME_STAGGER_MS,
+  forgetResumeFailure,
+  inspectLastTurn,
+  planBootRecovery,
+  recordInterruptedTurns,
+  rememberResumeFailure,
+  runStaggeredResumes,
+  takeInterruptedTurns,
+  type BootRecoveryAction,
+  type BootRecoveryCandidate,
+  type BootRecoveryDispatch,
+  type InterruptedTurnRecord,
+} from "./boot-recovery.ts";
 
 // OP7: before any other logging in this file — the launchd StandardOutPath
 // is one shared, unrotated file with the companion sidecar's already-
@@ -354,6 +369,91 @@ const MIME: Record<string, string> = {
 // SQLite, routines, or webhook receivers start.  Health timeouts never release it.
 // The parent startup lock also serializes the one-time legacy directory move.
 const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
+
+// ── the port opens BEFORE boot work, and health answers while it runs ─────
+// `server.listen` used to be the last statement in this file, behind the
+// Infisical preload (up to a 12 s cap), the provider registry load, the
+// post-update resume and a conditional provider rebuild — so `/api/health`
+// connection-reset during every boot by design, and the desktop launcher,
+// the launchd wrapper and mac-process-watch all had to read a booting
+// harness as a dead one (audit HS19).  The socket binds here instead,
+// immediately after the data-ownership fence and before anything slow, and
+// a boot-phase handler answers until module init finishes:
+//
+//   - `/health` and `/api/health` answer 200 with `ready: false,
+//     booting: true`.  200 keeps every "200 means UP" supervisor working;
+//     the two fields let a client that cares wait for real readiness.
+//   - Everything else gets 503 `{ error: "booting" }` — the same shape
+//     `runtimeQuiescing` already uses for an update, so a client that
+//     already handles one handles the other.
+//
+// One server, one socket, no window where the port is unbound: the real
+// handler takes over the moment `booting` flips at the end of this file.
+let booting = true;
+let handleRequest: ((req: IncomingMessage, res: ServerResponse) => unknown) | null = null;
+
+function handleBootRequest(req: IncomingMessage, res: ServerResponse): void {
+  // Binding earlier must not widen the trust boundary by a single request:
+  // the same loopback fence every route behind it gets.
+  if (!isLoopbackHost(req.headers.host)) {
+    return json(res, 403, { error: "forbidden: loopback host required" });
+  }
+  let path: string;
+  try {
+    path = new URL(req.url ?? "/", `http://localhost:${PORT}`).pathname;
+  } catch {
+    // A malformed request line must not take the process down during boot,
+    // where there is no route-level try/catch to land in yet.
+    return json(res, 400, { error: "bad request" });
+  }
+  if (path === "/health" || path === "/api/health") {
+    return json(res, 200, {
+      app: "botfleet",
+      pid: process.pid,
+      static: Boolean(STATIC_DIR),
+      ownerProof: harnessOwnerProof(harnessOwner, req.headers["x-botfleet-owner-challenge"]),
+      ready: false,
+      booting: true,
+    });
+  }
+  return json(res, 503, { error: "booting" });
+}
+
+const server = createServer((req, res) => {
+  if (booting || !handleRequest) return handleBootRequest(req, res);
+  void handleRequest(req, res);
+});
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (listenErrorDisposition(error) === "named-exit") {
+    console.error(formatListenInUse(PORT, "harness"));
+    process.exit(1);
+  }
+  console.error(error);
+  const sentry = isSentryActive() ? getSentry() : null;
+  if (sentry) {
+    sentry.captureException(error, { tags: { component: "harness-listen" } });
+    void sentry.flush(2000).finally(() => process.exit(1));
+    return;
+  }
+  process.exit(1);
+});
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`botfleet server on http://127.0.0.1:${PORT} (booting)`);
+});
+
+// ── what the last stop interrupted ───────────────────────────────────────
+// Read (and consume) before anything can dispatch a turn, so the recovery
+// coordinator below and every later `startTurn` see the same facts.  Taking
+// it now rather than at recovery time also means a crash DURING recovery
+// cannot replay the record on the next boot — the surviving
+// `inflightThreadId` markers are the fallback, and they are evidence enough.
+const interruptedAtLastStop = takeInterruptedTurns(DATA_DIR);
+/** `botId:threadId` of every resume that already failed terminally.  Mirrors
+ * the on-disk list so the common dispatch touches no disk at all. */
+const rememberedResumeFailures = new Set(
+  interruptedAtLastStop.failures.map((failure) => `${failure.botId}:${failure.threadId}`),
+);
+
 // "Is there a newer BotFleet, and install it" — asked from this Mac or from
 // a paired phone.  The updater it starts stops this harness partway through,
 // so it can never be our child: it is launched detached and reports through
@@ -1358,6 +1458,17 @@ const toolMessageByItem = new Map<string, string>(); // threadId:itemId -> messa
 // and a step's cost in seconds is the thing a reader scanning a long turn is
 // actually looking for.  Cleared with the message mapping above it.
 const toolStartedAt = new Map<string, number>(); // threadId:itemId -> epoch ms
+/** Drop every per-step entry belonging to one thread.  Both maps are keyed
+ * `threadId:itemId`, so the thread's own prefix is the sweep. */
+function sweepThreadToolState(threadId: string): void {
+  const prefix = `${threadId}:`;
+  for (const key of toolMessageByItem.keys()) {
+    if (key.startsWith(prefix)) toolMessageByItem.delete(key);
+  }
+  for (const key of toolStartedAt.keys()) {
+    if (key.startsWith(prefix)) toolStartedAt.delete(key);
+  }
+}
 const askMessageByRequest = new Map<string, string>(); // threadId:requestId -> messageId
 // The instance that emitted request.opened owns the live broker.  Persisted
 // model selection can still name the primary after this turn fell back.
@@ -2450,6 +2561,13 @@ bus.subscribe((event: RuntimeEvent) => {
       lastReply.delete(event.threadId);
       const lastReported = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
+      // Per-tool bookkeeping is keyed `threadId:itemId` and deleted on the
+      // tool's own completion — so a tool the turn never finished (a kill, a
+      // crash, a driver that drops the closing event) left its entry behind
+      // for the life of the process, one per abandoned step (audit HS22).
+      // The turn ending is the point at which every one of its steps is over,
+      // whatever the driver said about them.
+      sweepThreadToolState(event.threadId);
       const speaker = groupSpeakers.get(event.threadId);
       const group = store.groupByThread(event.threadId);
       // What this turn spent.  The driver's own per-turn figure
@@ -3303,6 +3421,10 @@ async function startTurn(
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
   const activeSelection: ModelSelection = { instanceId, model, effort };
+  // A turn dispatched here is the thread running again, which retires any
+  // boot-resume failure remembered against it: the refusal exists to stop a
+  // doomed turn being retried by every boot, never to stop a person asking.
+  clearRememberedResumeFailure(bot.id, threadId);
   store.setActivity(bot.id, "working");
   store.patchBot(bot.id, { unread: false, inflightThreadId: threadId, activeModelSelection: activeSelection });
   store.patchTask(bot.id, threadId, { activeModelSelection: activeSelection });
@@ -4653,16 +4775,125 @@ function threadExternalCredentialPending(bot: NonNullable<ReturnType<typeof stor
   return turnExternalCredentialPending(bot, quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId);
 }
 
-function recoverInflightTurn(botId: string): void {
+// ── one recovery coordinator ─────────────────────────────────────────────
+// Two paths could dispatch the same thread at boot: the post-update resume
+// (`resumeInterruptedChatTurns`, awaited inline at the end of module init)
+// and the timer below.  The busy guard covered the ordinary case and nothing
+// else — a first dispatch that failed fast inside startTurn's `void (async
+// …)` unwound `busy` before the timer ran, and the same thread went out
+// twice (audit HS20).  A claim taken SYNCHRONOUSLY, before either path
+// awaits anything, is what actually closes that window.
+const bootResumeClaims = new Set<string>();
+
+// A declaration, not a const arrow: `startTurn` calls
+// `clearRememberedResumeFailure` through this, and a delegation drained
+// during module init can reach `startTurn` before this line has run.
+function resumeKey(botId: string, threadId: string): string {
+  return `${botId}:${threadId}`;
+}
+
+function claimBootResume(botId: string, threadId: string): boolean {
+  const key = resumeKey(botId, threadId);
+  if (bootResumeClaims.has(key)) return false;
+  bootResumeClaims.add(key);
+  return true;
+}
+
+function releaseBootResume(botId: string, threadId: string): void {
+  bootResumeClaims.delete(resumeKey(botId, threadId));
+}
+
+/** New input on a thread retires whatever failed there on an earlier boot:
+ * the person is asking for it again, which is the one thing that outranks
+ * "this already failed".  In-memory first, so an ordinary dispatch — the
+ * overwhelmingly common case — touches no disk at all. */
+function clearRememberedResumeFailure(botId: string, threadId: string): void {
+  if (!rememberedResumeFailures.delete(resumeKey(botId, threadId))) return;
+  forgetResumeFailure(DATA_DIR, botId, threadId);
+}
+
+/** The evidence this boot has about one bot's interrupted thread.
+ *
+ * `threadId` is given when a RECORD names the thread — a graceful stop or a
+ * forced update wrote it down — and read off the crash marker otherwise. */
+function bootRecoveryCandidateFor(botId: string, threadId?: string): BootRecoveryCandidate | null {
+  const bot = store.bot(botId);
+  if (!bot || bot.hidden || bot.busy) return null;
+  const thread = threadId ?? bot.inflightThreadId;
+  if (!thread) return null;
+  // A room turn cannot be re-dispatched without duplicating the transcript
+  // (startGroupTurn always appends the prompt); the quiesce path refuses one
+  // outright, and boot has to refuse it for the same reason.
+  if (store.groupByThread(thread)) return null;
+  return bootRecoveryEvidence(bot, thread);
+}
+
+function bootRecoveryEvidence(
+  bot: NonNullable<ReturnType<typeof store.bot>>,
+  threadId: string,
+): BootRecoveryCandidate {
+  const recorded = interruptedAtLastStop.turns.find(
+    (turn) => turn.botId === bot.id && turn.threadId === threadId,
+  );
+  const inspected = inspectLastTurn(EVENTS_DIR, threadId);
+  const task = store.taskByThread(bot.id, threadId);
+  // A recorded turn was BUSY when the harness stopped it, so the `ok: false`
+  // completion its own interrupt produced is not a turn that failed — it is
+  // this turn, cut short.  Without this the "pause & install" promise
+  // (PR #514) would resume nothing at all.
+  const outcome = recorded && inspected.outcome === "failed" ? "in-flight" : inspected.outcome;
+  return {
+    botId: bot.id,
+    botName: bot.name,
+    threadId,
+    recorded: Boolean(recorded),
+    outcome,
+    // A stop that classified the turn while it was still live knew more than
+    // any later reading of the log can — but only when it actually decided.
+    // The canonical event log is written by a queued writer (server/harness/
+    // bus.ts), so a shutdown reading it can be a few records behind and come
+    // back "unknown" for a turn the flushed log describes exactly.  Prefer a
+    // confident record; fall back to this boot's reading otherwise.
+    classification:
+      recorded?.classification && recorded.classification !== "unknown"
+        ? recorded.classification
+        : inspected.classification,
+    resumableSession: Object.keys(task?.resumeCursors ?? {}).length > 0,
+    failedBefore: rememberedResumeFailures.has(resumeKey(bot.id, threadId)),
+  };
+}
+
+/** Say in the thread that the turn was interrupted, and stop there.  The
+ * provider may already have acted on the prompt and there is no session to
+ * continue, so re-sending would repeat whatever it did; the person decides. */
+function noteInterruptedTurn(candidate: BootRecoveryCandidate): void {
+  store.appendMessage(candidate.threadId, {
+    role: "bot",
+    kind: "activity",
+    tool: {
+      name: "turn interrupted by a restart — send a message to pick it back up",
+      ok: false,
+      kind: "notice",
+    },
+  });
+  store.patchBot(candidate.botId, { inflightThreadId: undefined });
+  console.log(
+    `boot recovery: ${candidate.botName} (${candidate.threadId}) was ${candidate.classification} with no session to resume — left for the person`,
+  );
+}
+
+function recoverInflightTurn(botId: string, action: BootRecoveryAction = "continue"): Promise<void> {
   deferredBootRecoveries.delete(botId);
   const bot = store.bot(botId);
-  if (!bot || bot.hidden || bot.busy) return;
+  if (!bot || bot.hidden || bot.busy) return Promise.resolve();
   const threadId = bot.inflightThreadId;
-  if (!threadId) return;
+  if (!threadId) return Promise.resolve();
+  if (!claimBootResume(bot.id, threadId)) return Promise.resolve();
   if (threadExternalCredentialPending(bot, threadId)) {
+    releaseBootResume(bot.id, threadId);
     deferredBootRecoveries.add(bot.id);
     console.log(`boot recovery: waiting for encrypted credential for ${bot.name}`);
-    return;
+    return Promise.resolve();
   }
   const activeMsgs = store.activePath(threadId);
 
@@ -4684,12 +4915,16 @@ function recoverInflightTurn(botId: string): void {
   // fabricated human bubble.
   const turnStartIdx = lastTurnStartIndex(activeMsgs);
   const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
-  // Connector/secret continuation is ephemeral (`cardContinuation`), so a
-  // crash mid-resume would otherwise replay the previous completed
-  // prompt.  Replay the persisted starter's exact TEXT only when that
-  // turn never produced bot text (a completed tool call means whatever
-  // ran already ran — replaying the same prompt could repeat it).
-  const replay = shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
+  // Two independent gates, and the prompt is re-sent only if BOTH open.
+  //
+  // `action` is the protocol answer: the turn is replayable only when the
+  // harness can prove the provider never accepted the prompt
+  // (server/resume-recovery.ts).  `shouldReplayPersistedStarter` is the
+  // transcript answer, and it covers a case the protocol log does not:
+  // connector/secret continuation is ephemeral (`cardContinuation`), so a
+  // crash mid-resume leaves the PREVIOUS completed prompt as the newest
+  // starter on disk, and replaying that would re-run finished work.
+  const replay = action === "replay" && shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
   const prompt = replay && resumeUser
     ? (resumeUser.text || "Please resume.")
     : BOOT_RECOVERY_NOTICE;
@@ -4703,28 +4938,118 @@ function recoverInflightTurn(botId: string): void {
   // restart) persist BOOT_RECOVERY_NOTICE as a fabricated `role: "user"`
   // bubble instead of a `system` continuation — the exact bug this
   // whole boot-recovery path exists to fix.
-  console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
-  void startTurn(bot.id, prompt, {
+  console.log(
+    `boot recovery: ${replay ? "replaying" : "continuing"} in-flight thread ${threadId} for ${bot.name}`,
+  );
+  return startTurn(bot.id, prompt, {
     threadId,
     userMessage: replay ? resumeUser : undefined,
     ...bootRecoveryTurnOpts(resumeUser, replay),
-  }).catch((error) => {
+  }).then(() => {}, (error) => {
     if (isExternalCredentialPendingError(error)) {
+      releaseBootResume(bot.id, threadId);
       deferredBootRecoveries.add(bot.id);
       return;
     }
     console.error(`boot recovery failed for ${bot.name} (${threadId}):`, error);
+    // Terminal, and remembered: without this the next boot finds the same
+    // marker, dispatches the same doomed turn, and fails the same way — 29
+    // boots in two days is 29 of them (audit HS18).  New input on the thread
+    // clears it (`clearRememberedResumeFailure`).
+    rememberedResumeFailures.add(resumeKey(bot.id, threadId));
+    rememberResumeFailure(DATA_DIR, {
+      botId: bot.id,
+      threadId,
+      at: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    });
     store.patchBot(bot.id, { inflightThreadId: undefined });
   });
 }
 
+/** Re-plan one bot after its encrypted credential arrived.  It went through
+ * the same gates on the first pass; what changed is only whether it can
+ * dispatch at all. */
 function drainDeferredBootRecoveries(): void {
-  for (const botId of [...deferredBootRecoveries]) recoverInflightTurn(botId);
+  for (const botId of [...deferredBootRecoveries]) {
+    const candidate = bootRecoveryCandidateFor(botId);
+    if (!candidate) {
+      deferredBootRecoveries.delete(botId);
+      continue;
+    }
+    const plan = planBootRecovery([candidate]);
+    for (const entry of plan.resume) void recoverInflightTurn(entry.candidate.botId, entry.action);
+    for (const skipped of plan.notify) {
+      deferredBootRecoveries.delete(skipped.botId);
+      noteInterruptedTurn(skipped);
+    }
+    for (const { candidate: dropped } of plan.skipped) {
+      deferredBootRecoveries.delete(dropped.botId);
+      store.patchBot(dropped.botId, { inflightThreadId: undefined });
+    }
+  }
 }
 
-setTimeout(() => {
-  for (const bot of store.bots) recoverInflightTurn(bot.id);
-}, 2500);
+/** How long after boot the first resume goes out.  Long enough that provider
+ * instances, MCP proxies and the store have settled; short enough that a
+ * person watching the app sees their work pick back up. */
+const BOOT_RECOVERY_DELAY_MS = 2_500;
+
+async function runBootRecovery(): Promise<void> {
+  const candidates: BootRecoveryCandidate[] = [];
+  const seen = new Set<string>();
+  const consider = (botId: string, threadId?: string) => {
+    const candidate = bootRecoveryCandidateFor(botId, threadId);
+    if (!candidate) return;
+    const key = resumeKey(candidate.botId, candidate.threadId);
+    // Claimed means some other path already took it — one coordinator, one
+    // dispatch (HS20).  Seen means this pass already listed it from the other
+    // source: a recorded stop and a surviving marker describe the same turn.
+    if (seen.has(key) || bootResumeClaims.has(key)) return;
+    seen.add(key);
+    candidates.push(candidate);
+  };
+  // Both sources, one plan: the crash markers the store kept, and every turn
+  // a graceful stop or a forced update wrote down.  A recorded turn whose
+  // marker was already cleared (the quiesce settles the turn it interrupts)
+  // gets it back, because the record is the stronger evidence of the two.
+  for (const bot of store.bots) consider(bot.id);
+  for (const turn of interruptedAtLastStop.turns) {
+    const bot = store.bot(turn.botId);
+    if (!bot || bot.busy || bot.hidden) continue;
+    if (!bot.inflightThreadId) store.patchBot(bot.id, { inflightThreadId: turn.threadId });
+    else if (bot.inflightThreadId !== turn.threadId) continue;
+    consider(turn.botId, turn.threadId);
+  }
+  if (candidates.length === 0) return;
+  const plan = planBootRecovery(candidates);
+  for (const { candidate, reason } of plan.skipped) {
+    console.log(`boot recovery: skipping ${candidate.botName} (${candidate.threadId}) — ${reason}`);
+    // An over-cap thread is genuinely unfinished and keeps its marker, so a
+    // later boot (or the person) can still pick it up.  Everything else is
+    // settled one way or another and must stop being re-evaluated forever.
+    if (reason !== "over-cap") store.patchBot(candidate.botId, { inflightThreadId: undefined });
+  }
+  for (const candidate of plan.notify) noteInterruptedTurn(candidate);
+  if (plan.resume.length === 0) return;
+  // The whole shape of the fix, in one line a person reading harness.log can
+  // check against what actually happened.
+  console.log(
+    `boot recovery: resuming ${plan.resume.length} of ${candidates.length} interrupted thread(s)` +
+      ` — cap ${plan.cap}, ${BOOT_RESUME_CONCURRENCY} at a time, one every ${Math.round(BOOT_RESUME_STAGGER_MS / 1000)}s`,
+  );
+  await runStaggeredResumes<BootRecoveryDispatch>(plan.resume, {
+    concurrency: BOOT_RESUME_CONCURRENCY,
+    staggerMs: BOOT_RESUME_STAGGER_MS,
+    dispatch: (entry) => recoverInflightTurn(entry.candidate.botId, entry.action),
+  });
+}
+
+// The timer itself is armed at the END of module init, not here: the
+// post-update snapshot is read on the last page of this file, and module init
+// takes far longer than 2.5 s on a cold start — a timer armed here would run
+// the plan before that snapshot had been added to it, and silently drop every
+// turn a "pause & install" promised to resume.
 
 async function runGroupMemberTurn(
   groupId: string,
@@ -6756,6 +7081,11 @@ interface InterruptedBotResumeEntry {
   promptText?: string;
 }
 
+/** The LIVE re-dispatch: a quiesce that was rolled back, or an updater that
+ * died after fencing and released it.  No process boundary was crossed, so
+ * the provider state is still the one this harness left — which is exactly
+ * what makes it different from boot, where `runBootRecovery` owns every
+ * resume and asks the accept-boundary question first (HS18/HS20). */
 async function resumeInterruptedChatTurns(
   entries: InterruptedBotResumeEntry[],
   context: string,
@@ -6979,7 +7309,7 @@ function endRuntimeQuiesce() {
   return { ...currentRuntimeReadiness(), quiescing: false };
 }
 
-const server = createServer(async (req, res) => {
+handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -9956,10 +10286,16 @@ const server = createServer(async (req, res) => {
     // identity handshake for the packaged app's port fallback: the forked
     // child proves it is OURS by echoing its pid (a stray dev server has
     // the same API shape but a different pid)
-    if (method === "GET" && path === "/api/health") {
+    // `/health` is the same answer under the name every process supervisor
+    // already polls.  Both are reachable during boot (the boot-phase handler
+    // above answers them with `ready: false`), and neither is gated by the
+    // quiesce fence — "is this thing alive" must never depend on whether it
+    // happens to be busy.
+    if (method === "GET" && (path === "/api/health" || path === "/health")) {
       return json(res, 200, {
         app: "botfleet", pid: process.pid, static: Boolean(STATIC_DIR),
         ownerProof: harnessOwnerProof(harnessOwner, req.headers["x-botfleet-owner-challenge"]),
+        ready: !booting, booting,
       });
     }
     if (method === "GET" && path === "/api/telemetry/status") {
@@ -11771,7 +12107,7 @@ const server = createServer(async (req, res) => {
     const status = (e as any)?.status ?? 500;
     return json(res, status, { error: e instanceof Error ? e.message : String(e) });
   }
-});
+};
 
 routines?.start();
 resourceTriggers.start();
@@ -11820,11 +12156,23 @@ if (existsSync(pendingResumePath)) {
       }
     }
     // Re-dispatch the chat turns a forced update interrupted, so the
-    // "pause & install" promise holds: work pauses, then resumes.  The turn
-    // re-runs from the user message it was answering, passed back as the
-    // turn's existing message so the transcript is not duplicated.
+    // "pause & install" promise holds: work pauses, then resumes.  These go
+    // through the ONE recovery coordinator rather than dispatching here —
+    // same accept-boundary test, same stagger, same caps, and no way for the
+    // 2.5 s timer to take a thread this snapshot already named (HS18/HS20).
     if (Array.isArray(resumeState.interruptedBots)) {
-      await resumeInterruptedChatTurns(resumeState.interruptedBots, "update-resume");
+      for (const entry of resumeState.interruptedBots) {
+        if (!entry?.botId || typeof entry.threadId !== "string") continue;
+        interruptedAtLastStop.turns.push({
+          botId: entry.botId,
+          threadId: entry.threadId,
+          at: typeof resumeState.timestamp === "number" ? resumeState.timestamp : Date.now(),
+          reason: "update",
+        });
+      }
+      console.log(
+        `[update-resume] ${resumeState.interruptedBots.length} interrupted turn(s) handed to boot recovery`,
+      );
     }
     unlinkSync(pendingResumePath);
     queueMicrotask(() => routines?.tick());
@@ -11833,20 +12181,6 @@ if (existsSync(pendingResumePath)) {
   }
 }
 
-server.on("error", (error: NodeJS.ErrnoException) => {
-  if (listenErrorDisposition(error) === "named-exit") {
-    console.error(formatListenInUse(PORT, "harness"));
-    process.exit(1);
-  }
-  console.error(error);
-  const sentry = isSentryActive() ? getSentry() : null;
-  if (sentry) {
-    sentry.captureException(error, { tags: { component: "harness-listen" } });
-    void sentry.flush(2000).finally(() => process.exit(1));
-    return;
-  }
-  process.exit(1);
-});
 // Everything a secret change might rebuild or re-point now exists, so a
 // snapshot arriving from here on is acted on rather than only recorded.
 bootComplete = true;
@@ -11869,12 +12203,21 @@ if (credentialFingerprint(cfg) !== loadedCredentialFingerprint) {
   });
 }
 
-// Drain the startup idle-backstop probe before accepting traffic so early
+// Drain the startup idle-backstop probe before lifting the boot gate, so early
 // lifecycle routes (and their exclusion tests) never race its docker inspect.
 await localVmStartupProbe.catch(() => {});
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`botfleet server on http://127.0.0.1:${PORT}`);
-});
+// Boot is done: the socket has been open since the top of this file, and the
+// full route table takes over from the boot-phase handler on the very next
+// request.  `/api/health` flips to `ready: true`, and the 503 gate lifts.
+booting = false;
+console.log(`botfleet server ready on http://127.0.0.1:${PORT}`);
+
+// Everything the recovery coordinator reads now exists: the store, the
+// provider fleet, the shutdown record read at the top of this file, and the
+// post-update snapshot folded into it a few lines above.
+setTimeout(() => {
+  void runBootRecovery();
+}, BOOT_RECOVERY_DELAY_MS);
 
 // Test-only safety net (see server/test-parent-watchdog.ts): a harness
 // spawned by the suite via server/testing/cleanup.ts's spawnDetached carries
@@ -11900,8 +12243,52 @@ if (process.env.BOTFLEET_TEST_CHILD === "1") {
   });
 }
 
+/** How long a graceful stop will spend cancelling live turns before it exits
+ * anyway.  Something has to bound it: launchd and the updater both follow a
+ * SIGTERM with a SIGKILL, and an exit that hangs waiting for a wedged CLI
+ * gets killed mid-write instead of mid-wait. */
+const SHUTDOWN_GRACE_MS = 3_000;
+let shuttingDown = false;
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
+    // A second signal during the grace period must not run any of this twice
+    // — least of all re-record an already-recorded stop.
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    // FIRST, while the store still says who was working: write down what
+    // this stop is interrupting.  Without it a clean SIGTERM and a crash look
+    // identical on the next boot — same surviving `inflightThreadId`, same
+    // blind re-dispatch — and with 29 boots in two days that was a full CLI
+    // turn re-spent per busy bot, every time (audit HS18).  The classification
+    // is taken HERE because the evidence is never fresher than now.
+    const interrupted: InterruptedTurnRecord[] = [];
+    for (const bot of store.bots) {
+      if (!bot.busy) continue;
+      const threadId = bot.inflightThreadId ?? bot.threadId;
+      // Room turns are not re-dispatchable (startGroupTurn always appends the
+      // prompt), so recording one would only promise a resume that cannot
+      // happen.  The quiesce path refuses them for the same reason.
+      if (!threadId || store.groupByThread(threadId)) continue;
+      interrupted.push({
+        botId: bot.id,
+        threadId,
+        at: Date.now(),
+        reason: "shutdown",
+        classification: inspectLastTurn(EVENTS_DIR, threadId).classification,
+      });
+    }
+    if (interrupted.length > 0) {
+      const recorded = recordInterruptedTurns(DATA_DIR, interrupted);
+      // The record names the thread; the marker is how the next boot finds it
+      // on the bot.  Keep both in step.
+      for (const turn of interrupted) store.patchBot(turn.botId, { inflightThreadId: turn.threadId });
+      console.log(
+        `shutdown: ${interrupted.length} turn(s) interrupted — ${recorded ? "recorded for the next boot" : "could not write the record"}`,
+      );
+    }
+
     for (const idle of localVmIdles.values()) idle.cancel();
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
@@ -11912,10 +12299,22 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     usageQuotaPoller.stop();
     infisical.stop();
     webhookIngress?.server.close();
+    // Cancel the live child turns before tearing their engines down, so a CLI
+    // gets an interrupt it understands rather than having its process tree
+    // pulled out from under it mid-tool.
+    const cancelled = Promise.all(
+      interrupted.map((turn) => interruptThreadEverywhere(turn.threadId).catch(() => {})),
+    ).then(() => registry.disposeAll());
     // bus.flush() is here because the canonical event log is no longer written
     // on the publish path: the tee queues and one writer drains it, so the
     // last few records of every live thread are in memory when a SIGTERM
-    // arrives and exiting without draining would lose them.
-    void Promise.all([registry.disposeAll(), telemetry.dispose(), bus.flush()]).finally(() => process.exit(0));
+    // arrives and exiting without draining would lose them — including the
+    // closing events of the turns just recorded above, which the next boot
+    // reads to decide what it may safely re-send.
+    const graceExpired = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS).unref?.());
+    void Promise.race([
+      Promise.all([cancelled, telemetry.dispose(), bus.flush()]),
+      graceExpired,
+    ]).finally(() => process.exit(0));
   });
 }
