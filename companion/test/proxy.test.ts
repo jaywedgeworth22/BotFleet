@@ -1126,6 +1126,9 @@ describe("pairing, end to end", () => {
           consecutiveTransportFailures: 0,
           lastErrorCode: null,
           circuitOpenUntil: null,
+          devices: [],
+          pushesOff: false,
+          pushesOffReason: null,
         }),
       }),
     );
@@ -1161,6 +1164,9 @@ describe("pairing, end to end", () => {
         consecutiveTransportFailures: 0,
         lastErrorCode: null,
         circuitOpenUntil: null,
+        devices: [],
+        pushesOff: false,
+        pushesOffReason: null,
       });
       // Nothing about the signing key may cross this boundary.
       expect(body).not.toMatch(/PRIVATE KEY|keyId|teamId|p8/i);
