@@ -845,6 +845,34 @@ export function ensureDirs() {
   for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
 }
 
+/** Migration: pin legacy ElevenLabs installs (tts.key set, tts.provider
+ * absent) to provider: "elevenlabs" so PR #513's MiniMax default does not
+ * silently route a valid ElevenLabs key to MiniMax's `/v1/get_voice`.
+ * Idempotent: returns false if provider is already set, if the tts section
+ * is empty, or if only a voice (no key) is present.  Mutates the cfg in
+ * place so the current `loadConfig()` call carries the pin; the call site
+ * skips `saveConfig` so a desktop install — whose real key lives in the OS
+ * keychain and arrives via `OMB_TTS_KEY` AFTER the file is read — never has
+ * that key written back into config.json in cleartext.
+ *
+ * The shape check is key + no-provider.  Voice is intentionally NOT part of
+ * the discriminator: a legacy install may carry its ElevenLabs voice only on
+ * each bot (`speak()` and `voiceReady()` accept a per-bot `voiceId` when the
+ * workspace fallback is absent), so a key-only record is a legitimate legacy
+ * shape, not an ambiguous one.  Fresh MiniMax key-only saves are
+ * distinguished by new key saves persisting `provider: "minimax"`
+ * alongside the key — every post-default save carries the explicit provider,
+ * so any record that arrives here without one predates the default. */
+export function migrateLegacyElevenLabsTtsProvider(cfg: AppConfig): boolean {
+  if (!cfg.tts) return false;
+  if (cfg.tts.provider !== undefined) return false;
+  // Trim because a stale env-overlay can leave a whitespace-only key that
+  // would not match any provider's `verifyKey` probe; that case is "no key".
+  if (!cfg.tts.key?.trim()) return false;
+  cfg.tts = { ...cfg.tts, provider: "elevenlabs" };
+  return true;
+}
+
 /** Map the legacy per-destination allowlist onto the new per-provider
  * shape the redesigned Computer settings UI drives.  Returns `true` when
  * the caller's config was actually changed — idempotent on a config that
@@ -971,6 +999,9 @@ export function loadConfig(): AppConfig {
   // mapped field is recorded for the Secrets card.  With no store configured
   // the snapshot is null and this is a no-op.
   resolveSecretFields(cfg, process.env, infisicalSnapshot());
+  // Pin pre-MiniMax key-only installs after env and external-secret resolution.
+  // Never persist the injected key to config.json in cleartext.
+  migrateLegacyElevenLabsTtsProvider(cfg);
   // Migration: existing installs carried the legacy
   // `botDefaults.allowedComputers` shape (an array of three legacy
   // destinations).  The redesigned Computer settings UI drives the new
