@@ -1837,7 +1837,7 @@ const CREDENTIAL_PATCH = {
   deepseekApiKey: (value) => ({ deepseek: { key: value } }),
   boxToken: (value) => ({ box: { token: value } }),
   opencodeGoApiKey: (value) => ({ opencodeGo: { apiKey: value } }),
-  ttsKey: (value) => ({ tts: { key: value, provider: "minimax" } }),
+  ttsKey: (value) => ({ tts: { key: value } }),
   openaiImageApiKey: (value) => ({ imageGen: { key: value } }),
   infisicalClientSecret: (value) => ({ infisical: { clientSecret: value } }),
 };
