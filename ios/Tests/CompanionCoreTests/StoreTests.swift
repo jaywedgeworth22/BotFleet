@@ -105,6 +105,44 @@ final class StoreTests: XCTestCase {
         )
     }
 
+    func testStubHydrateDoesNotWipeAnAlreadyLoadedThread() throws {
+        // #609 changed hydrateSnapshot() to fetch only a one-message stub
+        // per thread (`fleet(messages: 1)`), so launch no longer lays out
+        // every bot's full scrollback; ChatView separately loads the full
+        // page for a thread via `loadInitialMessages` the first time the
+        // person opens it. Review on #609 (before IO12's merge fix landed
+        // in #614) flagged that any LATER hydrate — push refresh,
+        // reconnect, approval-reply — still only fetches that same
+        // one-message stub, and would collapse an already-opened chat back
+        // down to it. This proves the two now interact correctly: a stub
+        // hydrate merges by id like any other hydrate, so it cannot discard
+        // a fuller page the person already has loaded.
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first?.threadId)
+
+        // "Open the chat": loadInitialMessages's own merge path, on top of
+        // whatever the initial fixture hydrate already seeded for this
+        // thread (the fixture is not necessarily empty — merge, not a
+        // literal count, is the invariant under test).
+        let fullPage = (0..<50).map { message("full-\($0)", at: Double($0) + 1000) }
+        state.merge(ThreadPage(messages: fullPage, hasMore: true), intoThread: threadId)
+        let loadedCount = state.transcript(forThread: threadId).count
+        XCTAssertGreaterThanOrEqual(loadedCount, 50)
+
+        // A mid-session hydrate arrives with only the newest-message stub —
+        // exactly what `fleet(messages: 1)` returns.
+        var stub = try fleet()
+        let stubIndex = try XCTUnwrap(stub.bots.firstIndex { $0.threadId == threadId })
+        stub.bots[stubIndex].messages = [message("full-49", at: 1049)]
+        stub.bots[stubIndex].hasMore = true
+        state.hydrate(stub)
+
+        XCTAssertEqual(
+            state.transcript(forThread: threadId).count, loadedCount,
+            "a one-message stub hydrate must merge into, not replace, an already-loaded thread"
+        )
+    }
+
     func testRehydrateWithNoMessagesFieldLeavesExistingScrollbackUntouched() throws {
         var state = try hydrated()
         let threadId = try XCTUnwrap(state.bots.first?.threadId)
