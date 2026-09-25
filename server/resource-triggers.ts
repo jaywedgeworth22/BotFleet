@@ -388,7 +388,7 @@ export class ResourceTriggerManager {
     const prompt = parsed.data.prompt.trim().slice(0, 20_000);
     const botId = parsed.data.botId.trim();
     if (!name) fail(400, "Give the trigger a name");
-    if (!botId) fail(400, "Choose a bot");
+    if (!botId) fail(400, "Choose a Bot");
     if (!prompt) fail(400, "Give the bot a prompt");
     const runOn = normalizeRunOn(parsed.data.runOn);
     const cooldownMinutes = Math.max(5, Math.min(24 * 60, Math.round(parsed.data.cooldownMinutes ?? 45)));

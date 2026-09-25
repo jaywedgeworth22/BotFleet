@@ -319,8 +319,8 @@ function sanitizeInput(input: RoutineInput): Omit<Routine, "id" | "createdAt" | 
   const prompt = String(input.prompt ?? "").trim().slice(0, 20_000);
   const botId = String(input.botId ?? "").trim();
   if (!name) throw new Error("Give the routine a name");
-  if (!prompt) throw new Error("Tell the bot what to do");
-  if (!botId) throw new Error("Choose a bot");
+  if (!prompt) throw new Error("Tell the Bot what to do");
+  if (!botId) throw new Error("Choose a Bot");
   const runOn = normalizeRunOn(input.runOn);
   if (input.runOn != null && input.runOn !== "bot" && input.runOn !== "cloud" && input.runOn !== "maus") {
     throw new Error("Choose where this routine runs");
@@ -596,7 +596,7 @@ export class RoutineManager {
       }
     }
     const clean = sanitizeInput(input);
-    if (this.options.botState(clean.botId) === "missing") throw new Error("That bot no longer exists");
+    if (this.options.botState(clean.botId) === "missing") throw new Error("That Bot no longer exists");
     const at = this.now();
     const routine: Routine = {
       id: randomUUID(),
@@ -650,7 +650,7 @@ export class RoutineManager {
       schedule: nextSchedule,
       durationMinutes: patch.durationMinutes ?? routine.durationMinutes,
     });
-    if (this.options.botState(clean.botId) === "missing") throw new Error("That bot no longer exists");
+    if (this.options.botState(clean.botId) === "missing") throw new Error("That Bot no longer exists");
     const cancelledRuns: RoutineRun[] = [];
     this.commitMutation(() => {
       Object.assign(routine, clean, {
@@ -714,7 +714,7 @@ export class RoutineManager {
       if (run.botId !== botId || !["queued", "running", "waiting"].includes(run.status)) continue;
       run.status = "cancelled";
       run.finishedAt = this.now();
-      run.error = "The assigned bot was deleted";
+      run.error = "The assigned Bot was deleted";
       this.emitRun(run);
       if (run.threadId) void this.options.interruptTurn?.(run.botId, run.threadId, normalizeRunOn(run.runOn)).catch(() => {});
       changed = true;
@@ -757,7 +757,7 @@ export class RoutineManager {
     receivedAt: number;
   }): RoutineRun {
     if (this.options.botState(input.botId) === "missing") {
-      throw Object.assign(new Error("The assigned bot no longer exists"), { status: 410 });
+      throw Object.assign(new Error("The assigned Bot no longer exists"), { status: 410 });
     }
     const snoozed = this.isBotSnoozed(input.botId);
     const run: RoutineRun = {
@@ -799,7 +799,7 @@ export class RoutineManager {
     receivedAt: number;
   }): RoutineRun {
     if (this.options.botState(input.botId) === "missing") {
-      throw Object.assign(new Error("The assigned bot no longer exists"), { status: 410 });
+      throw Object.assign(new Error("The assigned Bot no longer exists"), { status: 410 });
     }
     const snoozed = this.isBotSnoozed(input.botId);
     const run: RoutineRun = {
@@ -950,7 +950,7 @@ export class RoutineManager {
         const state = this.options.botState(run.botId);
         if (state === "busy") continue;
         if (state === "missing") {
-          this.failRun(run, "The assigned bot no longer exists");
+          this.failRun(run, "The assigned Bot no longer exists");
           continue;
         }
         // A trigger with a minimum gap stays quiet after it runs.  The
