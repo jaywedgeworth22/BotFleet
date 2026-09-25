@@ -82,8 +82,8 @@ export function VoiceSettings({
     setSaving(true);
     setError(null);
     const request = window.ogb?.setCredential
-      ? window.ogb.setCredential("ttsKey", nextKey)
-      : api("/api/config", { method: "PUT", body: JSON.stringify({ tts: { key: nextKey } }) });
+      ? window.ogb.setCredential("ttsKey", nextKey, provider)
+      : api("/api/config", { method: "PUT", body: JSON.stringify({ tts: { key: nextKey, provider } }) });
     return request
       .then((status: ConfigStatus) => {
         dispatch({ type: "configStatus", config: status });
