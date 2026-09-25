@@ -987,7 +987,7 @@ export function UsageSection() {
               ? "Not billed"
               : sub.costPerMonth != null
                 ? `$${sub.costPerMonth.toFixed(2)}/mo`
-                : "Bundled";
+                : "—";
             // Group display rule from the task: only show a numeric rate
             // when EVERY engine in the displayed set has API pricing.
             // The displayed set is `ENGINE_CAPABILITIES`, which always
@@ -1032,9 +1032,7 @@ export function UsageSection() {
             The "PAYG / 1k in" column shows the public API rate only when the engine's
             pricing block carries an API rate — subscription-only engines render{" "}
             <span className="text-emerald-700 dark:text-emerald-300">Included</span>{" "}
-            instead.{"\u00A0 "}MiniMax sits on the Mavis Token Plan Max subscription ($55/mo flat)
-            — its PAYG column is reference data for the "what-if API" projection below,
-            never what you are billed.{"\u00A0 "}The same registry backs the Capability Matrix at
+            instead.{"\u00A0 "}Catalog rates feed the what-if projection.{"\u00A0 "}They are not an invoice.{"\u00A0 "}The same registry backs the Capability Matrix at
             the top of the Settings → Engines panel so the two views cannot drift.
           </div>
         </div>
