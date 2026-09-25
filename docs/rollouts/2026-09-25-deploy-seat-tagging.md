@@ -2,7 +2,7 @@
 
 ## Context
 
-THE BOARD row `1af9e286` (duplicate of `0a4a04ed`, closed as a duplicate):
+THE BOARD row `1af9e286` (its duplicate `0a4a04ed` was closed pointing here):
 add which fleet seat and PR shipped a production Sentry deploy record, so a
 deploy in the Sentry UI is traceable back to the agent and PR that produced
 it.  This mirrors jaywedgeworth22/Usage-Monitor PR #1536 and its
@@ -24,10 +24,13 @@ two additions, applied in the same shape as Usage-Monitor's:
    pull-requests: read`), reads the first result's PR number and
    `head.ref`, and derives `seat` as the branch prefix up to the first `/`
    (fleet convention: lowercase `<seat>/<slug>`, deliberately not the
-   ALL-CAPS Slack/board tag casing).  Two no-op paths, both of which skip the
-   tag rather than fail the build: no PR found (a direct push to `main`), or
-   a PR found whose `head.ref` has no `/` (seat recorded as `unknown`, PR
-   number still tagged).
+   ALL-CAPS Slack/board tag casing, and — since not every BotFleet branch
+   prefix is a fleet seat — often just the raw branch prefix, e.g. a bot
+   persona like `instinct/` or `fixer/`, rather than a seat name).  Neither
+   path fails the build: no PR found (a direct push to `main`) skips the
+   `-n`/`--name` tag entirely; a PR found whose `head.ref` has no `/` is a
+   degraded case, not a no-op — it still tags the deploy, with `seat`
+   recorded as `unknown` and the PR number kept.
 2. **The existing deploy step now passes `-n "seat:<seat> pr:#<number>"`** to
    `sentry-cli releases deploys ... new` when a PR was found, omitted
    entirely otherwise.
@@ -74,6 +77,14 @@ already has, so it runs before (and independent of) the Infisical token load.
   GitHub Actions `workflow_run` trigger cannot be dry-run locally; this can
   only be confirmed once this PR merges and a subsequent production deploy
   fires, producing a Sentry deploy record with the `seat:... pr:#...` name
-  visible in the Sentry UI for the `botfleet` project.
+  visible in the Sentry UI for the `botfleet` project.  That confirmation
+  also depends on the deploy step itself succeeding — on `main` today the
+  `sentry-cli releases deploys ... new` call already fails with "Release not
+  found" on a meaningful share of runs (pre-existing, unrelated to this
+  change; e.g. runs `36100350406` and `36095012142` vs. success on
+  `36099549977`), most likely a release-creation race or a naming mismatch
+  with the build-time Sentry plugin.  The seat/PR tag is only visible on
+  runs where that call succeeds; a separate board row should track the
+  intermittent failure itself.
 - Socratic.Trade and Congress.Trade were **not** edited here — out of this
   item's scope (see the umbrella board row `52452cb2e406492a8b240977acdeef23`).
