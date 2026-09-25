@@ -41,10 +41,10 @@ const DRIVER_KIND = "codex";
 
 // A resumed thread keeps the model it was started with, so changing the bot's
 // model cannot fix a retired one there — only a fresh thread or a rewind can.
-function unknownModelMessage(model: string | undefined, resumed: boolean, detail: string): string {
+function unknownModelMessage(resumed: boolean): string {
   return resumed
-    ? `The saved Codex session's model is unavailable for this account or CLI, and a resumed session keeps its model.  Start a fresh task or rewind this conversation to replay its visible history.  ${detail}`
-    : `Selected Codex model ${model ?? "default"} is unavailable for this account or CLI.  Pick another model in bot settings.  ${detail}`;
+    ? "This conversation's Codex model isn't available.  Start a new thread or rewind."
+    : "This Codex model isn't available.  Pick another model in Settings.";
 }
 
 class CodexResumeError extends Error {
@@ -511,7 +511,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const t = p.turn ?? {};
             const reason = t.error?.message ?? t.status ?? "failed";
             const unavailable = classifyError({ text: String(reason) }).reason === "unknown_model";
-            const failureMessage = unavailable ? unknownModelMessage(turn.model, state.resumed, String(reason)) : reason;
+            const failureMessage = unavailable ? unknownModelMessage(state.resumed) : reason;
             if (t.status !== "completed" && unavailable && state.codexThreadId) rejectThreadModel(state.codexThreadId);
             if (t.status !== "completed" && unavailable) {
               emit({ ...base(threadId, turnId), type: "runtime.error", message: failureMessage });
@@ -677,7 +677,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const message = resumeFailure
           ? failureMessage !== e.message ? `${e.message}  ${failureMessage}` : e.message
           : verdict.reason === "unknown_model"
-            ? unknownModelMessage(turn.model, state.resumed, failureMessage)
+            ? unknownModelMessage(state.resumed)
             : failureMessage;
         if (!state.settled && !needsAuth && verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1 && state.sawStreamDelta === false) {
           const delayMs = computeBackoff(attempt);
