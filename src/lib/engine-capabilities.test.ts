@@ -185,4 +185,42 @@ describe("ENGINE_CAPABILITIES user-facing copy", () => {
     const shown = pricing.notes ?? ("subscription" in pricing ? pricing.subscription.notes : undefined);
     expect(shown).toContain("this seat's xAI SuperGrok Heavy subscription");
   });
+
+  it("bills DeepSeek Harness as DeepSeek PAYG, not a Claude Max bundle", () => {
+    const entry = ENGINE_CAPABILITIES["deepseek-harness"];
+    expect(entry.pricing.kind).toBe("api");
+    if (entry.pricing.kind !== "api") return;
+    expect(entry.pricing.api).toMatchObject({
+      inputPer1k: 0.00027,
+      outputPer1k: 0.0011,
+      cachedInputPer1k: 0.00007,
+    });
+    expect(entry.pricing.notes).toBe(
+      "DeepSeek Harness (DSH) runs DeepSeek models over the harness ACP bridge on this seat.  Billing is DeepSeek PAYG (API rates below); there is no separate DSH subscription line and it is not bundled with Claude Max.",
+    );
+    expect(entry.whyThisEngine).toEqual({
+      headline: "Cheap, fast DeepSeek turns through the harness ACP bridge.",
+      prose: [
+        "DeepSeek Harness runs DeepSeek models over BotFleet's harness ACP bridge — short, cheap turns for search, reformat, and one-line edits.",
+        "Tokens bill as DeepSeek PAYG.  There is no Claude Max seat share and no Anthropic bundling on this engine.",
+        "Image attachments are not supported on the DSH adapter (composer rejects them).  Connected apps and cross-bot coordination are available.",
+      ],
+    });
+    expect(entry.capabilities.imageAttachments).toBe("no");
+    const copy = [
+      entry.pricing.notes ?? "",
+      entry.pricing.api.notes ?? "",
+      entry.whyThisEngine.headline,
+      ...entry.whyThisEngine.prose,
+    ].join("\n");
+    expect(copy).not.toContain("Bundled with Claude Max");
+    expect(copy).not.toContain("same Claude Max seat");
+    expect(copy).not.toContain("bundled Claude Max seat");
+    expect(copy).not.toContain("pairs with Claude");
+    expect(copy).not.toContain("pairs well with Claude");
+    expect(copy).not.toContain("Subscription is bundled");
+    expect(copy).not.toMatch(/\bOpus\b/);
+    expect(pricingModeLabel(entry.pricing)).toBe("API · $0.00027/1k in");
+    expect(pricingModeLabel(entry.pricing).toLowerCase()).not.toContain("bundled");
+  });
 });

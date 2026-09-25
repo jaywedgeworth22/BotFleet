@@ -127,7 +127,7 @@ const ANTIGRAVITY_ULTRA_NOTE =
   "Google AI Ultra per fleet-recall 2026-09-16 — $105.79/mo, renewing 2026-10-05 at $50/mo.  Antigravity access is the agent-approval lane behind PR #516.";
 
 const DEEPSEEK_HARNESS_NOTE =
-  "DeepSeek Harness (DSH) is bundled with Claude Max per fleet-recall 2026-09-16 — there is no separate subscription tier for this seat, the standalone catalog number is what the registry would charge for a PAYG API key.";
+  "DeepSeek Harness (DSH) runs DeepSeek models over the harness ACP bridge on this seat.  Billing is DeepSeek PAYG (API rates below); there is no separate DSH subscription line and it is not bundled with Claude Max.";
 
 export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
   grok: {
@@ -373,20 +373,14 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
     capabilityBadgeColor: "bg-rose-600 text-white",
     group: "Cloud",
     pricing: {
-      kind: "subscription+api",
-      subscription: {
-        tierLabel: "Bundled with Claude Max",
-        costPerMonth: null,
-        includedQuota: "DSH CLI runs on the same Claude Max seat",
-        notes: DEEPSEEK_HARNESS_NOTE,
-      },
+      kind: "api",
       api: {
         inputPer1k: 0.00027,
         outputPer1k: 0.0011,
         cachedInputPer1k: 0.00007,
-        notes: "DeepSeek PAYG API rates — reference for the 'what-if API' projection.",
+        notes: "DeepSeek PAYG API rates.  Tokens bill at these public rates.",
       },
-      notes: "Subscription is bundled; API rates exist only for the projection.",
+      notes: DEEPSEEK_HARNESS_NOTE,
     },
     capabilities: {
       files: "yes",
@@ -405,11 +399,11 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       crossBotCoordination: "yes",
     },
     whyThisEngine: {
-      headline: "Small / fast models on the bundled Claude Max seat.",
+      headline: "Cheap, fast DeepSeek turns through the harness ACP bridge.",
       prose: [
-        "DSH runs DeepSeek's small and fast models through the harness ACP bridge, with cheap tokens and the same cross-bot coordination as Claude.",
-        "It is the right tool for short, mechanical turns — a code search, a reformat, a one-line edit — where Opus would burn quota for no quality gain.",
-        "DSH pairs well with Claude for connected-app turns: DSH does the file work, Claude drives the apps.  The MiniMax driver wires no Composio channel.",
+        "DeepSeek Harness runs DeepSeek models over BotFleet's harness ACP bridge — short, cheap turns for search, reformat, and one-line edits.",
+        "Tokens bill as DeepSeek PAYG.  There is no Claude Max seat share and no Anthropic bundling on this engine.",
+        "Image attachments are not supported on the DSH adapter (composer rejects them).  Connected apps and cross-bot coordination are available.",
       ],
     },
     defaultModels: [

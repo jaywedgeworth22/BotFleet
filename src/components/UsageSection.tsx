@@ -983,7 +983,11 @@ export function UsageSection() {
             // when EVERY engine in the displayed set has API pricing.  In
             // practice that is never (subscription engines always exist),
             // so we collapse the API column to a single label per row.
-            const subCost = sub?.costPerMonth != null ? `$${sub.costPerMonth.toFixed(2)}/mo` : "Bundled";
+            const subCost = sub == null
+              ? "Not billed"
+              : sub.costPerMonth != null
+                ? `$${sub.costPerMonth.toFixed(2)}/mo`
+                : "Bundled";
             // Group display rule from the task: only show a numeric rate
             // when EVERY engine in the displayed set has API pricing.
             // The displayed set is `ENGINE_CAPABILITIES`, which always
