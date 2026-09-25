@@ -14,6 +14,8 @@ const assistant = (
   toolCalls: NonNullable<NonNullable<SendTurnInput["transcript"]>[number]["toolCalls"]> | undefined = undefined,
 ): Transcript[number] => ({ role: "assistant", text, ...(toolCalls ? { toolCalls } : {}) });
 
+// Pairing rule under test: an older CALL only travels with a newer RESULT
+// that carries the same tool-call id; leading orphaned results are dropped.
 describe("capReplayedTranscript", () => {
   it("returns an empty array for an empty or missing transcript", () => {
     expect(capReplayedTranscript(undefined)).toEqual([]);
