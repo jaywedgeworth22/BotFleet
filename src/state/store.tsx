@@ -19,6 +19,7 @@ import type { AccessTokenState } from "../../server/recall-access.ts";
 import type { ComputerReach } from "../../server/computer-capability.ts";
 import type { BotColor, BotMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
+import type { ConnectorToolGrant } from "../../shared/connector-tools";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
 import type { ToolKind } from "../../shared/tool-activity";
 import {
@@ -317,6 +318,11 @@ export interface Bot {
   /** Whether this bot may use the workspace's connected apps. Unset means
    * allowed for existing bots; imported bots start with this disabled. */
   composio?: boolean;
+  /** Per-bot Composio tool grants. Unset = every connected service, every
+   * tool (legacy). An explicit record — including the empty one — allows
+   * only what it names. A PATCH may send `null` to clear back to legacy,
+   * mirroring avatarUrl. */
+  connectorTools?: Record<string, ConnectorToolGrant> | null;
   messages: Message[];
   /** The hydrate said the server holds messages older than the first one it
    * sent.  Read once into `hasMore` and not kept on the conversation, so

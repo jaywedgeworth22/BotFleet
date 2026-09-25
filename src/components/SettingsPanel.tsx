@@ -14,6 +14,7 @@ import { botCloudBackend, cloudBackendInherited, cloudDestinationLabel } from "@
 import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
 import { BotSkillsPanel } from "./BotSkillsPanel";
+import { ConnectorToolsSettings } from "./ConnectorToolsSettings";
 import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
@@ -372,7 +373,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "composio"
         | "modelSelection"
       >
-    > & { acknowledgeLocalAuto?: boolean },
+    > & { acknowledgeLocalAuto?: boolean; connectorTools?: Bot["connectorTools"] },
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
@@ -571,6 +572,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               />
             </button>
           </div>
+
+          {connectedAppsConfigured && canUseConnectedApps && connectedAppsEnabled && (
+            <ConnectorToolsSettings bot={bot} onPatch={patch} />
+          )}
 
           <div className="rounded-xl bg-card p-4 flex flex-col gap-4">
             <ModelPicker
