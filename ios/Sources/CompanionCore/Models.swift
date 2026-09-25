@@ -12,6 +12,11 @@
 import Foundation
 
 // MARK: - Messages
+public struct VoiceClip: Codable, Hashable, Sendable {
+    public var path: String
+    public var mime: String
+}
+
 
 public struct OptionCard: Codable, Hashable, Sendable {
     public var title: String
@@ -137,6 +142,7 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var kind: Kind
     public var at: Double
     public var text: String?
+    public var audio: [VoiceClip]?
     /// For a `role == .system` message: what actually fired it —
     /// "schedule", "manual", "webhook", or "resource". Raw string (not an
     /// enum) so an older phone that predates a new trigger kind still
@@ -282,6 +288,7 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var extraCwds: [String]?
     public var userNotes: String?
     public var speakReplies: Bool?
+    public var speechDevices: [String]?
     public var voice: String?
     public var mascotExpression: String?
     public var tasks: [BotTask]?
@@ -787,6 +794,7 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var avatarCrop: AvatarCrop?
     public var voice: String?
     public var speakReplies: Bool?
+    public var speechDevices: [String]?
     public var modelSelection: ModelSelection?
     public var section: SectionString?
 
@@ -812,6 +820,7 @@ public struct BotProfilePatch: Encodable, Sendable {
         avatarCrop: AvatarCrop? = nil,
         voice: String? = nil,
         speakReplies: Bool? = nil,
+        speechDevices: [String]? = nil,
         modelSelection: ModelSelection? = nil,
         section: SectionString? = nil
     ) {
@@ -823,12 +832,13 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.avatarCrop = avatarCrop
         self.voice = voice
         self.speakReplies = speakReplies
+        self.speechDevices = speechDevices
         self.modelSelection = modelSelection
         self.section = section
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, section
+        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, speechDevices, modelSelection, section
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -846,6 +856,7 @@ public struct BotProfilePatch: Encodable, Sendable {
         try values.encodeIfPresent(avatarCrop, forKey: .avatarCrop)
         try values.encodeIfPresent(voice, forKey: .voice)
         try values.encodeIfPresent(speakReplies, forKey: .speakReplies)
+        try values.encodeIfPresent(speechDevices, forKey: .speechDevices)
         try values.encodeIfPresent(modelSelection, forKey: .modelSelection)
         if let section {
             switch section {
