@@ -11,7 +11,7 @@ const REASONS: Record<string, RoutineOutcomeCode> = {
   auth_required: "auth_required", permission_denied: "capability_denied",
   capability_denied: "capability_denied", tool_denied: "capability_denied",
   quota_exhausted: "quota_exhausted", rate_limit: "quota_exhausted",
-  prompt_timeout: "timeout", turn_timeout: "timeout", permission_timeout: "timeout", timeout: "timeout",
+  prompt_timeout: "timeout", prompt_stall: "timeout", turn_timeout: "timeout", permission_timeout: "timeout", timeout: "timeout",
   resume_failed: "resume_failed", spawn_error: "dispatch_failed",
   "BotFleet restarted while this routine was running": "runtime_restart",
   "The bot stopped before this run finished": "bot_stopped",
