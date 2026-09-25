@@ -1,13 +1,14 @@
-// Voice, wired to config. Two engines live behind this file: MiniMax
-// (minimax.ts, the default; needs a key) and the Mac's built-in voices
+// Voice, wired to config. Three engines live behind this file: MiniMax
+// (minimax.ts, the default; needs a key), ElevenLabs (elevenlabs.ts), and the Mac's built-in voices
 // (system-voices.ts, no key).  This file is only the part that reads
 // ~/.botfleet/config.json, picks the engine, and decides whether there
 // is a voice at all.
 import type { AppConfig } from "../config.ts";
 import * as minimax from "./minimax.ts";
+import * as elevenlabs from "./elevenlabs.ts";
 import * as systemVoices from "./system-voices.ts";
 
-export type VoiceProvider = "minimax" | "system";
+export type VoiceProvider = "minimax" | "elevenlabs" | "system";
 
 export class NoVoiceConfigured extends Error {
   // a plain field rather than a constructor parameter property: the harness
@@ -27,6 +28,7 @@ export class NoVoiceConfigured extends Error {
 
 export function voiceProvider(cfg: AppConfig): VoiceProvider {
   if (cfg.tts?.provider === "system") return "system";
+  if (cfg.tts?.provider === "elevenlabs") return "elevenlabs";
   // Default to MiniMax — cheaper for the operator and on the same network
   // as the rest of the bot's voice surface.
   return "minimax";
@@ -45,7 +47,7 @@ export function voiceConfigured(cfg: AppConfig): boolean {
   if (voiceProvider(cfg) === "system") {
     return systemVoices.systemVoicesAvailable() && Boolean(cfg.tts?.voice);
   }
-  return Boolean(cfg.tts?.key && cfg.tts?.voice);
+  return Boolean(cfg.tts?.key && (cfg.tts?.voice || voiceProvider(cfg) === "minimax"));
 }
 
 /** A per-bot voice is a complete choice too; it should not be blocked just
@@ -54,7 +56,7 @@ export function voiceReady(cfg: AppConfig, voiceId?: string): boolean {
   if (voiceProvider(cfg) === "system") {
     return systemVoices.systemVoicesAvailable() && Boolean(voiceId || cfg.tts?.voice);
   }
-  return Boolean(cfg.tts?.key && (voiceId || cfg.tts?.voice));
+  return Boolean(cfg.tts?.key && (voiceId || cfg.tts?.voice || voiceProvider(cfg) === "minimax"));
 }
 
 /** What the settings panel needs. Never includes the key — same write-only
@@ -63,23 +65,23 @@ export function describeVoice(cfg: AppConfig) {
   return {
     configured: providerConfigured(cfg),
     ready: voiceConfigured(cfg),
-    voice: cfg.tts?.voice ?? "",
+    voice: cfg.tts?.voice || (voiceProvider(cfg) === "minimax" ? "Jay-Wedgeworth-001" : ""),
     provider: voiceProvider(cfg),
+    optimizedSummary: cfg.tts?.optimizedSummary === true,
   };
 }
 
-export function verifyKey(key: string, _cfg: AppConfig) {
-  // The cfg parameter is accepted for compatibility with the call site;
-  // voiceProvider() has already resolved to "minimax" (or "system", which
-  // never reaches this function), so the probe is always MiniMax.
-  return minimax.verifyKey(key);
+export function verifyKey(key: string, cfg: AppConfig) {
+  // Verify the provider selected by the merged incoming config, so switching
+  // a saved ElevenLabs connection does not probe the wrong service.
+  return voiceProvider(cfg) === "elevenlabs" ? elevenlabs.verifyKey(key) : minimax.verifyKey(key);
 }
 
 export async function listVoices(cfg: AppConfig, run?: systemVoices.Runner): Promise<minimax.Voice[]> {
   if (voiceProvider(cfg) === "system") return systemVoices.listSystemVoices(run);
   const key = cfg.tts?.key;
   if (!key) return [];
-  return minimax.listVoices(key);
+  return voiceProvider(cfg) === "elevenlabs" ? elevenlabs.listVoices(key) : minimax.listVoices(key);
 }
 
 /** Synthesize one utterance. Throws NoVoiceConfigured when there is nothing
@@ -95,21 +97,23 @@ export function speak(cfg: AppConfig, text: string, voiceId?: string, run?: syst
   }
   const key = cfg.tts?.key;
   if (!key) throw new NoVoiceConfigured("key");
-  const voice = voiceId || cfg.tts?.voice;
+  const voice = voiceId || cfg.tts?.voice || (voiceProvider(cfg) === "minimax" ? "Jay-Wedgeworth-001" : "");
   if (!voice) throw new NoVoiceConfigured("voice");
-  return minimax.synthesize(text, voice, key);
+  return voiceProvider(cfg) === "elevenlabs" ? elevenlabs.synthesize(text, voice, key) : minimax.synthesize(text, voice, key);
 }
 
 /** Clone a voice.  The harness route unpacks the base64 body and passes
  * { voiceId, audioBase64 } so this thin adapter normalises the shape. */
 export async function cloneVoice(
   cfg: AppConfig,
-  { voiceId, audioBase64 }: { voiceId: string; audioBase64: string },
+  { voiceId, audioBase64, filename }: { voiceId: string; audioBase64: string; filename: string },
 ) {
   const key = cfg.tts?.key;
+  if (voiceProvider(cfg) !== "minimax") throw new Error("Switch to MiniMax to clone a voice.");
   if (!key) throw new Error("No MiniMax key is configured.");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(audioBase64) || audioBase64.length % 4 !== 0) throw new Error("Audio data is not valid base64.");
   const buffer = Buffer.from(audioBase64, "base64");
-  return minimax.cloneVoice(buffer, "clip.mp3", voiceId, key);
+  return minimax.cloneVoice(buffer, filename, voiceId, key);
 }
 
 export type { Voice } from "./minimax.ts";
