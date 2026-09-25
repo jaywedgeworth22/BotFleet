@@ -367,6 +367,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "autoApprove"
         | "autoReview"
         | "speakReplies"
+        | "speechDevices"
         | "voice"
         | "chiefOfStaff"
         | "approvePeerComms"
