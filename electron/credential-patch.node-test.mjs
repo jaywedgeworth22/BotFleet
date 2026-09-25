@@ -38,8 +38,8 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
   });
 
   it("every patch builder yields { section: { ... } } and passes the value through unchanged", () => {
-    // Saving a voice key must never silently change a chosen voice engine.
-    const multiField = new Set();
+    // ttsKey pins the selected provider alongside the key.
+    const multiField = new Set(["ttsKey"]);
     for (const name of names) {
       const sentinel = `sentinel-${name}`;
       const result = patch[name](sentinel);
@@ -74,12 +74,13 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
     assert.deepEqual(patch.infisicalClientSecret("shh"), { infisical: { clientSecret: "shh" } });
   });
 
-  it("preserves the chosen voice engine when saving the key", () => {
+  it("pins the selected voice engine on each key save, including new installations", () => {
     // A fresh MiniMax save must carry the explicit provider field so the
     // config reader always knows which voice engine to use without guessing.
     // This is tested at the CREDENTIAL_PATCH level because packaged Electron
     // saves route through CREDENTIAL_PATCH rather than the shared helper.
     assert.ok(Object.hasOwn(patch, "ttsKey"), "CREDENTIAL_PATCH is missing ttsKey");
-    assert.deepEqual(patch.ttsKey("sk-fresh"), { tts: { key: "sk-fresh" } });
+    assert.deepEqual(patch.ttsKey("sk-fresh"), { tts: { key: "sk-fresh", provider: "minimax" } });
+    assert.deepEqual(patch.ttsKey("sk-eleven", "elevenlabs"), { tts: { key: "sk-eleven", provider: "elevenlabs" } });
   });
 });
