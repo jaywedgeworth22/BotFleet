@@ -98,6 +98,9 @@ export interface Message {
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   audio?: Array<{ path: string; mime: string }>;
+  recording?: { path: string; mime: "audio/wav"; transcript: string; engine: "apple-on-device" };
+  recordingReview?: { correction?: string; comment?: string; updatedAt: number };
+  translation?: { language: string; text: string; provider: string };
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
