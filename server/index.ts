@@ -11912,6 +11912,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     usageQuotaPoller.stop();
     infisical.stop();
     webhookIngress?.server.close();
+    // store.ts and webhooks.ts now coalesce their whole-file JSON writes
+    // behind a short debounce (routines.ts does too, but routines?.stop()
+    // above already flushes it); catch up the pending write here or the
+    // last roster/webhook mutation before shutdown is silently lost.
+    store.flushBotsNow();
+    webhooks.flushNow();
     // bus.flush() is here because the canonical event log is no longer written
     // on the publish path: the tee queues and one writer drains it, so the
     // last few records of every live thread are in memory when a SIGTERM

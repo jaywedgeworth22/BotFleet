@@ -150,8 +150,17 @@ export type WebhookManagerEvent =
   | { kind: "webhook.deleted"; webhookId: string }
   | { kind: "webhook.attempt"; attempt: WebhookAttempt };
 
+/** How long a burst of save() calls coalesces into one atomic write.
+ * Trailing-edge: set once per burst, not reset per call, so sustained
+ * receipt traffic still flushes on a bounded cadence. */
+const SAVE_DEBOUNCE_MS = 250;
 const MAX_DELIVERIES = 2_000;
-const MAX_ATTEMPTS = 2_000;
+// Attempts carry a payload preview (see previewPayload below) and are UI
+// history, not idempotency state like deliveries — 2,000 of them with a
+// 2,000-character preview each made webhooks.json a 3 MB write on every
+// receipt.  500 keeps enough recent history for the delivery log without the
+// bulk.
+const MAX_ATTEMPTS = 500;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 10;
 const MAX_PENDING_RUNS = 3;
@@ -306,7 +315,7 @@ function serializePayload(payload: JsonValue): string {
 }
 
 function previewPayload(payload: JsonValue): string {
-  return serializePayload(payload).replace(/\s+/g, " ").trim().slice(0, 2_000);
+  return serializePayload(payload).replace(/\s+/g, " ").trim().slice(0, 512);
 }
 
 function taskFromPayload(payload: JsonValue): string {
@@ -872,6 +881,8 @@ export class WebhookManager {
   private attempts: WebhookAttempt[] = [];
   private rate = new Map<string, number[]>();
   private recentIgnored = new Map<string, number[]>();
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private dirty = false;
 
   constructor(options: WebhookManagerOptions) {
     this.options = options;
@@ -1116,7 +1127,12 @@ export class WebhookManager {
       deliveryId,
       runId: run.id,
     });
-    this.save();
+    // This just added a new entry to `this.deliveries` — the record that
+    // makes a retried delivery idempotent. It must be durable before the
+    // HTTP 202 is returned, or a restart between accepting this delivery and
+    // a debounced flush would forget it, and the sender's retry would be
+    // treated as new. Every other save() in this file can coalesce safely.
+    this.flushNow();
     this.emit(trigger);
     return { runId: run.id, deliveryId, duplicate: false };
   }
@@ -1207,11 +1223,32 @@ export class WebhookManager {
     this.options.emit?.({ kind: "webhook", webhook: publicTrigger(trigger) });
   }
 
+  /** Coalesces bursts of save() calls — a push storm was one full
+   * serialize-fsync-rename per event on the request path — into one write.
+   * See flushNow() for the durability exception on the receive path. */
   private save(): void {
+    this.dirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => this.flushNow(), SAVE_DEBOUNCE_MS);
+    this.saveTimer.unref?.();
+  }
+
+  /** Synchronous, immediate write-through — used by the receive path for the
+   * new-delivery record (see dispatch()), by tests asserting on-disk state
+   * right after a mutation, and by the shutdown path so a pending coalesced
+   * save is never lost when the process exits. A no-op when nothing is
+   * dirty. */
+  flushNow(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(
       this.file,
-      JSON.stringify({ version: 1, webhooks: this.webhooks, deliveries: this.deliveries, attempts: this.attempts } satisfies WebhookFile, null, 2),
+      JSON.stringify({ version: 1, webhooks: this.webhooks, deliveries: this.deliveries, attempts: this.attempts } satisfies WebhookFile),
       { mode: 0o600 },
     );
   }

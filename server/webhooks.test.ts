@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -83,6 +83,7 @@ describe("WebhookManager", () => {
     expect(created.webhook).not.toHaveProperty("durationMinutes");
     expect(JSON.stringify(created.webhook)).not.toContain(created.secret);
     expect(JSON.stringify(h.manager.list())).not.toContain("secretHash");
+    h.manager.flushNow();
     expect(readFileSync(h.file, "utf8")).not.toContain(created.secret);
     if (process.platform !== "win32") expect(statSync(h.file).mode & 0o777).toBe(0o600);
   });
@@ -90,6 +91,7 @@ describe("WebhookManager", () => {
   it("removes duration metadata saved by an earlier webhook build", () => {
     const h = harness();
     create(h.manager);
+    h.manager.flushNow();
     const disk = JSON.parse(readFileSync(h.file, "utf8")) as { webhooks: Array<Record<string, unknown>> };
     disk.webhooks[0].durationMinutes = 120;
     writeFileSync(h.file, JSON.stringify(disk));
@@ -265,6 +267,50 @@ describe("WebhookManager", () => {
     expect(retry).toEqual({ runId: "run-1", deliveryId: "same-event", duplicate: true });
     expect(h.queued).toHaveLength(1);
     expect(reloaded.list()[0]?.deliveryCount).toBe(1);
+  });
+
+  it("coalesces a burst of non-receive-path saves into one write, and flushNow() flushes it", () => {
+    const h = harness();
+    const created = create(h.manager);
+    // The debounced save has not landed yet — proves this burst does not
+    // each write synchronously the way the pre-fix save() did.
+    expect(existsSync(h.file)).toBe(false);
+    h.manager.update(created.webhook.id, { name: "Renamed once" });
+    h.manager.update(created.webhook.id, { name: "Renamed twice" });
+    expect(existsSync(h.file)).toBe(false);
+
+    h.manager.flushNow();
+
+    expect(existsSync(h.file)).toBe(true);
+    const disk = JSON.parse(readFileSync(h.file, "utf8"));
+    expect(disk.webhooks[0].name).toBe("Renamed twice");
+  });
+
+  it("caps attempt retention at 500 and the payload preview at 512 characters, keeping the newest", () => {
+    const h = harness();
+    const { webhook, secret } = create(h.manager);
+    h.manager.flushNow();
+    const disk = JSON.parse(readFileSync(h.file, "utf8"));
+    disk.attempts = Array.from({ length: 500 }, (_, i) => ({
+      id: `old-${i}`,
+      webhookId: webhook.id,
+      receivedAt: i,
+      outcome: "accepted",
+      statusCode: 202,
+    }));
+    writeFileSync(h.file, JSON.stringify(disk));
+
+    const reloaded = new WebhookManager(h.options);
+    expect(reloaded.listAttempts()).toHaveLength(500);
+    const bigPayload = { blob: "x".repeat(2_000) };
+    const result = reloaded.receive(webhook.endpointId, secret, { payload: bigPayload, deliveryId: "fresh" });
+    expect(result.duplicate).toBe(false);
+
+    const attempts = reloaded.listAttempts();
+    expect(attempts).toHaveLength(500);
+    expect(attempts.some((a) => a.id === "old-0")).toBe(false);
+    const fresh = attempts.find((a) => a.deliveryId === "fresh");
+    expect(fresh?.preview?.length).toBeLessThanOrEqual(512);
   });
 
   it("invalidates the previous secret on rotation and honours pause/delete", () => {

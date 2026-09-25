@@ -1,8 +1,9 @@
 import { boundStalePromptSnapshots, retainRoutineRuns } from "../shared/routine-retention.ts";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
@@ -259,6 +260,11 @@ const MAX_RUNS = 2_000;
  * pressure).  Older settled runs keep a bounded snapshot — see
  * boundStalePromptSnapshots for exactly what survives. */
 const PROMPT_SNAPSHOT_LIMIT = 100;
+/** How long a burst of save() calls (every run-state transition can fire
+ * several) coalesces into one atomic write. Trailing-edge: the timer is set
+ * once per burst, not reset per call, so sustained activity still flushes on
+ * a bounded cadence instead of being starved. */
+const SAVE_DEBOUNCE_MS = 250;
 /** A run is marked running just before its turn is dispatched; give the
  * dispatch this long to mark the bot busy before the sweep may call it an
  * orphan. */
@@ -348,6 +354,13 @@ export class RoutineManager {
   private routineRequestReceipts: RoutineRequestReceipt[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** Coalesces bursts of save() calls (every run-state transition, every
+   * markRunSeen) into one atomic write instead of one per call — a save at
+   * today's size costs about 45 ms of blocked loop. Fires a fixed delay
+   * after the first dirty call in a burst rather than resetting per call,
+   * so sustained activity still flushes on a bounded cadence. */
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private dirty = false;
   /** When each trigger last STARTED, keyed by `automationThreadKey`.
    *
    * In memory only: a gap is a rate limit on waking a bot, and after a
@@ -426,6 +439,10 @@ export class RoutineManager {
     }
     if (recovered.length > 0) {
       this.save();
+      // Boot recovery is rare and not a hot path — flush immediately rather
+      // than debounce, since onRunFailed (Sentry, etc.) assumes the failure
+      // it is being told about is already durable.
+      this.flushNow();
       for (const run of recovered) if (!run.coalescedInto) this.options.onRunFailed?.(run);
       // The check-in was opened by the process that died; close it here too,
       // or Sentry only learns of the failure when the monitor times out.
@@ -890,6 +907,9 @@ export class RoutineManager {
     if (this.gapWake) clearTimeout(this.gapWake);
     this.gapWake = null;
     this.gapWakeAt = 0;
+    // A pending debounced save must land before the process exits, or the
+    // last run-state transition before shutdown is silently lost.
+    this.flushNow();
   }
 
   /** Come back when a gap closes.
@@ -1328,6 +1348,12 @@ export class RoutineManager {
    * receipt reached the same atomic file. Restore the complete in-memory
    * state if writing or renaming that file fails so a retry cannot mistake an
    * uncommitted action for a durable one.
+   *
+   * This flushes immediately rather than letting the general debounce apply:
+   * confirmation receipts are low-frequency and the whole contract above
+   * depends on a failed write throwing HERE, synchronously, so it can be
+   * rolled back — a debounced save would report success and fail later, with
+   * nothing left to catch it.
    */
   private commitMutation(mutate: () => void): void {
     const before = {
@@ -1338,6 +1364,7 @@ export class RoutineManager {
     try {
       mutate();
       this.save();
+      this.flushNow();
     } catch (error) {
       this.routines = before.routines;
       this.runs = before.runs;
@@ -1357,8 +1384,30 @@ export class RoutineManager {
       .map((receipt) => receipt.resultId);
     this.runs = retainRoutineRuns(this.runs, MAX_RUNS, receiptResultIds);
     boundStalePromptSnapshots(this.runs, PROMPT_SNAPSHOT_LIMIT, receiptResultIds);
+    this.scheduleFlush();
+  }
+
+  private scheduleFlush(): void {
+    this.dirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => this.flushNow(), SAVE_DEBOUNCE_MS);
+    this.saveTimer.unref?.();
+  }
+
+  /** Synchronous, immediate write-through — bypasses the debounce for
+   * tests that assert on-disk state right after a mutation (including a
+   * fresh `new RoutineManager` against the same file, which reads whatever
+   * is on disk right now) and for the shutdown path, so a pending
+   * coalesced save is never lost when the process exits. A no-op when
+   * nothing is dirty. */
+  flushNow(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
     mkdirSync(dirname(this.file), { recursive: true });
-    const temp = `${this.file}.tmp`;
     const now = this.now();
     const botSnoozes: Record<string, number | null> = {};
     for (const [botId, until] of this.botSnoozeUntil) {
@@ -1370,13 +1419,12 @@ export class RoutineManager {
         this.botSnoozeUntil.delete(botId);
       }
     }
-    writeFileSync(temp, JSON.stringify({
+    writeFileAtomic(this.file, JSON.stringify({
       version: 1,
       routines: this.routines,
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
       ...(Object.keys(botSnoozes).length > 0 ? { botSnoozes } : {}),
-    } satisfies RoutineFile, null, 2));
-    renameSync(temp, this.file);
+    } satisfies RoutineFile));
   }
 }

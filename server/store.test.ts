@@ -3,7 +3,7 @@
 // except `busy`, which never does (no turn survives one either).
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
 import type { ModelSelection } from "./contracts.ts";
@@ -12,6 +12,24 @@ import { peerAllowKey } from "./peer-approval-key.ts";
 import { resolveRoomMemberIds, Store, type BotRecord } from "./store.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
+
+// saveBots() now debounces behind a real setTimeout (see store.ts). DATA_DIR
+// is one fixed path shared by every test below (each beforeEach just wipes
+// it), not a fresh temp dir per test — so a save left un-flushed at the end
+// of one test would otherwise fire its real timer during a LATER test and
+// overwrite whatever that test just wrote. Fake timers file-wide make that
+// impossible: nothing fires until a test explicitly asks it to, and nothing
+// carries over once the fake clock is torn down.
+beforeEach(() => {
+  // Scoped to just the timer functions — Date must stay real, since plenty
+  // of tests below compare createdAt/updatedAt-style timestamps across
+  // operations.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("Store", () => {
   beforeEach(() => {
@@ -39,6 +57,7 @@ describe("Store", () => {
     store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "hi" });
     expect(store.messagesFor(bot.threadId).find((m) => m.id === quiz.id)?.card?.dismissed).toBe(true);
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.messagesFor(bot.threadId).find((m) => m.id === quiz.id)?.card?.dismissed).toBe(true);
 
@@ -136,6 +155,7 @@ describe("Store", () => {
     // a different thread never inherits another task's tally
     expect(store.addTaskUsage(bot.id, "no-such-thread", { input: 5, output: 5, costUsd: null })).toBeNull();
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.taskByThread(bot.id, bot.threadId)?.usage).toEqual({
       input: 2010,
@@ -150,6 +170,7 @@ describe("Store", () => {
     const store = new Store(selection);
     const bot = store.createBot();
     store.patchBot(bot.id, { composio: false });
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.composio).toBe(false);
   });
@@ -162,6 +183,7 @@ describe("Store", () => {
     const grants = { gmail: { tools: "*" as const }, slack: { tools: ["SLACK_POST_MESSAGE"] } };
     store.patchBot(bot.id, { connectorTools: grants });
     expect(store.bot(bot.id)?.connectorTools).toEqual(grants);
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.connectorTools).toEqual(grants);
 
@@ -169,6 +191,7 @@ describe("Store", () => {
     // value undefined — Object.assign must still apply that key, not skip it.
     reloaded.patchBot(bot.id, { connectorTools: undefined });
     expect(reloaded.bot(bot.id)?.connectorTools).toBeUndefined();
+    reloaded.flushBotsNow();
     const reloadedAgain = new Store(selection);
     expect(reloadedAgain.bot(bot.id)?.connectorTools).toBeUndefined();
   });
@@ -190,6 +213,7 @@ describe("Store", () => {
     store.patchGroup(group.id, { memberIds: [second.id] });
     expect(group.defaultResponder).toEqual({ kind: "member", botId: second.id });
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.group(group.id)?.defaultResponder).toEqual({ kind: "member", botId: second.id });
   });
@@ -200,6 +224,7 @@ describe("Store", () => {
     const channel = store.createGroup("Website launch", [bot.id], false, "Work");
 
     expect(channel.section).toBe("Work");
+    store.flushBotsNow();
     expect(new Store(selection).group(channel.id)?.section).toBe("Work");
   });
 
@@ -218,6 +243,7 @@ describe("Store", () => {
       setupSkippedAt: null,
     });
     expect(channel.setupCompletedAt).toEqual(expect.any(Number));
+    store.flushBotsNow();
     expect(new Store(selection).group(channel.id)).toMatchObject({
       bulletin: "Ship carefully.",
       defaultResponder: { kind: "mentions" },
@@ -235,6 +261,10 @@ describe("Store", () => {
     delete saved[0].defaultResponder;
     writeFileSync(groupsFile, JSON.stringify(saved));
 
+    // Group load filters memberIds down to bots it can find via this.bot(id)
+    // — first/second must already be on disk or the reload sees no live
+    // members at all.
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.group(group.id)?.defaultResponder).toEqual({ kind: "member", botId: first.id });
   });
@@ -245,6 +275,7 @@ describe("Store", () => {
     store.patchBot(bot.id, { name: "Testy", busy: true });
     store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "hi there" });
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     const back = reloaded.bot(bot.id)!;
     expect(back.name).toBe("Testy");
@@ -259,6 +290,7 @@ describe("Store", () => {
     const vps = store.createBot();
     const invalid = store.createBot();
     const absent = store.createBot();
+    store.flushBotsNow();
     const raw: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
     raw.find((bot) => bot.id === box.id)!.cloudBackend = "box";
     raw.find((bot) => bot.id === vps.id)!.cloudBackend = "vps";
@@ -272,6 +304,7 @@ describe("Store", () => {
     expect(reloaded.bot(invalid.id)?.cloudBackend).toBeUndefined();
     expect(reloaded.bot(absent.id)?.cloudBackend).toBeUndefined();
 
+    reloaded.flushBotsNow();
     const saved: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
     expect(saved.find((bot) => bot.id === box.id)?.cloudBackend).toBe("box");
     expect(saved.find((bot) => bot.id === vps.id)?.cloudBackend).toBe("vps");
@@ -289,6 +322,7 @@ describe("Store", () => {
       alwaysAllow: ["ask_bot:@Helper", "delegate_bot:@Twin", "Bash:git status"],
     });
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bot(requester.id)?.alwaysAllow).toEqual([
       peerAllowKey("ask_bot", helper.id),
@@ -296,6 +330,7 @@ describe("Store", () => {
       "Bash:git status",
     ]);
 
+    reloaded.flushBotsNow();
     const persisted: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
     expect(persisted.find((bot) => bot.id === requester.id)?.alwaysAllow).toEqual(
       reloaded.bot(requester.id)?.alwaysAllow,
@@ -309,6 +344,7 @@ describe("Store", () => {
 
     store.patchBot(bot.id, { modelSelection: { ...bot.modelSelection, effort: "high" } });
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.modelSelection.effort).toBe("high");
   });
@@ -329,6 +365,7 @@ describe("Store", () => {
     expect(store.bot(second.id)?.chiefOfStaff).toBe(true);
     expect(store.bot(personal.id)?.chiefOfStaff).toBe(true);
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bots.filter((bot) => bot.chiefOfStaff).map((bot) => bot.id).sort()).toEqual(
       [second.id, personal.id].sort(),
@@ -357,6 +394,7 @@ describe("Store", () => {
     store.setResumeCursor(bot.id, "claude", "sess-abc");
     store.setResumeCursor(bot.id, "codex", "thread-xyz");
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-abc", codex: "thread-xyz" });
   });
@@ -367,6 +405,7 @@ describe("Store", () => {
     store.setResumeCursor(bot.id, "claude", "sess-abc");
     store.setResumeCursor(bot.id, "claude", undefined);
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({});
   });
@@ -378,6 +417,7 @@ describe("Store", () => {
     store.seedIfEmpty();
     expect(store.bots).toHaveLength(1);
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     reloaded.seedIfEmpty();
     expect(reloaded.bots).toHaveLength(1);
@@ -437,6 +477,7 @@ describe("Store", () => {
     const original = store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "v1" });
     const edited = store.branchMessage(bot.threadId, original.id, "v2")!;
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.activeLeaf(bot.threadId)).toBe(edited.id);
     expect(reloaded.messagesFor(bot.threadId).map((m) => m.text)).toContain("v1");
@@ -469,6 +510,7 @@ describe("Store", () => {
   it("busy is wiped even when bots.json says otherwise", () => {
     const store = new Store(selection);
     const bot = store.createBot();
+    store.flushBotsNow();
     const raw: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
     raw.find((b) => b.id === bot.id)!.busy = true;
     writeFileSync(join(DATA_DIR, "bots.json"), JSON.stringify(raw));
@@ -486,6 +528,7 @@ describe("Store", () => {
     const store = new Store(selection);
     const bot = store.createBot();
     store.patchBot(bot.id, { composio: false });
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.composio).toBe(false);
   });
@@ -493,11 +536,13 @@ describe("Store", () => {
   it("deleteBot removes the bot and its durable transcript", () => {
     const store = new Store(selection);
     const bot = store.createBot();
+    store.flushBotsNow();
     // the transcript is durable — a fresh Store sees the seeded messages
     expect(new Store(selection).messagesFor(bot.threadId).length).toBeGreaterThan(0);
 
     expect(store.deleteBot(bot.id)).toBe(true);
     expect(store.bot(bot.id)).toBeNull();
+    store.flushBotsNow();
     expect(new Store(selection).messagesFor(bot.threadId)).toHaveLength(0);
     expect(store.deleteBot(bot.id)).toBe(false);
   });
@@ -551,6 +596,9 @@ describe("Store", () => {
     store.patchGroup(room.id, { memberIds: [bot.id, "ghost-from-before-deleteBot"] });
     expect(store.group(room.id)?.memberIds).toEqual([bot.id, "ghost-from-before-deleteBot"]);
 
+    // bot must be on disk or the live-member filter below finds neither id
+    // and drops both, not just the ghost.
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.group(room.id)?.memberIds).toEqual([bot.id]);
   });
@@ -573,6 +621,7 @@ describe("Store", () => {
     ];
     writeFileSync(join(DATA_DIR, `messages-${bot.threadId}.json`), JSON.stringify(legacy));
 
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     const messages = reloaded.messagesFor(bot.threadId);
     expect(messages.map((m) => m.parentId)).toEqual([null, "m1"]);
@@ -739,9 +788,37 @@ describe("Store bot activity state", () => {
     const store = new Store(selection);
     const bot = store.createBot();
     store.setActivity(bot.id, "waiting-on-you");
+    // setActivity() no longer saves at all (see below) — flush so the bot's
+    // EXISTENCE (from createBot) is on disk for the reload to find it.
+    store.flushBotsNow();
     const again = new Store(selection);
     expect(again.bot(bot.id)?.activity).toBe("idle");
     expect(Boolean(again.bot(bot.id)?.busy)).toBe(false);
+  });
+
+  it("never writes bots.json on an activity transition, and never persists busy/activity at all", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.flushBotsNow();
+    const bytesBefore = readFileSync(join(DATA_DIR, "bots.json"), "utf8");
+
+    store.setActivity(bot.id, "working");
+    store.setActivity(bot.id, "waiting-on-you");
+    store.setActivity(bot.id, "idle");
+
+    // Nothing dirtied the debounce — a real flush right after is a no-op,
+    // proven by the file being byte-for-byte unchanged.
+    store.flushBotsNow();
+    expect(readFileSync(join(DATA_DIR, "bots.json"), "utf8")).toBe(bytesBefore);
+
+    // A save triggered for an unrelated reason must still exclude both
+    // fields from the roster entirely, not merely reset them.
+    store.patchBot(bot.id, { name: "Unrelated save" });
+    store.setActivity(bot.id, "working");
+    store.flushBotsNow();
+    const raw = readFileSync(join(DATA_DIR, "bots.json"), "utf8");
+    expect(raw).not.toContain('"busy"');
+    expect(raw).not.toContain('"activity"');
   });
 });
 
@@ -815,6 +892,7 @@ describe("Store redacts bot-authored secrets on write", () => {
     const mine = store.appendMessage(bot.threadId, { role: "user", kind: "text", text: `use ${key} for the api` });
     expect(mine.text).toContain(key);
     // and the stored copy is what was masked, not just the returned one
+    store.flushBotsNow();
     const again = new Store(selection);
     expect(again.messagesFor(bot.threadId).find((m) => m.id === reply.id)?.text).not.toContain(key);
   });
@@ -965,6 +1043,7 @@ describe("Store room working folder", () => {
     expect(store.pinGroupCwd(group.id)).toBe("/tmp/project-a");
 
     // the pin is durable — a restart must not re-pin from the new folder
+    store.flushBotsNow();
     const reloaded = new Store(selection);
     expect(reloaded.pinGroupCwd(group.id)).toBe("/tmp/project-a");
   });
