@@ -9,7 +9,7 @@ import {
   updateSource,
   useUpdateControl,
 } from "@/lib/update-control";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -2227,43 +2227,71 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   // instantly from local state; transcript hits are the SearchResults
   // section below the list (debounced, lands on the message).
 
-  const matchingBots = state.bots
-    .filter((b) => !b.hidden)
-    .filter(
-      (b) =>
+  // UI5: this used to filter and sort state.bots/state.groups (with a
+  // lowercase preview() per bot) directly in the render body, so every store
+  // dispatch re-ran it even when neither bots, groups, nor the query had
+  // changed. Memoized on exactly those three — state.bots/state.groups keep
+  // their identity across unrelated dispatches (the same assumption
+  // MessagesList's memoization already relies on in ChatView), so this now
+  // only redoes the work when the roster, the rooms, or the search text
+  // actually moved. Returned as one object rather than several memos: the
+  // pieces are cheap to destructure and it keeps a single dependency list
+  // instead of six near-identical ones.
+  const {
+    unsectionedChief,
+    sectionChiefs,
+    sectionedBots,
+    visibleBots,
+    visibleGroups,
+    botChats,
+    sectionedGroups,
+    unsectionedGroups,
+  } = useMemo(() => {
+    const byRecentBot = compareBotsByRecentActivity;
+    const byRecentGroup = compareGroupsByRecentActivity;
+    const matchingBots = state.bots
+      .filter((b) => !b.hidden)
+      .filter(
+        (b) =>
+          !q ||
+          b.name.toLowerCase().includes(q) ||
+          (b.title ?? "").toLowerCase().includes(q) ||
+          preview(b).toLowerCase().includes(q),
+      );
+    const unsectionedChief = matchingBots.find((bot) => bot.chiefOfStaff && !bot.section);
+    const sectionChiefs = matchingBots.filter((bot) => bot.chiefOfStaff && bot.section);
+    const sectionedBots = matchingBots
+      .filter((bot) => !bot.chiefOfStaff && bot.section)
+      .sort(byRecentBot);
+    const visibleBots = matchingBots
+      .filter((bot) => !bot.chiefOfStaff && !bot.section)
+      .sort(byRecentBot);
+    const visibleGroups = state.groups.filter(
+      (g) =>
         !q ||
-        b.name.toLowerCase().includes(q) ||
-        (b.title ?? "").toLowerCase().includes(q) ||
-        preview(b).toLowerCase().includes(q),
+        g.name.toLowerCase().includes(q) ||
+        (g.tasks ?? []).some((task) => task.title.toLowerCase().includes(q)),
     );
-  const unsectionedChief = matchingBots.find((bot) => bot.chiefOfStaff && !bot.section);
-  const sectionChiefs = matchingBots.filter((bot) => bot.chiefOfStaff && bot.section);
-  const byRecentBot = compareBotsByRecentActivity;
-  const byRecentGroup = compareGroupsByRecentActivity;
-  const sectionedBots = matchingBots
-    .filter((bot) => !bot.chiefOfStaff && bot.section)
-    .sort(byRecentBot);
-  const visibleBots = matchingBots
-    .filter((bot) => !bot.chiefOfStaff && !bot.section)
-    .sort(byRecentBot);
-  const visibleGroups = state.groups.filter(
-    (g) =>
-      !q ||
-      g.name.toLowerCase().includes(q) ||
-      (g.tasks ?? []).some((task) => task.title.toLowerCase().includes(q)),
-  );
+    const {
+      botChats: botChatsRaw,
+      sectionedRooms: sectionedGroupsRaw,
+      unsectionedRooms: unsectionedGroupsRaw,
+    } = partitionSidebarGroups(visibleGroups);
+    return {
+      unsectionedChief,
+      sectionChiefs,
+      sectionedBots,
+      visibleBots,
+      visibleGroups,
+      botChats: [...botChatsRaw].sort(byRecentGroup),
+      sectionedGroups: [...sectionedGroupsRaw].sort(byRecentGroup),
+      unsectionedGroups: [...unsectionedGroupsRaw].sort(byRecentGroup),
+    };
+  }, [state.bots, state.groups, q]);
   const terminology = getRoomTerminology(state.config);
   const conversationMode = getConversationMode(state.config);
   const showExtraThreads = allowsMultipleBotThreads(conversationMode);
   const primary = rosterPrimaryLabel(conversationMode);
-  const {
-    botChats: botChatsRaw,
-    sectionedRooms: sectionedGroupsRaw,
-    unsectionedRooms: unsectionedGroupsRaw,
-  } = partitionSidebarGroups(visibleGroups);
-  const botChats = [...botChatsRaw].sort(byRecentGroup);
-  const sectionedGroups = [...sectionedGroupsRaw].sort(byRecentGroup);
-  const unsectionedGroups = [...unsectionedGroupsRaw].sort(byRecentGroup);
   // User contexts keep a stored order.  Bot ↔ Bot is not a user context and
   // always sits at the bottom, collapsed until opened.  DMs stay out of Apps
   // even when a leftover section tag remains on the record (#237).
