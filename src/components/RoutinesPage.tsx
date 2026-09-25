@@ -21,12 +21,13 @@ import {
 
 import { BotAvatar } from "@/components/Avatar";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { MiniMonth } from "@/components/routines/MiniMonth";
 import { stateForBot } from "@/lib/mascot";
 import { WebhooksPanel } from "@/components/WebhooksPanel";
 import { ResourceTriggersPanel } from "@/components/ResourceTriggersPanel";
 import { cn } from "@/lib/cn";
 import { BOT_COLORS, type BotState } from "@/lib/mascot";
-import type { Routine, RoutineInput, RoutineRunOn, RoutineRunStatus } from "@/lib/routines";
+import type { Routine, RoutineInput, RoutineRunOn, RoutineRunStatus, RoutineSchedule } from "@/lib/routines";
 import {
   CENTRAL_TIME_ZONE,
   DAY_NAMES,
@@ -288,6 +289,18 @@ export function RoutineEditor({
   const [error, setError] = useState("");
   const cloudInstance = state.instances.find((instance) => instance.driverKind === "boxAgent");
   const cloudReady = Boolean(state.config?.box.configured && cloudInstance?.snapshot.state === "available");
+  // MiniMonth preview of the schedule being edited — null while the "once"
+  // date/time field is mid-edit and momentarily unparseable, same guard
+  // `save()` needs around `epochFromInputDateTime`.
+  const schedulePreview = useMemo<RoutineSchedule | null>(() => {
+    try {
+      return kind === "once"
+        ? { type: "once", at: epochFromInputDateTime(at, CENTRAL_TIME_ZONE) }
+        : { type: "daily", time, weekdays, timeZone };
+    } catch {
+      return null;
+    }
+  }, [kind, at, time, weekdays, timeZone]);
 
   const save = async () => {
     setSaving(true);
@@ -405,6 +418,15 @@ export function RoutineEditor({
                   ))}
                 </div>
                 <p className="text-[11.5px] text-ink-secondary">Time zone: {timeZoneLabel(timeZone, routine?.nextRunAt ?? Date.now())}.{'  '}Existing routines keep their saved zone.</p>
+              </div>
+            )}
+            {schedulePreview && (
+              <div className="mt-3 overflow-hidden rounded-xl border border-hairline/40 bg-inset">
+                <MiniMonth
+                  anchor={schedulePreview.type === "once" ? schedulePreview.at : Date.now()}
+                  schedule={schedulePreview}
+                  timeZone={timeZone}
+                />
               </div>
             )}
           </div>
