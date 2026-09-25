@@ -63,7 +63,7 @@ import {
   generateAvatarImage,
   snapshotAvatarGenerationState,
 } from "./avatar-image.ts";
-import { parseBotProfilePatch } from "./bot-profile.ts";
+import { parseBotProfilePatch, resolveMaxToolRounds } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
@@ -3659,6 +3659,9 @@ async function startTurn(
               botId: bot.id,
               threadId,
               commsDepth,
+              // HTTP toolLoop engines only (MiniMax / Grok HTTP / openai-compat).
+              // Unset/invalid → undefined → DEFAULT_TURN_LOOP_BUDGET.maxRounds (12).
+              maxRounds: resolveMaxToolRounds(bot.maxToolRounds),
               localComputer: hasHostComputer,
               workspace: worksInWorkspace,
               recall: hasRecall && recallSettingsForTurn ? { settings: recallSettingsForTurn, botName: bot.name } : undefined,
@@ -5215,6 +5218,8 @@ async function runGroupMemberTurn(
           botId: bot.id,
           threadId,
           commsDepth: hop,
+          // Same HTTP toolLoop ceiling as the 1:1 lane.
+          maxRounds: resolveMaxToolRounds(bot.maxToolRounds),
           localComputer: hasHostComputer,
           workspace: Boolean(workspace),
           recall: hasRoomRecall && recallSettingsForRoomTurn ? { settings: recallSettingsForRoomTurn, botName: bot.name } : undefined,
