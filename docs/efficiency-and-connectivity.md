@@ -30,6 +30,26 @@ Unattended turns may downgrade to cheaper catalog entries when the bot allows
 it (PR #533).  A 180s provider timeout is treated as silence, not a hard
 failure, when the bot is unattended.
 
+### Unattended Request Ceiling (MiniMax)
+
+Separately from the silence-treatment above, `server/drivers/minimax.ts` gives
+an unattended turn a 900s per-request ceiling (the turn's own wall-clock
+budget) instead of the 180s interactive one — PR #625, following up on board
+row bf77b434 (BOTFLEET-V), where the Compiler bot's CI-webhook turns were
+repeatedly cut off at 180s mid-answer.  A CONNECTION that goes fully silent
+is still caught much sooner than 900s by a separate idle-stall guard
+(`STREAM_IDLE_TIMEOUT_MS`, 120s of no bytes from the reader) that fails the
+round as a retryable `provider_error` rather than riding the full budget.
+
+This override is MiniMax-only today.  `grok.ts` and `openai-compat.ts` run
+the same `runTurnLoop` but keep their existing 180s / 120s per-request
+ceilings for unattended turns — they have not shown the bf77b434 failure
+shape (a live-but-slow unattended stream cut off before it can answer), so
+widening their ceilings too would be a speculative change, not a fix to an
+observed problem.  If a peer driver shows the same pattern in Sentry, add
+its own `budget.requestTimeoutMs` override next to its own evidence rather
+than copying this one.
+
 ## Harness Self-Heal
 
 The always-on LaunchAgent runs `~/apps/botfleet-server-start.sh` against the
