@@ -562,6 +562,15 @@ export interface ModelCatalog {
     label: string;
     custom?: boolean;
     loaded?: boolean;
+    /** Short tag rendered next to the label in the model picker (e.g. a
+     * price/speed tradeoff the user should see before picking).  Drivers
+     * set it on static catalog rows; the picker renders it as a chip with
+     * `badgeTitle` (full sentence) on hover.  Keep the chip under ~10 chars
+     * so it does not push the label to a second line on narrow chat heads. */
+    badge?: string;
+    /** Hover explanation for `badge`.  Without this the chip renders
+     * without a tooltip and a screen-reader hint. */
+    badgeTitle?: string;
     /** total context window in tokens, when the driver knows it — sizes
      * the model-facing rebuild (server/context-rebuild.ts). Unknown falls
      * back to a pattern table over the model id, then a conservative default. */
