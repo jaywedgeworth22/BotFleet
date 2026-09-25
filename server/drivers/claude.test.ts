@@ -216,11 +216,30 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(done).toMatchObject({
       type: "turn.completed",
       ok: true,
+      // the Messages API's own stop_reason ("end_turn" here) stays the
+      // label for a normal completion — only a FAILED turn prefers
+      // terminal_reason (see "reports the CLI's terminal_reason..." below)
+      stopReason: "end_turn",
       cost: 0.01,
       billingMode: "estimated",
       usage: { input: 12, output: 5, cachedInput: 2 },
     });
     expect(instance.adapter.hasSession("t-happy")).toBe(false);
+  });
+
+  it("reports the CLI's terminal_reason, not a stale stop_reason, on a failed turn", async () => {
+    // Regression for BOTFLEET-K / board 28a249c3: production events showed
+    // is_error: true, terminal_reason: "api_error" (a real 429 rate limit),
+    // but stop_reason stuck at "stop_sequence" — a leftover value from the
+    // CLI's result-builder on a request that never got a real model
+    // response (duration_api_ms: 0). Reporting "stop_sequence" made a real,
+    // actionable failure look like a benign model-side stop; Seer's PR #605
+    // proposed allowlisting "stop_sequence" as benign, which would have
+    // silently swallowed every one of these rate-limit failures instead.
+    await create("api-error");
+    await instance.adapter.sendTurn({ threadId: "t-api-error", text: "hi" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ type: "turn.completed", ok: false, stopReason: "api_error" });
   });
 
   it("streams partial-message text deltas without re-emitting the whole message", async () => {

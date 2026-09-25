@@ -602,6 +602,37 @@ describe("failed turns become Issues", () => {
     expect(String(exceptions[0])).toContain("bot turn failed: rpc_error");
   });
 
+  it("still Issues a stop_sequence completion — it is not a benign stop reason here", () => {
+    // BOTFLEET-K / board 28a249c3 / Seer PR #605: production events tagged
+    // stopReason "stop_sequence" were all real Anthropic API failures
+    // (is_error: true, terminal_reason "api_error", api_error_status 429) —
+    // "stop_sequence" was a stale value left over from the CLI's
+    // result-builder on a request that never got a real model response, not
+    // a genuine benign model-side stop. A genuinely benign stop_sequence
+    // completion has is_error: false and so never reaches this branch at
+    // all (see the "normalizes a full turn" driver test's stopReason:
+    // "end_turn" pin). Allowlisting "stop_sequence" here, as #605 proposed,
+    // would silently swallow every one of those rate-limit failures instead
+    // of surfacing them. The real fix is in the driver
+    // (server/drivers/claude.ts): prefer terminal_reason over stop_reason
+    // on a failed turn, so this case now arrives here as stopReason
+    // "api_error", asserted below — not "stop_sequence".
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "stop_sequence" }), sink);
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("bot turn failed: stop_sequence");
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:"))).toHaveLength(0);
+  });
+
+  it("still Issues an api_error completion — a real Anthropic-side failure, not expected/setup", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "api_error" }), sink);
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("bot turn failed: api_error");
+  });
+
 });
 
 describe("approval, retry, and session lifecycle", () => {

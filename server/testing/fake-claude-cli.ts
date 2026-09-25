@@ -7,6 +7,12 @@
 //   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed | quota
 //                      | stream (partial-message text deltas before the
 //                        whole-message frame, plus subagent noise to drop)
+//                      | api-error (a real Anthropic API failure shaped like
+//                        production BOTFLEET-K events: is_error true,
+//                        terminal_reason "api_error", but a stale
+//                        stop_reason "stop_sequence" left over from the CLI's
+//                        result-builder — the regression case for trusting
+//                        stop_reason over terminal_reason on a failed turn)
 //   FAKE_CLAUDE_DUMP   path to write {argv, env, prompt, mcpConfig} as JSON,
 //                      so the test can assert on argv shape and env hygiene.
 //                      mcpConfig is read back from the --mcp-config file the
@@ -205,6 +211,28 @@ const playTurn = (prompt: JsonValue) => {
     } else {
       finishQuota();
     }
+    return;
+  }
+
+  if (mode === "api-error") {
+    // No assistant/tool_use frame first: production samples show
+    // duration_api_ms: 0 — the request never got a real model response, it
+    // failed before one arrived. subtype stays "success" and stop_reason
+    // stays the stale "stop_sequence" the same way the real CLI's result
+    // builder does; only terminal_reason + api_error_status name the actual
+    // cause.
+    out({
+      type: "result",
+      is_error: true,
+      subtype: "success",
+      stop_reason: "stop_sequence",
+      terminal_reason: "api_error",
+      api_error_status: 429,
+      num_turns: 1,
+      total_cost_usd: 0,
+    });
+    turnRunning = false;
+    finishIfDone();
     return;
   }
 
