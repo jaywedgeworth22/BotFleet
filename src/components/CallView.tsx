@@ -23,6 +23,7 @@ import { Loader2, Phone, PhoneOff, X } from "lucide-react";
 import { useStore, visibleMessages, type Bot } from "@/state/store";
 import { currentCall, deferCallCleanup, endCall, startCall, useOnCall } from "@/lib/call";
 import { speaker } from "@/lib/tts";
+import { spokenReply } from "../../shared/voice-summary";
 import { useSpeech } from "@/lib/tts/useSpeech";
 import { usePushToTalk } from "@/lib/push-to-talk";
 import { MausAvatar } from "./Avatar";
@@ -485,7 +486,7 @@ function Call({ bot }: { bot: Bot }) {
     for (const m of fresh) spokenIds.current.add(m.id);
 
     if (reply?.text) {
-      void sayThenListen(reply.text);
+      void sayThenListen(spokenReply(reply.text));
     } else if (chip?.tool?.spoken && phase === "working") {
       void say(chip.tool.spoken).then((stillMine) => {
         if (stillMine && phaseRef.current === "speaking") move("working");
