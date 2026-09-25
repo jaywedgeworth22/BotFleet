@@ -6,10 +6,10 @@ import * as React from "react";
 import { Check, CheckCircle, ChevronDown, Loader2, RefreshCw, XCircle } from "lucide-react";
 import { api, useSecretSources, useStore, type ConfigStatus, type TaskUsage } from "@/state/store";
 import { cn } from "@/lib/cn";
-import { MausAvatar } from "./Avatar";
+import { BotMascot } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
-import type { MausColor } from "@/lib/mascot";
+import type { BotColor } from "@/lib/mascot";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import { UsageMonitorQuotaGrid } from "./UsageMonitorQuotaGrid";
 import { UsageWhatIfProjection } from "./UsageWhatIfProjection";
@@ -1414,7 +1414,7 @@ function UsageRow({
   open,
   onToggle,
 }: {
-  bot: { id: string; name: string; color?: MausColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number; engineId?: string; byModel?: Record<string, TaskUsage> }> };
+  bot: { id: string; name: string; color?: BotColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number; engineId?: string; byModel?: Record<string, TaskUsage> }> };
   usage: TaskUsage;
   open: boolean;
   onToggle: () => void;
@@ -1521,7 +1521,7 @@ function UsageRow({
         className="grid w-full grid-cols-[1fr_auto_auto_auto] items-center gap-x-5 py-2 text-left text-[13px] hover:bg-control/30"
       >
         <span className="flex min-w-0 items-center gap-2 text-ink">
-          <MausAvatar color={bot.color ?? "blue"} state="idle" size={22} animated={false} />
+          <BotMascot color={bot.color ?? "blue"} state="idle" size={22} animated={false} />
           <span className="truncate" title={bot.name}>{bot.name}</span>
           {open && modelCount > 0 && (
             <span

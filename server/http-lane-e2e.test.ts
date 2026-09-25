@@ -422,7 +422,7 @@ posixOnly("approvals reach an HTTP-lane bot", () => {
         name: "Nightly build",
         prompt: "Handle the incoming build event",
         botId: bot.id,
-        runOn: "maus",
+        runOn: "bot",
       });
       expect(hook.status).toBe(201);
       const delivered = await fetch(hook.body.credential.url, {

@@ -17,7 +17,7 @@ import { botAvatarProfile, type BotAvatarCrop } from "../shared/bot-avatar.ts";
 import type { RoutineRequestCardData } from "../shared/routine-request.ts";
 import type { ToolKind } from "../shared/tool-activity.ts";
 
-export type MausColor =
+export type BotColor =
   | "green"
   | "blue"
   | "red"
@@ -34,7 +34,12 @@ export type MausColor =
  * string rather than a union: bots saved under the app's earlier ten-face
  * vocabulary still carry those names, and the client resolves both on read.
  */
-export type MausExpression = string;
+export type BotExpression = string;
+
+/** @deprecated Prefer BotColor. */
+export type MausColor = BotColor;
+/** @deprecated Prefer BotExpression. */
+export type MausExpression = BotExpression;
 
 export interface OptionCardData {
   title: string;
@@ -484,8 +489,8 @@ export interface BotRecord {
   title: string;
   description: string;
   notifications: boolean;
-  color: MausColor;
-  mascotExpression?: MausExpression | null;
+  color: BotColor;
+  mascotExpression?: BotExpression | null;
   /** App-owned attachment served as this bot's custom profile image. */
   avatarUrl?: string;
   /** Mascot, or the crop applied to avatarUrl. */
@@ -591,7 +596,7 @@ const BOTS_FILE = join(DATA_DIR, "bots.json");
 const GROUPS_FILE = join(DATA_DIR, "groups.json");
 const messagesFile = (threadId: string) => join(DATA_DIR, `messages-${threadId}.json`);
 
-const COLORS: MausColor[] = [
+const COLORS: BotColor[] = [
   "green",
   "blue",
   "red",

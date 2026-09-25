@@ -4,7 +4,7 @@ import { ArrowUp, Check, Clock, Hand, Mic, Paperclip, ShieldCheck, Square, Users
 import { useStore, visibleMessages, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useComposerDraft } from "@/lib/drafts";
-import { MausAvatar } from "./Avatar";
+import { BotMascot } from "./Avatar";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
@@ -541,7 +541,7 @@ export function Composer({
               >
                 {item.kind === "bot" ? (
                   item.bot ? (
-                    <MausAvatar
+                    <BotMascot
                       color={item.bot.color}
                       state={normalizeState(item.bot.mascotExpression) ?? "happy"}
                       size={24}

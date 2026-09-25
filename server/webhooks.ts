@@ -158,7 +158,9 @@ const MAX_PENDING_RUNS = 3;
 const MAX_IGNORED_ATTEMPTS_PER_WINDOW = 3;
 const IGNORED_ATTEMPTS_WINDOW_MS = 10_000;
 
-const runOnSchema = z.enum(["maus", "cloud"]);
+const runOnSchema = z
+  .enum(["bot", "cloud", "maus"])
+  .transform((value): "bot" | "cloud" => (value === "maus" ? "bot" : value));
 const eventTypesSchema = z.array(z.string()).max(20).optional();
 /** A whole number of minutes.  A day is the ceiling — past that a person
  * wants a schedule, not a trigger. */
@@ -257,10 +259,10 @@ function cleanInput(input: WebhookTriggerInput): CleanWebhookInput {
   const name = input.name.trim().slice(0, 80);
   const prompt = input.prompt.trim().slice(0, 20_000);
   const botId = input.botId.trim();
-  const runOn = input.runOn ?? "maus";
+  const runOn = input.runOn ?? "bot";
   if (!name) fail(400, "Give the webhook a name");
-  if (!botId) fail(400, "Choose a MAUS");
-  if (runOn !== "maus" && runOn !== "cloud") fail(400, "Choose where this webhook runs");
+  if (!botId) fail(400, "Choose a Bot");
+  if (runOn !== "bot" && runOn !== "cloud") fail(400, "Choose where this webhook runs");
   const eventTypes = Array.from(new Set(
     (input.eventTypes ?? [])
       .map((value) => value.trim().slice(0, 200))
@@ -876,11 +878,14 @@ export class WebhookManager {
     this.file = options.file ?? join(DATA_DIR, "webhooks.json");
     this.now = options.now ?? Date.now;
     try {
-      const parsed = webhookFileSchema.safeParse(parseJson(readFileSync(this.file, "utf8")));
+      const rawText = readFileSync(this.file, "utf8");
+      const parsed = webhookFileSchema.safeParse(parseJson(rawText));
       if (!parsed.success) throw parsed.error;
       this.webhooks = parsed.data.webhooks;
       this.deliveries = parsed.data.deliveries.slice(-MAX_DELIVERIES);
       this.attempts = (parsed.data.attempts ?? []).slice(-MAX_ATTEMPTS);
+      // One-shot: rewrite legacy runOn "maus" → "bot" on disk.
+      if (/"runOn"\s*:\s*"maus"/.test(rawText)) this.save();
     } catch {
       this.webhooks = [];
       this.deliveries = [];
@@ -898,7 +903,7 @@ export class WebhookManager {
 
   create(input: JsonValue): CreatedWebhook {
     const clean = cleanInput(parseTriggerInput(input));
-    if (this.options.botState(clean.botId) === "missing") fail(400, "That MAUS no longer exists");
+    if (this.options.botState(clean.botId) === "missing") fail(400, "That Bot no longer exists");
     const now = this.now();
     const secret = newSecret();
     const trigger: StoredWebhookTrigger = {
@@ -930,7 +935,7 @@ export class WebhookManager {
       eventTypes: patch.eventTypes ?? trigger.eventTypes,
       minGapMinutes: patch.minGapMinutes ?? trigger.minGapMinutes,
     });
-    if (this.options.botState(clean.botId) === "missing") fail(400, "That MAUS no longer exists");
+    if (this.options.botState(clean.botId) === "missing") fail(400, "That Bot no longer exists");
     Object.assign(trigger, clean, { updatedAt: this.now() });
     if (!clean.eventTypes?.length) delete trigger.eventTypes;
     if (!clean.minGapMinutes) delete trigger.minGapMinutes;
@@ -973,7 +978,7 @@ export class WebhookManager {
       if (trigger.botId !== botId || !trigger.enabled) continue;
       trigger.enabled = false;
       trigger.updatedAt = this.now();
-      this.options.cancelQueued?.(trigger.id, "The assigned MAUS was deleted");
+      this.options.cancelQueued?.(trigger.id, "The assigned Bot was deleted");
       this.emit(trigger);
       changed = true;
     }
@@ -1020,7 +1025,7 @@ export class WebhookManager {
 
   private dispatch(trigger: StoredWebhookTrigger, event: WebhookEvent): WebhookReceiveResult {
     if (!trigger.enabled) fail(409, "This webhook is paused");
-    if (this.options.botState(trigger.botId) === "missing") fail(410, "The assigned MAUS no longer exists");
+    if (this.options.botState(trigger.botId) === "missing") fail(410, "The assigned Bot no longer exists");
 
     const requestedDeliveryId = String(event.deliveryId ?? "").trim().slice(0, 200);
     if (requestedDeliveryId) {
@@ -1134,7 +1139,7 @@ export class WebhookManager {
       outcome: "captured",
       statusCode: 202,
       deliveryId,
-      reason: "Test event captured; enable the webhook to start MAUS tasks",
+      reason: "Test event captured; enable the webhook to start Bot tasks",
     });
     this.save();
     this.emit(trigger);

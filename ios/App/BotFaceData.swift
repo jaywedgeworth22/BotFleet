@@ -1,10 +1,10 @@
-// Generated from the Blob Studio export of the mascot (MausMascotios/MausAvatar.tsx;
+// Generated from the Blob Studio export of the mascot (Blob Studio / CursorAvatar.tsx;
 // the same tables ship in src/components/CursorAvatar.tsx) — do not hand-edit. 25 expressions × 2 eye rings × 48 points, a mouth per expression,
 // and per-state pools, cadences, blink rhythm and body motion. Same numbers as
 // the desktop, which is the whole point.
 import CoreGraphics
 
-enum MausState: String, CaseIterable {
+enum BotState: String, CaseIterable {
     /// States whose motion carries information — a turn in progress. Faces in
     /// lists animate only for these; a resting bot earns a resting face.
     var showsActivity: Bool {
@@ -56,7 +56,7 @@ enum MausState: String, CaseIterable {
     case poweringDown = "powering-down"
 }
 
-struct MausBodyMotion {
+struct BotBodyMotion {
     var bob: (CGFloat, CGFloat)? = nil
     var sway: (CGFloat, CGFloat)? = nil
     var pulse: (CGFloat, CGFloat)? = nil
@@ -68,7 +68,7 @@ struct MausBodyMotion {
     var settle: CGFloat? = nil
 }
 
-enum MausFaceData {
+enum BotFaceData {
     static let faceBox: CGFloat = 228.541
     static let faceCentre = CGPoint(x: 120, y: 122.5)
     static let mouthStroke: CGFloat = 7.5
@@ -403,7 +403,7 @@ enum MausFaceData {
     /// [halfWidth, curve, gap, skew]
     static func mouth(_ expression: Int) -> [CGFloat] { Array(mouthsFlat[(expression * 4)..<(expression * 4 + 4)]) }
 
-    static let pools: [MausState: [Int]] = [
+    static let pools: [BotState: [Int]] = [
         .sleeping: [22, 13, 4],
         .waking: [13],
         .idle: [6, 0, 8],
@@ -446,7 +446,7 @@ enum MausFaceData {
         .poweringDown: [22, 13],
     ]
     /// How long a state holds an expression, ms.
-    static let expressionCadence: [MausState: (CGFloat, CGFloat)] = [
+    static let expressionCadence: [BotState: (CGFloat, CGFloat)] = [
         .sleeping: (6000, 10000),
         .waking: (800, 800),
         .idle: (9000, 16000),
@@ -489,7 +489,7 @@ enum MausFaceData {
         .poweringDown: (6000, 9000),
     ]
     /// Blink cadence, ms; absent = never blinks.
-    static let blink: [MausState: (CGFloat, CGFloat)] = [
+    static let blink: [BotState: (CGFloat, CGFloat)] = [
         .idle: (6000, 14000),
         .listening: (3000, 7000),
         .thinking: (3500, 7000),
@@ -514,46 +514,46 @@ enum MausFaceData {
         .notifying: (2000, 4000),
         .dragging: (2200, 4500),
     ]
-    static let motion: [MausState: MausBodyMotion] = [
-        .sleeping: MausBodyMotion(pulse: (0.028, 4600), tilt: 2),
-        .waking: MausBodyMotion(pulse: (0.03, 2200), enter: (0.92, 700)),
-        .idle: MausBodyMotion(pulse: (0.014, 3600)),
-        .listening: MausBodyMotion(bob: (2, 2600), pulse: (0.012, 2600)),
-        .thinking: MausBodyMotion(sway: (1.6, 3000), pulse: (0.01, 3000)),
-        .searching: MausBodyMotion(bob: (3, 1400), sway: (2.2, 1400)),
-        .working: MausBodyMotion(bob: (2.5, 900), squash: 0.22),
-        .excited: MausBodyMotion(bob: (9, 520), sway: (3, 1040), squash: 0.35),
-        .surprised: MausBodyMotion(jitter: (0.8, 120), enter: (1.14, 340)),
-        .suspicious: MausBodyMotion(sway: (2.4, 2600), tilt: -3),
-        .angry: MausBodyMotion(jitter: (1.3, 95), tilt: 2),
-        .drowsy: MausBodyMotion(pulse: (0.026, 5000), tilt: 3),
-        .happy: MausBodyMotion(bob: (5, 820), squash: 0.28),
-        .curious: MausBodyMotion(sway: (3.4, 1900), tilt: -4),
-        .confused: MausBodyMotion(sway: (3, 2200)),
-        .bored: MausBodyMotion(pulse: (0.016, 5200), tilt: 2),
-        .proud: MausBodyMotion(bob: (1.6, 2400), pulse: (0.02, 2400)),
-        .shy: MausBodyMotion(pulse: (0.016, 3000), tilt: 4),
-        .sad: MausBodyMotion(pulse: (0.02, 4600), tilt: 3),
-        .laughing: MausBodyMotion(bob: (7, 430), squash: 0.4),
-        .scared: MausBodyMotion(jitter: (2.2, 75)),
-        .playful: MausBodyMotion(bob: (6, 620), sway: (5, 1240), squash: 0.3),
-        .celebrate: MausBodyMotion(bob: (10, 480), sway: (4, 960), squash: 0.35),
-        .orbit: MausBodyMotion(circle: (6, 3200)),
-        .radar: MausBodyMotion(sway: (6, 2400), pulse: (0.012, 2400)),
-        .progress: MausBodyMotion(pulse: (0.022, 1600)),
-        .thinkingDots: MausBodyMotion(),
-        .spawning: MausBodyMotion(pulse: (0.014, 3600), enter: (0.02, 820)),
-        .humming: MausBodyMotion(pulse: (0.016, 2800)),
-        .loading: MausBodyMotion(sway: (2.2, 1500), pulse: (0.012, 1500)),
-        .dictating: MausBodyMotion(bob: (2, 2000)),
-        .sending: MausBodyMotion(),
-        .receiving: MausBodyMotion(),
-        .uploading: MausBodyMotion(bob: (3, 1000)),
-        .writing: MausBodyMotion(bob: (1.6, 1100)),
-        .notifying: MausBodyMotion(bob: (4, 700), sway: (2.5, 700)),
-        .alerting: MausBodyMotion(jitter: (2.6, 85)),
-        .bouncing: MausBodyMotion(bob: (12, 560), squash: 0.45),
-        .dragging: MausBodyMotion(sway: (2, 900), tilt: -6),
-        .poweringDown: MausBodyMotion(tilt: 4, settle: 0.05),
+    static let motion: [BotState: BotBodyMotion] = [
+        .sleeping: BotBodyMotion(pulse: (0.028, 4600), tilt: 2),
+        .waking: BotBodyMotion(pulse: (0.03, 2200), enter: (0.92, 700)),
+        .idle: BotBodyMotion(pulse: (0.014, 3600)),
+        .listening: BotBodyMotion(bob: (2, 2600), pulse: (0.012, 2600)),
+        .thinking: BotBodyMotion(sway: (1.6, 3000), pulse: (0.01, 3000)),
+        .searching: BotBodyMotion(bob: (3, 1400), sway: (2.2, 1400)),
+        .working: BotBodyMotion(bob: (2.5, 900), squash: 0.22),
+        .excited: BotBodyMotion(bob: (9, 520), sway: (3, 1040), squash: 0.35),
+        .surprised: BotBodyMotion(jitter: (0.8, 120), enter: (1.14, 340)),
+        .suspicious: BotBodyMotion(sway: (2.4, 2600), tilt: -3),
+        .angry: BotBodyMotion(jitter: (1.3, 95), tilt: 2),
+        .drowsy: BotBodyMotion(pulse: (0.026, 5000), tilt: 3),
+        .happy: BotBodyMotion(bob: (5, 820), squash: 0.28),
+        .curious: BotBodyMotion(sway: (3.4, 1900), tilt: -4),
+        .confused: BotBodyMotion(sway: (3, 2200)),
+        .bored: BotBodyMotion(pulse: (0.016, 5200), tilt: 2),
+        .proud: BotBodyMotion(bob: (1.6, 2400), pulse: (0.02, 2400)),
+        .shy: BotBodyMotion(pulse: (0.016, 3000), tilt: 4),
+        .sad: BotBodyMotion(pulse: (0.02, 4600), tilt: 3),
+        .laughing: BotBodyMotion(bob: (7, 430), squash: 0.4),
+        .scared: BotBodyMotion(jitter: (2.2, 75)),
+        .playful: BotBodyMotion(bob: (6, 620), sway: (5, 1240), squash: 0.3),
+        .celebrate: BotBodyMotion(bob: (10, 480), sway: (4, 960), squash: 0.35),
+        .orbit: BotBodyMotion(circle: (6, 3200)),
+        .radar: BotBodyMotion(sway: (6, 2400), pulse: (0.012, 2400)),
+        .progress: BotBodyMotion(pulse: (0.022, 1600)),
+        .thinkingDots: BotBodyMotion(),
+        .spawning: BotBodyMotion(pulse: (0.014, 3600), enter: (0.02, 820)),
+        .humming: BotBodyMotion(pulse: (0.016, 2800)),
+        .loading: BotBodyMotion(sway: (2.2, 1500), pulse: (0.012, 1500)),
+        .dictating: BotBodyMotion(bob: (2, 2000)),
+        .sending: BotBodyMotion(),
+        .receiving: BotBodyMotion(),
+        .uploading: BotBodyMotion(bob: (3, 1000)),
+        .writing: BotBodyMotion(bob: (1.6, 1100)),
+        .notifying: BotBodyMotion(bob: (4, 700), sway: (2.5, 700)),
+        .alerting: BotBodyMotion(jitter: (2.6, 85)),
+        .bouncing: BotBodyMotion(bob: (12, 560), squash: 0.45),
+        .dragging: BotBodyMotion(sway: (2, 900), tilt: -6),
+        .poweringDown: BotBodyMotion(tilt: 4, settle: 0.05),
     ]
 }

@@ -10,7 +10,7 @@ export interface TurnComputerInputs {
   /** The destination an automation dispatched the turn to: a cloud routine,
    * webhook or resource trigger mounts the cloud computer whatever the bot's
    * own computers say. */
-  runOn?: "maus" | "cloud";
+  runOn?: "bot" | "cloud";
   /** The providers the turn actually mounted, once its computers resolved.
    * Auto can fall back from an unavailable cloud computer to This Computer,
    * so the grant alone over-counts what the turn holds. */

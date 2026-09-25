@@ -17,7 +17,7 @@ function routine(schedule: Routine["schedule"]): Routine {
     name: "Fixture",
     prompt: "Check",
     botId: "bot",
-    runOn: "maus",
+    runOn: "bot",
     enabled: true,
     schedule,
     durationMinutes: 30,
