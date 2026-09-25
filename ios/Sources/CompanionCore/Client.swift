@@ -993,6 +993,25 @@ public struct CompanionClient: Sendable {
         ).bot
     }
 
+    public func messageVoice(threadId: String, messageId: String) async throws -> [VoiceClip] {
+        guard Self.validVoiceId(threadId), Self.validVoiceId(messageId) else { throw APIError.badURL }
+        var request = try makeRequest("POST", "/api/threads/\(threadId)/messages/\(messageId)/audio")
+        request.timeoutInterval = 150
+        return try await send(request, as: MessageVoiceResponse.self).audio
+    }
+
+    public func voiceClip(threadId: String, messageId: String, index: Int) async throws -> Data {
+        guard Self.validVoiceId(threadId), Self.validVoiceId(messageId), index >= 0 else { throw APIError.badURL }
+        let request = try makeRequest("GET", "/api/threads/\(threadId)/messages/\(messageId)/audio/\(index)")
+        let (data, response) = try await perform(request)
+        try Self.check(response, data)
+        return data
+    }
+
+    private static func validVoiceId(_ id: String) -> Bool {
+        !id.isEmpty && id.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
+    }
+
     public func previewVoice(text: String, voiceId: String) async throws -> Data {
         let request = try makeRequest(
             "POST", "/api/tts/speak",
@@ -1355,3 +1374,5 @@ public struct CompanionClient: Sendable {
         return eventStream(request: streamRequest, session: Self.streaming)
     }
 }
+
+private struct MessageVoiceResponse: Decodable { let audio: [VoiceClip] }
