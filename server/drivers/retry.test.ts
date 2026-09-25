@@ -122,6 +122,12 @@ describe("classifyError", () => {
     expect(classifyError(new Error("xAI HTTP 429: Too Many Requests"))).toEqual({ transient: true, reason: "rate_limited" });
     expect(classifyError(new Error("OpenAI HTTP 402 Payment Required"))).toMatchObject({ transient: false, reason: "quota" });
     expect(classifyError(new Error("status: 503 Service Unavailable"))).toMatchObject({ transient: true, reason: "server_error" });
+    // The Claude CLI's own shape: status in parens, "temporarily" in the phrase.
+    expect(classifyError(new Error("claude: API error (503): service temporarily unavailable"))).toMatchObject({ transient: true, reason: "server_error" });
+    expect(classifyError(new Error("API error (502)"))).toMatchObject({ transient: true, reason: "server_error" });
+    expect(classifyError(new Error("status [504]"))).toMatchObject({ transient: true, reason: "server_error" });
+    expect(classifyError(new Error("error(500)"))).toMatchObject({ transient: true, reason: "server_error" });
+    expect(classifyError(new Error("service temporarily unavailable"))).toMatchObject({ transient: true, reason: "server_error" });
     expect(classifyError(new Error("error: 401 Unauthorized: missing bearer"))).toMatchObject({ transient: false, reason: "auth" });
   });
 });
