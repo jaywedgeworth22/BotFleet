@@ -70,8 +70,16 @@ function currentConfigValue(result: unknown, configId: string): unknown {
   return option && typeof option === "object" ? (option as { currentValue?: unknown }).currentValue : undefined;
 }
 
+/** DSH's `initialize` base deadline.  `dsh --profile acp` answers only after
+ * its Cordis host has loaded ~200 plugin packages: about 3.5 s of CPU, which
+ * the shared 60 s default was cutting off once host load stretched it (p99
+ * of answered DSH initializes on this Mac was 120 s, and most late answers
+ * arrived within 2 minutes of the spawn).  Host load still scales this. */
+export const DSH_INIT_TIMEOUT_MS = 120_000;
+
 export const dshSupport = {
   ...harnessDshSupport,
+  initTimeoutMs: DSH_INIT_TIMEOUT_MS,
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
   loginNote: harnessDshSupport.loginNote ?? "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",

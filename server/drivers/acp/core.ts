@@ -22,6 +22,14 @@ import { toolFields } from "../../tool-fields.ts";
 import { describeResult } from "../../../shared/tool-activity.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "../retry.ts";
+import {
+  decodeInitTimeoutMs,
+  describeInitDeadline,
+  describeSlowInit,
+  readHostLoad,
+  resolveInitDeadline,
+  SLOW_INIT_LOG_MS,
+} from "./init-deadline.ts";
 
 /**
  * A `host::model` pick talks to a loopback server with its own key.
@@ -137,6 +145,9 @@ export interface AcpConfig {
   fullAuto: boolean;
   /** Optional home for this instance's sessions. */
   workspace?: string;
+  /** Exact `initialize` deadline for this instance, overriding the engine's
+   * load-scaled default (see `init-deadline.ts`). */
+  initTimeoutMs?: number;
   /** Whole `session/prompt` deadline.  The default remains below the harness
    * watchdog so the driver can cancel and settle its own process first. */
   promptTimeoutMs?: number;
@@ -157,6 +168,10 @@ export interface AcpSupport {
   effortLevels?: readonly EffortLevel[];
   /** Default CLI binary name if the instance config doesn't override it. */
   defaultCli: string;
+  /** Base `initialize` deadline for a CLI whose cold boot is heavier than
+   *  the 60 s default assumes.  Host load still stretches it; an instance's
+   *  `initTimeoutMs` still overrides it. */
+  initTimeoutMs?: number;
   /** Optional live model catalog. A failed lookup keeps the last usable catalog.
    *  `config` is the instance decode so a support can ask the same binary it
    *  will spawn (custom `cli` paths), not whatever happens to be named on PATH. */
@@ -262,7 +277,11 @@ export interface AcpSupport {
   }): Promise<void>;
 }
 
+// authenticate and set_config_option run on a child that already booted;
+// the cold-start `initialize` deadline lives in init-deadline.ts.
 const INIT_TIMEOUT = 60_000;
+/** Relaunches an initialize timeout may spend from the retry budget. */
+const MAX_INIT_TIMEOUT_RELAUNCHES = 1;
 const SESSION_CONFIG_TIMEOUT = 20_000; // configureSession's per-request default
 /** Upper bound on per-driver model discovery during registry load. */
 const BOOT_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
@@ -281,8 +300,10 @@ const FORCE_EXIT_AFTER_MS = 2_000;
 class AcpRpcTimeoutError extends Error {
   readonly method: string;
 
-  constructor(method: string) {
-    super(`${method} timed out`);
+  /** `detail` extends the message ("… timed out after 180 s (…)") and must
+   *  stay free of turn content: it reaches logs and Sentry breadcrumbs. */
+  constructor(method: string, detail?: string) {
+    super(detail ? `${method} timed out ${detail}` : `${method} timed out`);
     this.name = "AcpRpcTimeoutError";
     this.method = method;
   }
@@ -327,10 +348,12 @@ function decodeAcpConfig(defaultCli: string) {
       o.promptTimeoutMs <= MAX_PROMPT_TIMEOUT_MS
         ? o.promptTimeoutMs
         : undefined;
+    const initTimeoutMs = decodeInitTimeoutMs(o.initTimeoutMs);
     return {
       cli: typeof o.cli === "string" ? o.cli : defaultCli,
       fullAuto: o.fullAuto === true,
       workspace: typeof o.workspace === "string" ? o.workspace : undefined,
+      ...(initTimeoutMs === undefined ? {} : { initTimeoutMs }),
       ...(promptTimeoutMs === undefined ? {} : { promptTimeoutMs }),
     };
   };
@@ -1034,13 +1057,35 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         };
         active.set(threadId, { stop: cancelAndStop, interrupt: cancelAndInterrupt, turnId, asks });
 
+        // Read the host load once per spawn: the deadline this boot gets is
+        // fixed when it starts, not re-judged while it runs.
+        const initDeadline = resolveInitDeadline({
+          configured: turnConfig.initTimeoutMs,
+          engineBaseMs: support.initTimeoutMs,
+          load: readHostLoad(),
+        });
+
         (async () => {
           try {
-            const init = await request(
-              "initialize",
-              { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
-              INIT_TIMEOUT,
-            );
+            const initStartedAt = Date.now();
+            let init: any;
+            try {
+              init = await request(
+                "initialize",
+                { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
+                initDeadline.timeoutMs,
+              );
+            } catch (error) {
+              // Name the budget in the failure so a log line says whether
+              // the deadline or the boot was the outlier.
+              throw error instanceof AcpRpcTimeoutError
+                ? new AcpRpcTimeoutError("initialize", describeInitDeadline(initDeadline))
+                : error;
+            }
+            const initElapsedMs = Date.now() - initStartedAt;
+            if (initElapsedMs >= SLOW_INIT_LOG_MS) {
+              console.warn(`[acp] ${DRIVER_KIND} ${describeSlowInit(initElapsedMs, initDeadline)}`);
+            }
             const methods: Array<{ id?: string }> = Array.isArray(init?.authMethods) ? init.authMethods : [];
             const methodId = support.pickAuthMethod(methods);
             if (!skipSubscriptionAuthForLocalInject(turn.model)) {
@@ -1203,6 +1248,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 : String(classifiedFailure);
               const code = support.classifyError?.(classifiedFailure);
               const promptTimedOut = e instanceof AcpRpcTimeoutError && e.method === "session/prompt";
+              const initTimedOut = e instanceof AcpRpcTimeoutError && e.method === "initialize";
               if (promptTimedOut && sessionId) {
                 state.deadlineTerminating = true;
                 // ACP cancellation is a notification.  Flush it to the child
@@ -1237,7 +1283,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               // proves nothing has happened yet.  An auth problem is the
               // person's to fix and is never retried; a prompt timeout already
               // set `deadlineTerminating`, which maybeRetry refuses.
-              if (!needsAuth && maybeRetry(classifiedFailure instanceof Error ? classifiedFailure : { text: classifiedMessage })) {
+              //
+              // An initialize deadline earns ONE relaunch, not the whole
+              // transient budget: the relaunch repeats the entire cold boot
+              // under the same host load, and a second one mostly adds load.
+              const initRelaunchSpent = initTimedOut && retry.attempt >= MAX_INIT_TIMEOUT_RELAUNCHES;
+              if (
+                !needsAuth &&
+                !initRelaunchSpent &&
+                maybeRetry(classifiedFailure instanceof Error ? classifiedFailure : { text: classifiedMessage })
+              ) {
                 return;
               }
               emit({

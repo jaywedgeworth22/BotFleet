@@ -35,6 +35,9 @@
 //                        no configOptions, so nothing to confirm against
 //   FAKE_ACP_USAGE_ROOT  put the prompt result's usage at the root instead of
 //                        under _meta (what opencode 1.18.18 actually does)
+//   FAKE_ACP_INIT_DELAY_MS  answer initialize only after this many ms — a
+//                        slow cold boot, or (with a large value) one that
+//                        never finishes inside the driver's deadline
 //   FAKE_ACP_USAGE_UPDATE  a token count.  Sends a session/update
 //                        sessionUpdate:"usage_update" notification with that
 //                        `used` value before the (usage-free) prompt result —
@@ -346,7 +349,11 @@ function handle(msg: any) {
         process.exit(3);
       }
       const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
-      result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
+      const reply = () =>
+        result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
+      const initDelayMs = Number(process.env.FAKE_ACP_INIT_DELAY_MS ?? "0");
+      if (initDelayMs > 0) setTimeout(reply, initDelayMs);
+      else reply();
       break;
     }
     case "authenticate":
