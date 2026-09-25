@@ -938,15 +938,32 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               }
             }
             break;
-          case "result":
+          case "result": {
             // result.usage is this invocation's total — one process per turn,
             // so it is the turn's figure. cache reads count as input: they
             // are billed (at the cache rate) and they fill the window — but
             // they are reported separately too, so the UI can show how much
             // of the figure was context re-read rather than new text.
+            //
+            // stop_reason vs terminal_reason: on a real failure (is_error),
+            // the CLI can report BOTH a stale stop_reason left over from the
+            // last successful model turn (observed: "stop_sequence" with
+            // duration_api_ms: 0, i.e. no model turn actually ran) and a
+            // terminal_reason that names the real cause (observed:
+            // "api_error", with api_error_status 429 — an Anthropic rate
+            // limit). Blindly trusting stop_reason there mislabels a real,
+            // actionable failure as a benign model-side stop. terminal_reason
+            // is the CLI's own account of why the whole invocation ended
+            // abnormally, so it wins whenever the turn failed; stop_reason
+            // (the Messages API's own field: end_turn, tool_use, ...) is the
+            // right label for a normal completion and stays primary there.
+            const isError = o.is_error === true;
+            const stopReason = isError
+              ? (o.terminal_reason ?? o.stop_reason ?? null)
+              : (o.stop_reason ?? o.terminal_reason ?? null);
             settle(
-              o.is_error !== true,
-              o.stop_reason ?? o.terminal_reason ?? null,
+              !isError,
+              stopReason,
               o.total_cost_usd ?? null,
               o.usage
                 ? {
@@ -959,6 +976,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 : undefined,
             );
             break;
+          }
         }
       };
 

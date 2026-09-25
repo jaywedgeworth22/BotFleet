@@ -3273,6 +3273,20 @@ async function startTurn(
     ? boundNativeTranscript(transcript)
     : transcript;
 
+  // When a native cursor is attached, also carry the rebuild the driver would
+  // send on a fresh session if the provider refuses that cursor before reading
+  // the prompt (server/resume-recovery.ts).  Cursor-resuming drivers consult
+  // classifyResumeFailure / mayReplay before using it — never error-text regexes.
+  const recoveryText = resume
+    ? buildTurnContext({
+        text: promptWithReply(text, opts?.replyTo, cfg.profile?.name?.trim() || "User"),
+        transcript,
+        rewound: false,
+        fresh: true,
+        replaysNatively: instance.adapter.capabilities.replaysTranscript === true,
+      }).turnText
+    : undefined;
+
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
     `You are BF-${bot.name} (display: ${bot.name}), a bot in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
@@ -3581,6 +3595,8 @@ async function startTurn(
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
         resumeCursor: resume ? task.resumeCursors[instanceId] : undefined,
+        recoveryText,
+        ...(recoveryText !== undefined && recoveryText !== turnText ? { recoveryIsReplay: true } : {}),
         transcript: driverTranscript,
         // `buildTurnTools` only returns tool surfaces the harness can
         // actually execute in-process: agents, host computer, fleet
