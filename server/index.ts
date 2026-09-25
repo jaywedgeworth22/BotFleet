@@ -11218,6 +11218,27 @@ const server = createServer(async (req, res) => {
         return json(res, 502, { error: e instanceof Error ? e.message : String(e) });
       }
     }
+    // ── voice clone (MiniMax only) ────────────────────────────────────
+    // Requires the owner nonce so only the operator can clone voices.
+    if (method === "POST" && path === "/api/tts/voice-clone") {
+      const body = await readBody(req);
+      const nonce = typeof body?.nonce === "string" ? body.nonce : "";
+      if (!harnessOwnerProof(harnessOwner, nonce)) {
+        return json(res, 403, { error: "Operator nonce required to clone a voice" });
+      }
+      const voiceId = typeof body?.voiceId === "string" ? body.voiceId : "";
+      if (voiceId.length < 8) {
+        return json(res, 400, { error: "voice_id must be at least 8 characters" });
+      }
+      const audioFile = body?.audioFile as string | undefined; // base64
+      if (!audioFile) return json(res, 400, { error: "audioFile required" });
+      try {
+        const result = await tts.cloneVoice(cfg, { voiceId, audioBase64: audioFile });
+        return json(res, 200, { voiceId: result.id });
+      } catch (e) {
+        return json(res, 502, { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
 
     // ── connectors (Composio) ──
     const composioCredentialPending = workspaceCredentialPending(cfg, "composioApiKey");

@@ -6,8 +6,8 @@
 // calls stop().
 //
 // Audio comes from the harness (POST /api/tts/speak), which holds the
-// ElevenLabs key. The renderer never sees it, and never talks to
-// ElevenLabs directly.
+// MiniMax key. The renderer never sees it, and never talks to
+// MiniMax directly.
 //
 // Text is split into utterances by the harness too, next to the transform
 // that produced it — it is the piece most likely to be tuned against real
@@ -168,7 +168,7 @@ export class Speaker {
     const body: TtsPrepareBody = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? `the voice service returned ${res.status}`);
     if (!body.ready) {
-      throw new Error("Add the shared ElevenLabs key in a bot profile on this computer, then pick a voice for the bot.");
+      throw new Error("Add the shared MiniMax key in a bot profile on this computer, then pick a voice for the bot.");
     }
     return body.utterances ?? [];
   }

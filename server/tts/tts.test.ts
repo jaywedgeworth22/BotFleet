@@ -2,10 +2,8 @@
 // rule as the box and computer-proxy contract tests: what we send, and how
 // a refusal is reported, are the things that break.
 //
-// The stub serves both providers from the same port: MiniMax paths
-// (`/v1/voice/list`, `/v1/t2a_v2`) and ElevenLabs paths (`/v1/voices`,
-// `/v1/text-to-speech/...`).  A single `refuse` switch flips whichever
-// provider the test is exercising into its failure shape.
+// The stub serves MiniMax paths (`/v1/voice/list`, `/v1/t2a_v2`).
+// A single `refuse` switch flips the provider into its failure shape.
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -57,27 +55,12 @@ beforeAll(async () => {
         });
       }
 
-      // ---- ElevenLabs (legacy provider, opt-in) ----
-      // A RESTRICTED key — the common real-world case. It can read voices
-      // and speak, but has no user_read. Verifying against /user would
-      // reject it, which is exactly the bug this stub exists to catch.
-      if (path === "/v1/user") return send(401, { detail: { status: "missing_permissions" } });
-      if (path === "/v1/voices") {
-        return send(200, {
-          voices: [{ voice_id: "v-1", name: "Rachel", labels: { accent: "american", description: "calm" } }],
-        });
-      }
-      if (path.startsWith("/v1/text-to-speech/")) {
-        res.writeHead(200, { "content-type": "audio/mpeg" });
-        return res.end(MP3_BYTES);
-      }
       send(404, { detail: "no such stub route" });
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as { port: number }).port;
   process.env.MINIMAX_API_URL = `http://127.0.0.1:${port}`;
-  process.env.OMB_ELEVENLABS_API = `http://127.0.0.1:${port}/v1`;
 });
 
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
@@ -212,60 +195,6 @@ describe("MiniMax (default provider)", () => {
     const message = await speak(cfg(ready), "hi").catch((e: Error) => e.message);
     refuse = null;
     expect(message).toContain("Rate limit");
-  });
-});
-
-describe("ElevenLabs (legacy opt-in)", () => {
-  const ready = { provider: "elevenlabs" as const, key: "el-key", voice: "v-1" };
-
-  it("verifies via the legacy /v1/user probe so a restricted key still passes", async () => {
-    // The legacy driver uses /v1/user which 401s on missing scopes — the
-    // stub deliberately 401s that path to hold the line that a working
-    // restricted key is still valid.  MiniMax verify is exercised above.
-    refuse = null;
-    seen.length = 0;
-    const { verifyKey } = await voice();
-    expect(await verifyKey("el-key", cfg(ready))).toEqual({ ok: true });
-  });
-
-  it("says what to do when the ElevenLabs key is genuinely refused", async () => {
-    refuse = { status: 401, body: { detail: "invalid api key" } };
-    const { verifyKey } = await voice();
-    const result = await verifyKey("nope", cfg(ready));
-    refuse = null;
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.message).toMatch(/permission|restricted/i);
-  });
-
-  it("lists ElevenLabs voices with their labels", async () => {
-    const { listVoices } = await voice();
-    expect(await listVoices(cfg(ready))).toEqual([
-      { id: "v-1", label: "Rachel", description: "american · calm" },
-    ]);
-  });
-
-  it("posts to ElevenLabs with the voice in the URL and xi-api-key header", async () => {
-    seen.length = 0;
-    const { speak } = await voice();
-    const audio = await speak(cfg(ready), "hello there");
-    expect(audio.mime).toBe("audio/mpeg");
-    expect(Buffer.from(audio.bytes)).toEqual(MP3_BYTES);
-
-    const call = seen.at(-1)!;
-    expect(call.method).toBe("POST");
-    expect(call.url).toContain("/v1/text-to-speech/v-1");
-    expect(call.url).toContain("output_format=mp3");
-    expect(call.headers["xi-api-key"]).toBe("el-key");
-    expect(call.url).not.toContain("el-key");
-    expect(JSON.parse(call.body)).toMatchObject({ text: "hello there", model_id: "eleven_flash_v2_5" });
-  });
-
-  it("surfaces the service's own refusal rather than a bare status", async () => {
-    refuse = { status: 429, body: { detail: "You have exceeded your quota." } };
-    const { speak } = await voice();
-    const message = await speak(cfg(ready), "hi").catch((e: Error) => e.message);
-    refuse = null;
-    expect(message).toContain("exceeded your quota");
   });
 });
 

@@ -39,8 +39,8 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
 
   it("every patch builder yields { section: { ... } } and passes the value through unchanged", () => {
     // ttsKey intentionally persists a second field alongside the key
-    // (provider: "minimax") so migrateLegacyElevenLabsTtsProvider can
-    // distinguish fresh MiniMax saves from legacy ElevenLabs installs;
+    // (provider: "minimax") so the config reader can always distinguish
+    // MiniMax from the system provider without guessing from field shape;
     // that extra field is pinned by the dedicated regression test below
     // rather than by a one-field assertion here.
     const multiField = new Set(["ttsKey"]);
@@ -79,13 +79,10 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
   });
 
   it("persists provider: 'minimax' alongside the key on a fresh ttsKey save", () => {
-    // Mirror of shared/credential-request.ts credentialConfigPatch("ttsKey", …):
-    // a fresh MiniMax save must carry the explicit provider so the legacy
-    // ElevenLabs migration (server/config.ts migrateLegacyElevenLabsTtsProvider)
-    // skips it. Without this, a packaged Electron save — which routes through
-    // CREDENTIAL_PATCH instead of the shared helper — looks identical to a
-    // legacy ElevenLabs install and the just-validated MiniMax key gets
-    // routed to ElevenLabs on the next TTS call.
+    // A fresh MiniMax save must carry the explicit provider field so the
+    // config reader always knows which voice engine to use without guessing.
+    // This is tested at the CREDENTIAL_PATCH level because packaged Electron
+    // saves route through CREDENTIAL_PATCH rather than the shared helper.
     assert.ok(Object.hasOwn(patch, "ttsKey"), "CREDENTIAL_PATCH is missing ttsKey");
     assert.deepEqual(patch.ttsKey("sk-fresh"), { tts: { key: "sk-fresh", provider: "minimax" } });
   });

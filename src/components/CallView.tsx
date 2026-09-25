@@ -77,8 +77,8 @@ export function CallTargetButton({
   const configured = Boolean(state.config?.tts?.configured);
   // Owner 2026-09-03: with no voice provider configured the call button must not appear at all,
   // rather than render disabled with an explanation.  `configured` is provider-scoped server-side
-  // (ElevenLabs => a key is on file; system => the Mac's built-in voices are available), so this
-  // hides the button when there is no ElevenLabs key AND system voices are not the chosen provider,
+  // (MiniMax => a key is on file; system => the Mac's built-in voices are available), so this
+  // hides the button when there is no MiniMax key AND system voices are not the chosen provider,
   // while leaving it working for anyone who deliberately picked the built-in voices.
   const voiceProviderConfigured = configured;
   const everyTargetHasVoice = voices.length > 0 && voices.every((voice) => Boolean(voice));
@@ -109,7 +109,7 @@ export function CallTargetButton({
       : !window.ogb?.speechStart
         ? "The speech service is unavailable in this app build. Restart or update BotFleet."
         : !configured
-          ? "Add an ElevenLabs API key — or switch to the built-in Mac voices — so the bot can speak during calls."
+          ? "Add a MiniMax API key — or switch to the built-in Mac voices — so the bot can speak during calls."
           : !voiceReady
             ? voices.length > 1
               ? "Give every channel member a voice before starting a channel call."
