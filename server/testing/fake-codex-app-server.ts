@@ -147,7 +147,7 @@ process.stdin.on("data", (chunk) => {
             out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
           }
         } else {
-          out({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: "no such thread" } });
+          out({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `no rollout found for thread id ${msg.params?.threadId}` } });
         }
         break;
       case "thread/start":

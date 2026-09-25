@@ -90,7 +90,7 @@ export type TurnBillingMode = "actual" | "estimated";
 
 export type RuntimeEvent = RuntimeEventBase &
   (
-    | { type: "session.started"; sessionId: string | null; model?: string | null }
+    | { type: "session.started"; sessionId: string | null; model?: string | null; rebuilt?: boolean }
     | { type: "session.exited"; reason?: string }
     | { type: "turn.started" }
     | {
@@ -212,6 +212,16 @@ export interface SendTurnInput {
   model?: string;
   effort?: EffortLevel;
   resumeCursor?: unknown;
+  /** The turn with the conversation so far replayed inline, attached only
+   * alongside resumeCursor. A cursor-resuming driver sends it once, on a
+   * fresh session, when the provider refuses the cursor before reading the
+   * prompt (server/resume-recovery.ts) — so a session the provider lost
+   * does not brick the thread, and the new session is not blank. */
+  recoveryText?: string;
+  /** recoveryText is the replay this turn would have been sent without a
+   * resume cursor (it carries an update from outside the session). A driver
+   * that rebuilds only some lost sessions may also rebuild this one. */
+  recoveryIsReplay?: boolean;
   /** Prior turns for transcript-replay providers (API-backed drivers).
    *  Each entry may carry tool call and result metadata so the executor
    *  can replay a multi-step turn that has already been settled: the

@@ -365,6 +365,30 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(methods).not.toContain("turn/start");
   });
 
+  it("rebuilds on a fresh thread when resume fails before accept and recoveryText is attached", async () => {
+    await create(); // fake rejects thread/resume outside resume mode with missing-native shape
+    const dump = join(scratch, "resume-recovered.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    const recoveryText = "[rebuild]\n\nUser: my dog is Biscuit\n\nwhat now?";
+    await instance.adapter.sendTurn({
+      threadId: "t-resume-recovered",
+      text: "what now?",
+      resumeCursor: "gone-thread",
+      recoveryText,
+    });
+    const started = await recorder.until((e) => e.type === "session.started");
+    expect(started).toMatchObject({ sessionId: "codex-thread-1", rebuilt: true });
+    await recorder.until((e) => e.type === "turn.completed" && e.ok === true);
+
+    const methods = JSON.parse(readFileSync(dump, "utf8")).calls.map((c: { method: string }) => c.method);
+    expect(methods).toContain("thread/resume");
+    expect(methods).toContain("thread/start");
+    expect(methods).toContain("turn/start");
+    const turnStart = JSON.parse(readFileSync(dump, "utf8")).calls.find((c: { method: string }) => c.method === "turn/start");
+    expect(JSON.stringify(turnStart.params)).toContain("my dog is Biscuit");
+  });
+
   it("retries a transient resume against the same saved Codex thread", async () => {
     const dump = join(scratch, "resume-retry.json");
     process.env.FAKE_CODEX_DUMP = dump;

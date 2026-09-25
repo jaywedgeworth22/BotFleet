@@ -6,6 +6,7 @@ Format: one line per port, newest last.
 
 | Date (CT) | Upstream | What | BotFleet PR | Notes |
 |---|---|---|---|---|
+| Sep 25, 2026 | Upstream #1705 / `server/resume-recovery.ts` | Protocol-state resume recovery (`classifyResumeFailure` / `mayReplay` / `recoveryPromptFor`); wired into `server/drivers/codex.ts` | PORT | Custom re-implementation.  ACP/`acp/core.ts` keepout skipped (CLAUDE wave-1).  Claude native resume left for a follow-up. |
 | Sep 25, 2026 | `docs/verification/` + `docs/requirements/` | Process documentation: verification discipline and requirements template | PORT | Eight seeded recipes: chat-ui, routines, approvals, ios-companion, packaged-server, quota-fallback, mac-updater, connector-grants; issue #285 example |
 | Sep 24, 2026 | `shared/redact.ts` prefixes | `xai-`, `gsk_`, `hf_` secret key patterns | #598 | BotFleet's idempotence guard kept |
 | Sep 24, 2026 | PR #774 | Chief roster drops live busy state | #617 | Plus BotFleet-only status-capsule timestamp fix |

@@ -33,6 +33,7 @@ import { augmentedPath } from "../env-path.ts";
 import { toolFields } from "../tool-fields.ts";
 import { describeResult } from "../../shared/tool-activity.ts";
 import { classifyError, computeBackoff, RETRY_MAX_ATTEMPTS } from "./retry.ts";
+import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
 import { appendNative } from "./native.ts";
 
 export { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
@@ -48,6 +49,24 @@ class CodexResumeError extends Error {
     this.name = "CodexResumeError";
   }
 }
+
+class CodexRpcError extends Error {
+  code: unknown;
+
+  constructor(error: { code?: unknown; message?: string }) {
+    super(error.message ?? JSON.stringify(error));
+    this.code = error.code;
+  }
+}
+
+function missingNativeCodexThread(error: unknown, cursor: string): boolean {
+  // Codex's local thread/resume rejection, verified with an empty native home.
+  // A generic 404, auth error, timeout or prose mentioning a missing thread is
+  // not evidence that the native history was lost. Unknown versions fail closed.
+  return error instanceof CodexRpcError && error.code === -32600 &&
+    error.message === `no rollout found for thread id ${cursor}`;
+}
+
 
 export interface CodexConfig {
   cli: string;
@@ -521,7 +540,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const pend = rpcPending.get(msg.id);
             if (pend) {
               rpcPending.delete(msg.id);
-              msg.error ? pend.reject(new Error(msg.error.message ?? JSON.stringify(msg.error))) : pend.resolve(msg.result);
+              msg.error ? pend.reject(new CodexRpcError(msg.error)) : pend.resolve(msg.result);
             }
           } else if (msg.id !== undefined && msg.method) {
             handleServerRequest(msg);
@@ -577,12 +596,41 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const cursor = brokered && !(resumeCursor && brokeredThreads.has(resumeCursor)) ? null : resumeCursor;
         let codexThreadId: string | null = null;
         let startedModel: string | null = null;
+        let promptSubmitted = false;
+        let recoveredMissingSession = false;
+        let rebuiltFromReplay = false;
+        let promptText = turn.system ? `${turn.system}\n\n${turn.text}` : turn.text;
         if (cursor) {
           try {
             const resumed = await request("thread/resume", { threadId: cursor });
             codexThreadId = resumed?.thread?.id ?? cursor;
           } catch (error) {
-            throw new CodexResumeError({ cause: error });
+            const failure = classifyResumeFailure({
+              attempted: true,
+              rejected: error instanceof CodexRpcError,
+              promptSubmitted,
+              producedOutput: state.sawStreamDelta,
+            });
+            // Protocol-state gate (mayReplay) — never an error-text regex — decides
+            // whether this turn may be sent again on a fresh native thread.
+            if (
+              recoveredMissingSession ||
+              stopRequested ||
+              state.settled ||
+              !turn.recoveryText?.trim() ||
+              !missingNativeCodexThread(error, cursor) ||
+              !mayReplay(failure)
+            ) {
+              throw new CodexResumeError({ cause: error });
+            }
+            recoveredMissingSession = true;
+            const rebuild = recoveryPromptFor({
+              recoveryText: turn.recoveryText,
+              currentText: turn.text,
+              failure,
+            });
+            rebuiltFromReplay = rebuild.replayed;
+            promptText = turn.system ? `${turn.system}\n\n${rebuild.text}` : rebuild.text;
           }
         }
         if (!codexThreadId) {
@@ -603,10 +651,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // full-auto and replaced rather than trusted.
           if (brokered && codexThreadId) brokeredThreads.add(codexThreadId);
         }
-        emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
+        emit({
+          ...base(threadId, turnId),
+          type: "session.started",
+          sessionId: codexThreadId,
+          model: startedModel ?? turn.model ?? null,
+          ...(rebuiltFromReplay ? { rebuilt: true } : {}),
+        });
+        promptSubmitted = true;
         await request("turn/start", {
           threadId: codexThreadId,
-          input: [{ type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text }],
+          input: [{ type: "text", text: promptText }],
           // Spread, not `effort: turn.effort ?? null`. Probed against
           // codex-cli 0.146.0: null is indistinguishable from an absent key
           // — both leave the thread's current effort alone, emitting no
