@@ -480,7 +480,9 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // OpenAI-compatible, Grok, BoxAgent, and chat-completions drivers
         // report a user-initiated stop as "interrupted" rather than
         // "cancelled" — both are the expected, benign shape of a stop.
-        if (stopReason === "auth_required" || stopReason === "cancelled" || stopReason === "interrupted") {
+        // "stop_sequence" is a normal Anthropic stop reason: the model hit a
+        // configured stop string and terminated cleanly — not an error.
+        if (stopReason === "auth_required" || stopReason === "cancelled" || stopReason === "interrupted" || stopReason === "stop_sequence") {
           sink.addBreadcrumb?.({
             category: "botfleet.turn",
             message: `bot turn failed: ${stopReason}`,
