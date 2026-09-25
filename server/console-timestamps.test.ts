@@ -109,7 +109,7 @@ describe("installTimestampedConsole", () => {
 
   it("covers log, info, warn, and error", () => {
     setTTY(false);
-    const calls = { log: [], info: [], warn: [], error: [] } satisfies ConsoleCallLog;
+    const calls: ConsoleCallLog = { log: [], info: [], warn: [], error: [] };
     console.log = (...args: unknown[]) => {
       calls.log.push(args);
     };
