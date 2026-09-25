@@ -37,6 +37,10 @@ export interface TelemetryDeliveryResult {
   acknowledged: boolean;
   rejected: number;
   terminalStatus?: TerminalHttpStatus;
+  /** Runs only after the outbox has durably recorded this result.  If the
+   * pass's persist fails and rolls back, it is dropped: the batch will be
+   * resent, and counting it now would count it twice. */
+  onPersisted?: () => void;
 }
 
 export interface TelemetryOutboxStatus {
@@ -395,12 +399,33 @@ export class UsageTelemetryOutbox {
   private async flushLoop(): Promise<void> {
     const snapshot = structuredClone(this.state);
     let mutated = false;
+    // Logs, diagnostics and counters that describe a state change in this
+    // pass.  They run only once that change is on disk; a rollback drops
+    // them, so a failed persist cannot double-count or leave a log line
+    // for a dead-letter/quarantine that never happened.
+    let afterPersist: Array<() => void> = [];
+    const runAfterPersist = (): void => {
+      const effects = afterPersist;
+      afterPersist = [];
+      for (const effect of effects) {
+        try {
+          effect();
+        } catch {
+          // A log or counter must never interrupt the queue.
+        }
+      }
+    };
     const persistPass = (): boolean => {
-      if (!mutated) return true;
-      if (this.persist()) {
-        mutated = false;
+      if (!mutated) {
+        runAfterPersist();
         return true;
       }
+      if (this.persist()) {
+        mutated = false;
+        runAfterPersist();
+        return true;
+      }
+      afterPersist = [];
       // `persist()` just incremented `persistenceFailures` on `this.state`.
       // That counter records a real event and must survive the rollback
       // below even though everything else this pass did gets reverted.
@@ -435,7 +460,8 @@ export class UsageTelemetryOutbox {
         for (const entry of mismatched) this.pendingDurability.delete(entry.queueId);
         this.state.droppedBatches += mismatched.length;
         this.state.destinationChangeDroppedBatches += mismatched.length;
-        this.diagnostic("destination_changed", mismatched.length);
+        const destinationDropped = mismatched.length;
+        afterPersist.push(() => this.diagnostic("destination_changed", destinationDropped));
         mutated = true;
         continue;
       }
@@ -461,7 +487,8 @@ export class UsageTelemetryOutbox {
         this.pendingDurability.delete(entry.queueId);
         const rejected = Math.max(0, Math.floor(result.rejected || 0));
         this.state.rejectedEvents += rejected;
-        if (rejected > 0) this.diagnostic("events_rejected", rejected);
+        if (rejected > 0) afterPersist.push(() => this.diagnostic("events_rejected", rejected));
+        if (result.onPersisted) afterPersist.push(result.onPersisted);
         mutated = true;
         continue;
       }
@@ -482,11 +509,14 @@ export class UsageTelemetryOutbox {
           evicted = true;
         }
         mutated = true;
-        this.diagnostic("terminal_quarantined", 1);
-        if (evicted) this.diagnostic("terminal_quarantine_evicted", 1);
-        this.log(
-          `dropping batch ${shortId(quarantinedEntry.queueId)} after terminal HTTP ${result.terminalStatus}; will not retry`,
-        );
+        const terminalStatus = result.terminalStatus;
+        afterPersist.push(() => {
+          this.diagnostic("terminal_quarantined", 1);
+          if (evicted) this.diagnostic("terminal_quarantine_evicted", 1);
+          this.log(
+            `dropping batch ${shortId(quarantinedEntry.queueId)} after terminal HTTP ${terminalStatus}; will not retry`,
+          );
+        });
         continue;
       }
       const liveEntry = this.state.queue[liveIndex];
@@ -507,11 +537,14 @@ export class UsageTelemetryOutbox {
           evicted = true;
         }
         mutated = true;
-        this.diagnostic("dead_lettered", 1);
-        if (evicted) this.diagnostic("dead_letter_evicted", 1);
-        this.log(
-          `parking batch ${shortId(liveEntry.queueId)} in dead-letter after ${liveEntry.attempts} failed attempts; trying newer batches`,
-        );
+        const parkedAttempts = liveEntry.attempts;
+        afterPersist.push(() => {
+          this.diagnostic("dead_lettered", 1);
+          if (evicted) this.diagnostic("dead_letter_evicted", 1);
+          this.log(
+            `parking batch ${shortId(liveEntry.queueId)} in dead-letter after ${parkedAttempts} failed attempts; trying newer batches`,
+          );
+        });
         continue;
       }
       const backoff = Math.min(
