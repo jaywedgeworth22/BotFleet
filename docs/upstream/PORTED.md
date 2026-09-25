@@ -13,3 +13,4 @@ Format: one line per port, newest last.
 | Sep 24, 2026 | `server/message-db.ts` `readThreadTail` | `LIMIT`-ed thread tail read | #602 | Feeds the thread-cache LRU |
 | Sep 24, 2026 | PRs #1756, #1761 `server/connector-verdict.ts` | Per-bot Composio tool grants on the relay | #615 | `tools/list` filter added |
 | Sep 24, 2026 | PR #1280 `server/thread-retention.ts` (shape) | Orphan and age sweep for transcript logs | #599 | BotFleet code; upstream's safety rule adopted |
+| Sep 25, 2026 | PRs #1758, #1031 `server/system-prompt.ts`, `server/drivers/prompt-split.ts` | Stable/volatile system prompt split with per-session receipts; HTTP drivers carry the volatile half on the newest user message | #635 | Codex and ACP engines keep the joined prompt; `promptBytes` flattened for the strict v2 telemetry schema |
