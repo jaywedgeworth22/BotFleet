@@ -1,0 +1,27 @@
+name: E2E smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@10.33.0 --activate
+      # --no-frozen-lockfile: @playwright/test is a new devDependency not yet
+      # recorded in pnpm-lock.yaml (lockfile refresh left as a follow-up).
+      - run: pnpm install --no-frozen-lockfile --no-audit --no-fund
+      - run: pnpm exec vite build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
