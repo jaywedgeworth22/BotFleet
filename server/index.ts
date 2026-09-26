@@ -12399,11 +12399,26 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     watchdog.stop();
     stopTranscriptSweeps();
     stopOrphanTranscriptSweeps();
-    routines?.stop();
+    // A flush that throws (disk full, data dir gone) must not skip the rest
+    // of shutdown — above all bus.flush() below — so each one is guarded.
+    const flushOnShutdown = (label: string, flush: () => void) => {
+      try {
+        flush();
+      } catch (error) {
+        console.error(`shutdown: ${label} flush failed`, error);
+      }
+    };
+    flushOnShutdown("routines", () => routines?.stop());
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();
     infisical.stop();
     webhookIngress?.server.close();
+    // store.ts and webhooks.ts now coalesce their whole-file JSON writes
+    // behind a short debounce (routines.ts does too, but routines?.stop()
+    // above already flushes it); catch up the pending write here or the
+    // last roster/webhook mutation before shutdown is silently lost.
+    flushOnShutdown("bots.json", () => store.flushBotsNow());
+    flushOnShutdown("webhooks.json", () => webhooks.flushNow());
     // Cancel the live child turns before tearing their engines down, so a CLI
     // gets an interrupt it understands rather than having its process tree
     // pulled out from under it mid-tool.
@@ -12437,6 +12452,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
           })),
         );
       });
-    void Promise.race([drainedAndSettled, graceExpired]).finally(() => process.exit(0));
+    void Promise.race([drainedAndSettled, graceExpired]).finally(() => {
+      // The interrupts above settle their turns after the first flush, and
+      // those roster/webhook writes are debounced now; land them before exit.
+      flushOnShutdown("bots.json", () => store.flushBotsNow());
+      flushOnShutdown("webhooks.json", () => webhooks.flushNow());
+      process.exit(0);
+    });
   });
 }

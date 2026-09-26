@@ -608,6 +608,8 @@ export interface InstalledPackageMetadata {
 
 const BOTS_FILE = join(DATA_DIR, "bots.json");
 const GROUPS_FILE = join(DATA_DIR, "groups.json");
+/** How long a burst of saveBots() calls coalesces into one atomic write. */
+const BOTS_SAVE_DEBOUNCE_MS = 250;
 const messagesFile = (threadId: string) => join(DATA_DIR, `messages-${threadId}.json`);
 
 const COLORS: BotColor[] = [
@@ -795,6 +797,13 @@ export class Store {
   /** true when bots.json existed but did not parse — do not treat an empty
    * in-memory roster as "every room member was deleted". */
   private botsLoadFailed = false;
+  /** Coalesces bursts of saveBots() calls — a single startTurn used to fire
+   * at least three full-roster fsynced rewrites — into one atomic write.
+   * Fires a fixed delay after the first dirty call in a burst rather than
+   * resetting per call, so sustained activity still flushes on a bounded
+   * cadence instead of being starved. */
+  private saveBotsTimer: ReturnType<typeof setTimeout> | null = null;
+  private botsDirty = false;
   /** Thread ids sleeping on the until-activity sentinel.  `appendMessage`
    * is the hot path every turn runs through, so it asks this rather than
    * walking the roster for a snooze that is almost never there. */
@@ -963,7 +972,44 @@ export class Store {
   }
 
   private saveBots() {
-    writeFileAtomic(BOTS_FILE, JSON.stringify(this.bots, null, 2));
+    this.botsDirty = true;
+    if (this.saveBotsTimer) return;
+    this.saveBotsTimer = setTimeout(() => this.flushBotsFromTimer(), BOTS_SAVE_DEBOUNCE_MS);
+    this.saveBotsTimer.unref?.();
+  }
+
+  /** The debounce timer's flush.  A throw here would be an uncaught exception
+   * in a timer callback, so a failed write is logged instead; `botsDirty`
+   * stays set, and the next saveBots() or the shutdown flush retries it. */
+  private flushBotsFromTimer(): void {
+    this.saveBotsTimer = null;
+    try {
+      this.flushBotsNow();
+    } catch (error) {
+      console.error("store: debounced bots.json save failed; the next save or shutdown retries it", error);
+    }
+  }
+
+  /** Synchronous, immediate write-through — used by patchBot() for the
+   * inflightThreadId crash marker (unlike busy/activity, it survives a
+   * restart and must be durable before a turn dispatches), by tests
+   * asserting on-disk state right after a mutation (including a fresh
+   * `new Store` against the same files, which reads whatever is on disk
+   * right now), and by the shutdown path so a pending coalesced save is
+   * never lost when the process exits. A no-op when nothing is dirty.
+   * `botsDirty` is cleared only after the write succeeds, so a failed write
+   * throws with the pending change still marked for the next try. */
+  flushBotsNow(): void {
+    if (this.saveBotsTimer) {
+      clearTimeout(this.saveBotsTimer);
+      this.saveBotsTimer = null;
+    }
+    if (!this.botsDirty) return;
+    // busy/activity never survive a restart (reset on load above) and
+    // change on every turn transition, so they are excluded here rather
+    // than debounced — nothing to coalesce for state nobody reads back.
+    writeFileAtomic(BOTS_FILE, JSON.stringify(this.bots.map(({ busy, activity, ...bot }) => bot), null, 2));
+    this.botsDirty = false;
   }
 
   private saveGroups() {
@@ -1731,12 +1777,22 @@ export class Store {
     }
     Object.assign(bot, patch);
     this.saveBots();
+    if ("inflightThreadId" in patch) {
+      // Durable crash marker (see the field's own doc comment): unlike
+      // busy/activity it survives a restart, and boot recovery depends on it
+      // being on disk before a turn actually dispatches — a debounced write
+      // could lose it to a crash in the gap. Flush immediately rather than
+      // let it coalesce with the general roster debounce.
+      this.flushBotsNow();
+    }
     this.emit({ type: "bot", botId: id });
     return bot;
   }
 
   /** The one way runtime state changes. Sets `activity` and derives `busy`
-   * from it, so a reader that only knows busy sees the same truth. */
+   * from it, so a reader that only knows busy sees the same truth. Neither
+   * field is persisted (both reset to idle on load — see the constructor),
+   * so an activity blink never touches disk. */
   setActivity(botId: string, activity: BotActivity): BotRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
@@ -1745,7 +1801,6 @@ export class Store {
     bot.activity = activity;
     bot.busy = busy;
     bot.activityStartedAt = Date.now();
-    this.saveBots();
     this.emit({ type: "bot", botId });
     return bot;
   }
