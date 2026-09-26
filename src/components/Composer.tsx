@@ -439,6 +439,9 @@ export function Composer({
 
   useEffect(() => {
     const onGlobalPaste = (e: ClipboardEvent) => {
+      // Skip other editables (Search, Settings, CommandPalette, etc.) so file paste stays local.
+      // Composer textarea (inputRef) and pastes outside any text field still run file intake;
+      // filesFromClipboard returns [] for text-only clips, so text paste stays in textarea onPaste.
       const target = e.target as HTMLElement | null;
       if (
         target &&
