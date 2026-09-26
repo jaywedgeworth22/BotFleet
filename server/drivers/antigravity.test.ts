@@ -543,10 +543,10 @@ describe("Antigravity turn deadlines (fake CLI)", () => {
     expect((error as any).message).toBe("Antigravity: the turn ran past its 2 s limit and was stopped.");
   }, 30_000);
 
-  it("never relaunches agy's own \"timeout waiting for response\"", async () => {
-    // Transient to the shared classifier, and that is exactly the trap: the
-    // provider already hung once on this prompt, and three relaunches used
-    // to hold the bot for up to half an hour.
+  it("settles an ERROR result carrying agy's timeout text once, without a relaunch", async () => {
+    // An ERROR `result` settles directly and never reaches maybeRetry; this
+    // pins that the timeout text keeps that shape.  The relaunch guard for a
+    // timeout on the exit path is the next test.
     process.env.FAKE_AGY_RETRY_SCALE = "0.001";
     const scratch = mkdtempSync(join(tmpdir(), "omb-agy-timeout-"));
     try {
@@ -566,6 +566,50 @@ describe("Antigravity turn deadlines (fake CLI)", () => {
       expect((error as any).message).toBe("Antigravity: timeout waiting for response");
     } finally {
       rmSync(scratch, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("never relaunches a child that exits with agy's own \"timeout waiting for response\"", async () => {
+    // Transient to the shared classifier, and that is exactly the trap: the
+    // provider already hung once on this prompt, and three relaunches used
+    // to hold the bot for up to half an hour.  An exit with no `result` is
+    // the only path that reaches maybeRetry, so this is the one that proves
+    // the timeout guard there.
+    process.env.FAKE_AGY_RETRY_SCALE = "0.001";
+    const { instance, recorder } = await create(
+      { FAKE_AGY_STDERR: "agy: timeout waiting for response\n", FAKE_AGY_DIE: "1" },
+      {},
+    );
+    await instance.adapter.sendTurn({ threadId: "t-agy-exit-timeout", text: "hi" });
+    const done = await recorder.until((e) => e.type === "turn.completed", 20_000);
+    expect(done).toMatchObject({ ok: false, stopReason: "exit_before_result" });
+    // give a (wrong) relaunch time to show itself before counting
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
+    expect(recorder.events.filter((e) => e.type === "turn.started")).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    const error = recorder.events.find((e) => e.type === "runtime.error");
+    expect((error as any).message).toMatch(/^agy exited 1 before result: .*timeout waiting for response/);
+  }, 30_000);
+
+  it("does not count time queued for the mount lease against the turn's ceiling", async () => {
+    // A turn queued behind a mounting turn used to arrive with its ceiling
+    // already spent, and was killed on the next tick as prompt_timeout.
+    const home = mkdtempSync(join(tmpdir(), "omb-agy-lease-clock-"));
+    try {
+      const { instance, recorder } = await create({ HOME: home }, { promptTimeoutMs: 2_000, promptIdleMs: 30_000 });
+      const releaseWriter = await acquireAntigravityComputerMcpLease(antigravityMcpConfigPath({ HOME: home }), true);
+      const sent = instance.adapter.sendTurn({ threadId: "t-agy-lease-queue", text: "hi" });
+      // queued for longer than the whole ceiling
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(recorder.events.some((e) => e.type === "turn.started")).toBe(false);
+      releaseWriter();
+      await sent;
+      const done = await recorder.until((e) => e.type === "turn.completed", 20_000);
+      expect(done).toMatchObject({ ok: true });
+      expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   }, 30_000);
 

@@ -219,8 +219,8 @@ export interface AntigravityComputerMcpServer {
 // What changed is who has to wait.  The lease used to be one module-global
 // promise taken unconditionally, so a turn with NO computer at all — the
 // overwhelming majority — still serialized behind whatever else was running,
-// for as long as that turn lasted — then up to 11 minutes.  Two bots on
-// Antigravity could not answer at the same time.
+// for as long as that other turn lasted, which could be up to 11 minutes.
+// Two bots on Antigravity could not answer at the same time.
 //
 // It is a reader/writer lease now, per config path:
 //   • a turn that mounts nothing and has nothing of ours to strip takes the
@@ -242,8 +242,9 @@ export interface AntigravityComputerMcpServer {
 // TODO(DR4): a MOUNTING turn still holds the file for its child's whole
 // lifetime — up to the turn's hard ceiling (`promptTimeoutMs`, 11 minutes by
 // default), though a silent child is now stopped by the idle windows long
-// before that and a timeout is never relaunched.  Shortening that needs one measured fact nobody has yet: WHEN
-// does `agy` read `~/.gemini/config/mcp_config.json`?  If it reads once at
+// before that and a timeout is never relaunched.  Shortening that needs one
+// measured fact nobody has yet: WHEN does `agy` read
+// `~/.gemini/config/mcp_config.json`?  If it reads once at
 // startup, the exclusive hold can end at the init event and mounting turns
 // would stop excluding each other for minutes.  If it re-reads lazily — say,
 // the first time the model calls a computer tool — an early release would
@@ -531,8 +532,12 @@ function decodeWindowMs(value: unknown): number | undefined {
 /** "3 minutes" for a whole number of minutes, "N s" otherwise (short test
  *  windows included).  Only ever used in the text a person reads. */
 function describeWindow(ms: number): string {
-  const minutes = ms / 60_000;
-  if (Number.isInteger(minutes) && minutes >= 1) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  // A minute or more reads in minutes ("about 2 minutes", not "132 s").
+  if (ms >= 60_000) {
+    const minutes = Math.round(ms / 60_000);
+    const about = ms % 60_000 === 0 ? "" : "about ";
+    return `${about}${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
   return `${Math.max(1, Math.round(ms / 1000))} s`;
 }
 
@@ -669,8 +674,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
     // Retry bookkeeping lives PER THREAD, not per sendTurn call: a relaunch
     // re-enters sendTurn, and the budget has to survive that hop or every
     // attempt would look like the first.  claude.ts owns the same shape.
-    // `startedAt` is when the LOGICAL turn began, so the hard ceiling covers
-    // every relaunch together instead of restarting with each one.
+    // `startedAt` is when the LOGICAL turn's first child launched, so the hard
+    // ceiling covers every relaunch together instead of restarting with each
+    // one.  Time spent queued for the mount lease is not part of it.
     const retryState = new Map<string, { attempt: number; cancelled: boolean; startedAt: number }>();
     // A relaunch waits real seconds; the fake agy in antigravity.test.ts
     // scales that down.  The `turn.retrying` event still reports the REAL
@@ -762,6 +768,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         mkdirSync(workspace, { recursive: true });
       } catch (error) {
         pending.delete(threadId);
+        // nothing launched, so nothing may outlive this call — a stale entry
+        // would hand its start time to the thread's next turn
+        retryState.delete(threadId);
         throw error;
       }
       const cwd = turn.cwd ?? workspace;
@@ -857,6 +866,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         settle(false, "disposed");
         return { turnId };
       }
+      // The ceiling's clock starts here, once the lease is held, not when
+      // sendTurn was entered: a turn queued behind another mounting turn must
+      // not arrive with its 11 minutes already spent.  A relaunch keeps the
+      // first launch's start, so the ceiling still spans every attempt.
+      if (retry.attempt === 0) retry.startedAt = Date.now();
       let restoreMcp = () => {};
       try {
         restoreMcp = ensureAntigravityMcp(mcpServers, env);
@@ -1137,12 +1151,16 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                   title: payload.tool_name,
                   ...toolFields(payload.tool_name, payload.tool_input ?? payload.input ?? payload.args),
                 });
-              } else if (payload.state === "DONE") {
+              } else {
+                // Any state other than ACTIVE means the step is no longer
+                // running (CANCELED included), so the longer tool window
+                // must not outlive it.
                 activeTools.delete(itemId);
-                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool", itemId, ok: true });
-              } else if (payload.state === "ERROR") {
-                activeTools.delete(itemId);
-                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool", itemId, ok: false });
+                if (payload.state === "DONE") {
+                  emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool", itemId, ok: true });
+                } else if (payload.state === "ERROR") {
+                  emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool", itemId, ok: false });
+                }
               }
             } else if (payload.step_type === "agent_response") {
               if (typeof payload.text_delta === "string" && payload.text_delta.length > 0) {
@@ -1243,6 +1261,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // Said once the window is 80 % spent, on the same `notice` chip the
       // host-control warning uses, so a stop never arrives unannounced.
       let noticeCount = 0;
+      // One idle warning per turn: a long quiet spell that then resumes must
+      // not leave a fresh chip in the transcript every time it recurs.
+      let idleWarned = false;
       const deadlineNotice = (title: string) => {
         if (settled || retryScheduled) return;
         const itemId = `${turnId}:deadline-notice-${++noticeCount}`;
@@ -1250,7 +1271,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool", itemId, ok: true });
       };
       const tripDeadline = (stopReason: "prompt_stall" | "prompt_timeout", message: string) => {
-        if (settled || retryScheduled) return;
+        // A person already stopped this turn: the child's close settles it
+        // as interrupted, and a deadline firing in that gap is not a stall.
+        if (settled || retryScheduled || retry.cancelled) return;
         emit({ ...base(threadId, turnId), type: "runtime.error", message });
         stop();
         // prompt_stall and prompt_timeout are the stop reasons index.ts
@@ -1265,14 +1288,15 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         const toolRunning = activeTools.size > 0;
         const windowMs = toolRunning ? toolIdleMs : idleMs;
         const warnMs = Math.round(windowMs * DEADLINE_WARN_FRACTION);
-        idleWarnTimer = setTimeout(
-          () =>
+        if (!idleWarned) {
+          idleWarnTimer = setTimeout(() => {
+            idleWarned = true;
             deadlineNotice(
               `Antigravity has gone quiet${toolRunning ? " while a tool runs" : ""}.  If nothing arrives in the next ${describeWindow(windowMs - warnMs)}, BotFleet stops the turn as stalled.`,
-            ),
-          warnMs,
-        );
-        idleWarnTimer.unref?.();
+            );
+          }, warnMs);
+          idleWarnTimer.unref?.();
+        }
         idleTimer = setTimeout(
           () =>
             tripDeadline(
@@ -1342,9 +1366,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
       // The turn must end when the child does, however it goes: a clean exit
       // with no `result`, a crash, a kill, or a wedged process the idle or
-      // ceiling deadline reaps. Anything that leaves this unsettled leaves the bot busy with
-      // nothing on screen — the stuck-forever bug, of which a silently
-      // dropped quota was only the trigger.
+      // ceiling deadline reaps.  Anything that leaves this unsettled leaves
+      // the bot busy with nothing on screen — the stuck-forever bug, of which
+      // a silently dropped quota was only the trigger.
       let exitDrain: ReturnType<typeof setTimeout> | undefined;
       const finishOnChildGone = (code: number | null, signal: NodeJS.Signals | null) => {
         childClosed = true;
@@ -1392,6 +1416,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         stop: () => {
           retry.cancelled = true;
           retryAbort.abort();
+          clearDeadlines();
           stop();
         },
         turnId,
