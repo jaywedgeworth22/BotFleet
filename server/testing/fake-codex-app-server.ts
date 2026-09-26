@@ -7,8 +7,11 @@
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | windows-command |
 //                     mcp-elicitation | logged-in-stdout | logged-out | unauthorized |
 //                     resume-unauthorized | resume-transient | turn-failed-quota
-//                     (turn/start is accepted, then turn/completed reports
-//                     status "failed" with a usage-limit message)
+//                     (turn/start is accepted, then an `error` notification
+//                     and a turn/completed with status "failed" carry the
+//                     same usage-limit message) | turn-interrupted
+//                     (turn/completed reports the protocol's own status
+//                     "interrupted" with no error)
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
@@ -200,9 +203,16 @@ process.stdin.on("data", (chunk) => {
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
         if (mode === "turn-failed-quota") {
           dump();
-          notify("turn/completed", {
-            turn: { status: "failed", error: { message: "You've hit your usage limit for this plan.  Resets at 3pm." } },
-          });
+          // the real app-server announces the failure once as `error`, then
+          // again inside turn/completed
+          const message = "You've hit your usage limit for this plan.  Resets at 3pm.";
+          notify("error", { message });
+          notify("turn/completed", { turn: { status: "failed", error: { message } } });
+          break;
+        }
+        if (mode === "turn-interrupted") {
+          dump();
+          notify("turn/completed", { turn: { status: "interrupted" } });
           break;
         }
         const command = mode === "windows-command"

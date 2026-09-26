@@ -653,6 +653,21 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(instance.adapter.hasSession("t-int")).toBe(false);
   });
 
+  it("a failed result the CLI writes on its way out of a Stop still settles as interrupted", async () => {
+    // The real CLI can report error_during_execution on the SIGTERM before
+    // it exits; that frame used to settle the turn as a failure with a
+    // runtime.error and the close handler's Stop branch never ran.
+    await create("fail-on-stop");
+    await instance.adapter.sendTurn({ threadId: "t-int-result", text: "go" });
+    await recorder.until((e) => e.type === "session.started");
+
+    await instance.adapter.interruptTurn("t-int-result");
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "interrupted" });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+  });
+
   it("interrupt on a retained process settles THAT turn as interrupted with no runtime.error", async () => {
     // The spawn-time close handler used to read turn 1's retry flag, so a
     // Stop during turn 2 on the same process was reported as a crash.

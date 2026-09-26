@@ -695,9 +695,20 @@ describe("CodexDriver turns (fake app-server)", () => {
     await instance.adapter.sendTurn({ threadId: "t-failed-quota", text: "hi" });
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: false, stopReason: "error:quota_or_region_restriction" });
-    const error = recorder.events.find((e) => e.type === "runtime.error") as { message: string };
-    expect(error.message).toContain("usage limit");
+    const errors = recorder.events.filter((e) => e.type === "runtime.error") as { message: string }[];
+    expect(errors).toHaveLength(1); // the `error` notification and turn/completed carry the same text
+    expect(errors[0].message).toContain("usage limit");
     expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
+  });
+
+  it("settles the protocol's own interrupted status without a runtime.error", async () => {
+    // turn/completed {status:"interrupted"} is the app-server reporting a
+    // stop, not a failure; an error chip there would page Sentry on it.
+    await create({ mode: "turn-interrupted" });
+    await instance.adapter.sendTurn({ threadId: "t-interrupted", text: "hi" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "interrupted" });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
   });
 
   it("a missing binary surfaces as a failed turn, and snapshot says unavailable", async () => {

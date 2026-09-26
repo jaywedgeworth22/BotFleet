@@ -1057,6 +1057,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               settle(true, o.stop_reason ?? o.terminal_reason ?? null, o.total_cost_usd ?? null, usage);
               break;
             }
+            // A failed result the CLI manages to write on its way out of a
+            // Stop (error_during_execution on SIGTERM) is still the Stop:
+            // no runtime.error, and the reason the harness reads as one.
+            if (session.turn?.retry.cancelled) {
+              settle(false, "interrupted", o.total_cost_usd ?? null, usage);
+              break;
+            }
             const failure = describeFailedResult(o);
             emit({
               ...base(threadId, currentTurnId()),

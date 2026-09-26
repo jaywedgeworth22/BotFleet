@@ -2,10 +2,20 @@
 // whatever the CLI started (its MCP servers). That guarantee is the whole
 // contract of killCliTree, so it is what gets tested: a grandchild must not
 // survive the kill on either platform.
-import { spawn } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { killCliTree, killCliTreeHard, spawnCli } from "./procs.ts";
+
+// execFile is only intercepted for the Windows describe below; every other
+// call passes straight through, so the POSIX trees are still real processes.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: vi.fn((...args: Parameters<typeof actual.execFile>) => (actual.execFile as (...a: unknown[]) => unknown)(...args)),
+  };
+});
 
 const IDLE = "setInterval(() => {}, 1000)";
 /** Idles and shrugs off SIGTERM, like an MCP proxy mid-request.  Says
@@ -113,13 +123,19 @@ const spawnEnv = () => {
 
 /** Spawns a detached group leader that starts `grandchildScript`, prints
  *  the grandchild's pid once it has said "ready", then runs `afterSpawn`. */
+/** A leader that spawns `grandchildScript`, runs `afterSpawn` once the
+ *  grandchild says ready, and only then reports the grandchild's pid: the
+ *  test's kill follows the pid, so whatever `afterSpawn` installs (a SIGTERM
+ *  handler) is in place before the signal can land. */
 function spawnLeader(grandchildScript: string, afterSpawn: string) {
   return spawn(
     process.execPath,
     [
       "-e",
       `const c = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: ["ignore", "pipe", "ignore"] });` +
-        `c.stdout.once("data", () => { console.log(c.pid); ${afterSpawn} });`,
+        // the leading newline keeps the pid on its own line after anything
+        // afterSpawn wrote (STUBBORN's "ready" has no newline of its own)
+        `c.stdout.once("data", () => { ${afterSpawn}; console.log("\\n" + c.pid); });`,
     ],
     { stdio: ["ignore", "pipe", "ignore"], detached: true, env: spawnEnv() },
   );
@@ -205,4 +221,57 @@ describe.skipIf(process.platform === "win32")("killCliTreeHard", () => {
       reap(grandchild);
     }
   }, 30_000);
+});
+
+// Windows has no process groups; the hard kill goes through `taskkill /T /F`.
+// The platform is stubbed and taskkill intercepted, so this runs everywhere
+// and covers the crashed-leader case that a real win32 CI would otherwise
+// be the only place to catch.
+describe("killCliTreeHard on Windows", () => {
+  const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const taskkill = vi.mocked(execFile);
+  type TaskkillCallback = (err: Error | null, stdout: string, stderr: string) => void;
+  const fakeChild = (exited: boolean) =>
+    ({ pid: 4242, exitCode: exited ? 1 : null, signalCode: null, kill: vi.fn(() => true) }) as unknown as ChildProcess & {
+      kill: ReturnType<typeof vi.fn>;
+    };
+  const taskkillArgs = () => taskkill.mock.calls.map((c) => [c[0], c[1]]);
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    taskkill.mockClear();
+  });
+  afterEach(() => {
+    Object.defineProperty(process, "platform", realPlatform);
+  });
+
+  it("still runs taskkill /T after the leader exited, where the plain kill gives up", () => {
+    // A crashed claude.exe leaves its MCP proxies behind just as on POSIX;
+    // only the tree walk can reach them once the leader's pid is dead.
+    const child = fakeChild(true);
+    taskkill.mockImplementationOnce(((_cmd: string, _args: string[], _opts: unknown, cb: TaskkillCallback) => {
+      cb(Object.assign(new Error("not found"), { code: 128 }), "", 'ERROR: The process "4242" not found.');
+      return undefined as never;
+    }) as never);
+
+    killCliTree(child);
+    expect(taskkillArgs()).toEqual([]);
+
+    killCliTreeHard(child);
+    expect(taskkillArgs()).toEqual([["taskkill", ["/PID", "4242", "/T", "/F"]]]);
+    // "not found" means the tree is gone; nothing is left to fall back on
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("falls back to killing a live leader when taskkill itself fails", () => {
+    const child = fakeChild(false);
+    taskkill.mockImplementationOnce(((_cmd: string, _args: string[], _opts: unknown, cb: TaskkillCallback) => {
+      cb(Object.assign(new Error("spawn taskkill ENOENT"), { code: "ENOENT" }), "", "");
+      return undefined as never;
+    }) as never);
+
+    killCliTreeHard(child);
+    expect(taskkillArgs()).toEqual([["taskkill", ["/PID", "4242", "/T", "/F"]]]);
+    expect(child.kill).toHaveBeenCalledTimes(1);
+  });
 });

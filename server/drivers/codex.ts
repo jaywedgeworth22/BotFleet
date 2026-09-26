@@ -15,6 +15,7 @@ import { stripWorkspaceCredentialEnv } from "../config.ts";
 import { computerProxyEnv } from "../container-computer.ts";
 import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { describeSpawnFailure, execCli, killCliTreeHard, spawnCli } from "../procs.ts";
+import { redactSecretsInText } from "../redact.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 
 import type {
@@ -60,10 +61,13 @@ class CodexResumeError extends Error {
 export function describeFailedTurn(t: { status?: unknown; error?: { message?: unknown } | null }): {
   stopReason: string;
   message: string;
+  /** The app-server's own text, redacted; the `error` notification that
+   *  usually precedes turn/completed carries the same one. */
+  text: string;
   setup: boolean;
 } {
   const raw = t.error?.message ?? t.status ?? "failed";
-  const text = String(raw).trim().slice(0, 500) || "failed";
+  const text = redactSecretsInText(String(raw)).trim().slice(0, 500) || "failed";
   const verdict = classifyError({ text });
   const stopReason =
     verdict.reason === "quota" || verdict.reason === "rate_limited"
@@ -73,7 +77,7 @@ export function describeFailedTurn(t: { status?: unknown; error?: { message?: un
         : verdict.reason === "overloaded" || verdict.reason === "server_error"
           ? "error:upstream_outage"
           : text;
-  return { stopReason, message: `codex turn failed: ${text}`, setup: verdict.reason === "auth" };
+  return { stopReason, message: `codex turn failed: ${text}`, text, setup: verdict.reason === "auth" };
 }
 
 class CodexRpcError extends Error {
@@ -289,6 +293,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         });
 
       let abandoned = false;
+      // The app-server's `error` notification normally precedes a failed
+      // turn/completed with the same message; remembered so the turn shows
+      // one error chip, not two.
+      let lastNotifiedError: string | null = null;
       const state = {
         settled: false,
         lastText: "",
@@ -542,13 +550,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               settle(true, null);
               break;
             }
+            // The protocol's own "interrupted" (and any status that lands
+            // after Stop asked for the exit) is the requested outcome, not
+            // a failure: no runtime.error to page on.
+            if (t.status === "interrupted" || stopRequested) {
+              settle(false, "interrupted");
+              break;
+            }
             const failure = describeFailedTurn(t);
-            emit({
-              ...base(threadId, turnId),
-              type: "runtime.error",
-              message: failure.message,
-              ...(failure.setup ? { setup: true } : {}),
-            });
+            if (lastNotifiedError !== failure.text) {
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: failure.message,
+                ...(failure.setup ? { setup: true } : {}),
+              });
+            }
             settle(false, failure.stopReason);
             break;
           }
@@ -557,7 +574,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             // {error:{message}} — surface either (agentcal armor)
             {
               const message = p.message ?? p.error?.message;
-              if (message) emit({ ...base(threadId, turnId), type: "runtime.error", message: String(message).slice(0, 400) });
+              if (message) {
+                lastNotifiedError = redactSecretsInText(String(message)).trim().slice(0, 500);
+                emit({ ...base(threadId, turnId), type: "runtime.error", message: lastNotifiedError.slice(0, 400) });
+              }
             }
             break;
         }
@@ -725,6 +745,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         });
         promptAccepted = true;
       } catch (e) {
+        // Stop's kill can make a pending RPC reject before the close event
+        // lands; that is still the requested outcome, not an rpc_error.
+        if (stopRequested) {
+          settle(false, "interrupted");
+          return;
+        }
         const resumeFailure = e instanceof CodexResumeError;
         const failure = resumeFailure && e.cause !== undefined
           ? e.cause instanceof Error

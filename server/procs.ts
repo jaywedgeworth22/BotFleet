@@ -163,13 +163,25 @@ function signalCliGroup(child: ChildProcess, pid: number, signal: NodeJS.Signals
  *  alive in the group it led, and a Stop that only checks `child.exitCode`
  *  walks past them.  The group outlives its leader on POSIX, so signalling
  *  `-pid` still reaches every survivor; ESRCH means the group is gone and
- *  there is nothing to do.  Windows has no process groups: taskkill /T /F is
- *  already forceful, so the plain kill is reused there. */
+ *  there is nothing to do.  Windows has no process groups: taskkill /T /F
+ *  walks the tree by parent pid and is already forceful, but it must run
+ *  even when the leader has exited (the plain kill's guard skips it then),
+ *  because a crashed claude.exe leaves its MCP proxies behind just the same. */
 export function killCliTreeHard(child: ChildProcess, graceMs = 2_000): void {
   const pid = child.pid;
   if (!pid) return;
   if (process.platform === "win32") {
-    killCliTree(child);
+    execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, (err) => {
+      // "not found" here means the whole tree is already gone.  Any other
+      // failure (taskkill missing, lookup failed) still leaves the leader
+      // to stop, when it is alive.
+      if (!err || child.exitCode !== null || child.signalCode !== null) return;
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+    });
     return;
   }
   if (!signalCliGroup(child, pid, "SIGTERM")) return;

@@ -5,6 +5,8 @@
 // the real thing misbehaves:
 //
 //   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed | quota
+//                      | fail-on-stop (hangs, then answers SIGTERM with a
+//                        failed error_during_execution result before exiting)
 //                      | stream (partial-message text deltas before the
 //                        whole-message frame, plus subagent noise to drop)
 //                      | api-error (a real Anthropic API failure shaped like
@@ -193,6 +195,26 @@ const playTurn = (prompt: JsonValue) => {
     // stay alive until killed — lets tests exercise interrupt + the
     // permission broker while a turn is officially in flight
     setInterval(() => {}, 1_000);
+    return;
+  }
+
+  if (mode === "fail-on-stop") {
+    // like hang, but SIGTERM is answered with a failed result frame before
+    // exiting, the way the real CLI reports error_during_execution when a
+    // Stop lands mid-request
+    setInterval(() => {}, 1_000);
+    process.on("SIGTERM", () => {
+      out({
+        type: "result",
+        is_error: true,
+        subtype: "error_during_execution",
+        terminal_reason: "error_during_execution",
+        num_turns: 1,
+        total_cost_usd: 0,
+        result: "Request was aborted.",
+      });
+      setTimeout(() => process.exit(1), 20);
+    });
     return;
   }
 
