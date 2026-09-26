@@ -254,6 +254,70 @@ function acceptedDsn(sdk: SentryNode): "ok" | "rejected" | "unknown" {
   }
 }
 
+/** A webhook capability URL is `/hooks/<endpoint id>/<secret>`: the id is
+ * safe to keep (it names the endpoint an operator has to look at), the path
+ * segment after it is the credential.  The Node SDK's HTTP instrumentation
+ * copies the raw request path into the transaction name, `request.url`, the
+ * culprit and span descriptions, so without this pass a live secret lands in
+ * Sentry on every delivery — which is exactly what happened to three
+ * endpoints before this scrub existed.  Kept in step with the route regex in
+ * webhook-ingress.ts. */
+const WEBHOOK_PATH_SECRET = /\/hooks\/(wh_[A-Za-z0-9_-]+)\/[^/?#\s"'<>]+/g;
+/** A secret that shows up anywhere else — a breadcrumb, a log line, a bearer
+ * value echoed into an error — is caught by its own prefix. */
+const WEBHOOK_BARE_SECRET = /\bwhsec_[A-Za-z0-9_-]+/g;
+
+/** Replace every webhook secret in `text`, keeping the endpoint id. */
+export function scrubWebhookSecrets(text: string): string {
+  if (!text.includes("/hooks/") && !text.includes("whsec_")) return text;
+  return text
+    .replace(WEBHOOK_PATH_SECRET, "/hooks/$1/:secret")
+    .replace(WEBHOOK_BARE_SECRET, "whsec_[redacted]");
+}
+
+/** How deep the scrub walks.  Sentry payloads are a handful of levels deep
+ * (event → spans → data → value); anything past this is not a shape the SDK
+ * builds, and the bound keeps a pathological payload from costing more than
+ * it is worth on the send path. */
+const SCRUB_MAX_DEPTH = 12;
+
+/** Scrub every string in a Sentry payload in place and hand it back.  A
+ * field-by-field list (transaction, request.url, culprit, span descriptions,
+ * breadcrumbs, tags) would miss whichever field the next SDK release starts
+ * copying the URL into, so this walks the whole payload instead: the
+ * `includes` pre-check makes the common case one scan per string. */
+export function scrubSentryPayload<T>(payload: T): T {
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown, depth: number): unknown => {
+    if (typeof value === "string") return scrubWebhookSecrets(value);
+    if (value === null || typeof value !== "object" || depth > SCRUB_MAX_DEPTH) return value;
+    if (seen.has(value)) return value;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) value[i] = walk(value[i], depth + 1);
+      return value;
+    }
+    // SAFETY: a plain record walk over a JSON-shaped payload; only string
+    // leaves are rewritten, and keys are left alone.
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      const next = walk(record[key], depth + 1);
+      if (next !== record[key]) record[key] = next;
+    }
+    return value;
+  };
+  // SAFETY: the walk mutates in place and returns the same reference for
+  // every object, and a string only ever becomes another string, so the
+  // result has exactly the type it came in with.
+  return walk(payload, 0) as T;
+}
+
+/** Incoming `/hooks/*` requests never become transactions: the path is a
+ * credential, and the scrub above is the second line, not the first. */
+export function isWebhookIngressPath(urlPath: string): boolean {
+  return urlPath.startsWith("/hooks/");
+}
+
 /** Bring the running client in line with `input`, and report what actually
  * happened.  Called at boot and again after every settings change, so it
  * has to be idempotent: an unchanged option set leaves the client alone. */
@@ -322,17 +386,31 @@ async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<Sentr
   }
 
   const profileSessionSampleRate = Number(process.env.SENTRY_PROFILE_SESSION_SAMPLE_RATE ?? "1");
+  const integrations: SentryIntegration[] = [];
+  // Replaces the default Http integration by name, keeping its other
+  // defaults.  A stand-in SDK installed by a test may not carry the factory.
+  if (sdk.httpIntegration) {
+    integrations.push(sdk.httpIntegration({ ignoreIncomingRequests: (urlPath) => isWebhookIngressPath(urlPath) }));
+  }
+  // enableLogs alone only produces breadcrumbs; the console integration
+  // is what turns a warn or an error into a Sentry log.
+  if (input.logsEnabled) integrations.push(sdk.consoleLoggingIntegration({ levels: ["warn", "error"] }));
   try {
     sdk.init({
       dsn: input.dsn,
       environment: input.environment,
       tracesSampleRate: input.tracesSampleRate,
       enableLogs: true,
-      // enableLogs alone only produces breadcrumbs; the console integration
-      // is what turns a warn or an error into a Sentry log.
-      integrations: input.logsEnabled
-        ? [sdk.consoleLoggingIntegration({ levels: ["warn", "error"] })]
-        : [],
+      integrations,
+      // Every payload kind the client sends passes the webhook-secret scrub:
+      // errors and messages, transactions with all their child spans, and
+      // console-derived logs.  No beforeSendSpan: in this SDK the gen_ai
+      // spans are split out of the transaction in `sendEvent`, after
+      // beforeSendTransaction has already walked them, so a span hook would
+      // only scan the same strings twice.
+      beforeSend: (event) => scrubSentryPayload(event),
+      beforeSendTransaction: (event) => scrubSentryPayload(event),
+      beforeSendLog: (log) => scrubSentryPayload(log),
       sendDefaultPii: false,
       // Sentry Agents (SaaS): standalone gen_ai envelopes for Conversations.
       // Opt-out only for self-hosted that cannot ingest them.
