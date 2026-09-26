@@ -926,8 +926,78 @@ describe("ProviderRegistry", () => {
       const fresh = await registry.describeFresh();
       expect(fresh[0].instanceId).toBe("test");
 
+      // The cache now carries the capture time alongside the instances (see
+      // HS26) so a caller passing maxAgeMs without staleWhileRevalidate does
+      // not treat an old cache as fresh on the next boot.
       const saved = JSON.parse(readFileSync(cachePath, "utf8"));
-      expect(saved[0].instanceId).toBe("test");
+      expect(saved.instances[0].instanceId).toBe("test");
+      expect(saved.at).toEqual(expect.any(Number));
+
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("writes the disk cache exactly once per fresh probe", async () => {
+      const fake = makeFakeDriver();
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ test: { driver: "fake" } });
+
+      const tmpDir = join(tmpdir(), `bf-cache-single-write-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const cachePath = join(tmpDir, "engine-cache.json");
+      mkdirSync(tmpDir, { recursive: true });
+      registry.setDiskCachePath(cachePath);
+
+      const writeFileAtomicModule = await import("../atomic.ts");
+      const spy = vi.spyOn(writeFileAtomicModule, "writeFileAtomic");
+      try {
+        // describe() without a fresh memo goes through refreshDescribe(),
+        // which used to call saveDiskCache both inside describeFresh() and
+        // again in its own .then() — one probe, two writes.
+        await registry.describe();
+        expect(spy).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("preserves the on-disk capture time across a reload instead of stamping it probed-now", async () => {
+      const fake = makeFakeDriver();
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ test: { driver: "fake" } });
+
+      const tmpDir = join(tmpdir(), `bf-cache-stale-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const cachePath = join(tmpDir, "engine-cache.json");
+      mkdirSync(tmpDir, { recursive: true });
+      const capturedAt = Date.now() - 10 * 60_000; // 10 minutes ago
+      writeFileSync(cachePath, JSON.stringify({
+        at: capturedAt,
+        instances: [{
+          instanceId: "cached-instance",
+          driverKind: "fake",
+          displayName: "Cached",
+          enabled: true,
+          snapshot: { state: "available" } as const,
+          models: { default: "cached-m", options: [] },
+          capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
+          computerReach: { local: false, box: false, vps: false },
+          access: "subscription",
+          install: undefined,
+          cli: undefined,
+          cliDefault: undefined,
+          cliCandidates: [],
+          fullAuto: false,
+        }],
+      }));
+
+      registry.setDiskCachePath(cachePath);
+      // A 1-minute freshness window against a cache captured 10 minutes ago
+      // must NOT read as fresh, and with no staleWhileRevalidate opt-in must
+      // NOT be returned at all — it would be (the HS26 bug) if
+      // setDiskCachePath had stamped the memo probed-now instead of keeping
+      // the real capture time, and this call would wrongly short-circuit to
+      // the stale "cached-instance" answer instead of actually probing.
+      const result = await registry.describe({ maxAgeMs: 60_000 });
+      expect(result[0].instanceId).toBe("test");
 
       rmSync(tmpDir, { recursive: true, force: true });
     });

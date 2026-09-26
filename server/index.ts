@@ -11976,11 +11976,26 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     watchdog.stop();
     stopTranscriptSweeps();
     stopOrphanTranscriptSweeps();
-    routines?.stop();
+    // A flush that throws (disk full, data dir gone) must not skip the rest
+    // of shutdown — above all bus.flush() below — so each one is guarded.
+    const flushOnShutdown = (label: string, flush: () => void) => {
+      try {
+        flush();
+      } catch (error) {
+        console.error(`shutdown: ${label} flush failed`, error);
+      }
+    };
+    flushOnShutdown("routines", () => routines?.stop());
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();
     infisical.stop();
     webhookIngress?.server.close();
+    // store.ts and webhooks.ts now coalesce their whole-file JSON writes
+    // behind a short debounce (routines.ts does too, but routines?.stop()
+    // above already flushes it); catch up the pending write here or the
+    // last roster/webhook mutation before shutdown is silently lost.
+    flushOnShutdown("bots.json", () => store.flushBotsNow());
+    flushOnShutdown("webhooks.json", () => webhooks.flushNow());
     // bus.flush() is here because the canonical event log is no longer written
     // on the publish path: the tee queues and one writer drains it, so the
     // last few records of every live thread are in memory when a SIGTERM
