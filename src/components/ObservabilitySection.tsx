@@ -252,10 +252,10 @@ export function ObservabilitySection() {
               <span className="text-ink-secondary">Traces</span>
               <span
                 className="font-medium text-ink"
-                title={`AI: ${Math.round(viewAiTraces * 100)}% · HTTP: ${Math.round(viewHttpTraces * 100)}% · UI: ${Math.round(viewUiTraces * 100)}%`}
+                title={`AI: ${Math.round(viewAiTraces * 100)}%  ·  HTTP: ${Math.round(viewHttpTraces * 100)}%  ·  UI: ${Math.round(viewUiTraces * 100)}%`}
               >
-                {viewAiTraces > 0 || viewHttpTraces > 0
-                  ? `AI ${Math.round(viewAiTraces * 100)}% · HTTP ${Math.round(viewHttpTraces * 100)}%`
+                {viewAiTraces > 0 || viewHttpTraces > 0 || viewUiTraces > 0
+                  ? `AI ${Math.round(viewAiTraces * 100)}%  ·  HTTP ${Math.round(viewHttpTraces * 100)}%  ·  UI ${Math.round(viewUiTraces * 100)}%`
                   : viewTraces > 0
                     ? `${Math.round(viewTraces * 100)}%`
                     : "Off"}
@@ -312,7 +312,7 @@ export function ObservabilitySection() {
               <div>
                 <div className="text-[13px] font-medium text-ink">Trace Sampling Rates</div>
                 <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                  Separate sample rates across surfaces so high-value AI turns and tool executions stay visible without flooding Sentry with routine HTTP pings.
+                  Capture performance traces across AI reasoning, network calls, and user interactions to diagnose latency and bottlenecks.
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
@@ -336,7 +336,7 @@ export function ObservabilitySection() {
                     className={observabilityInputClass}
                   />
                   <span className="text-[11px] text-ink-secondary">
-                    Chat turns, subagent dispatches, and tool runs.
+                    Chat turns, bot handoffs, and tool runs.
                   </span>
                 </div>
                 <div className="flex flex-col gap-1">
@@ -361,7 +361,7 @@ export function ObservabilitySection() {
                     className={observabilityInputClass}
                   />
                   <span className="text-[11px] text-ink-secondary">
-                    Harness REST API, IPC, and status polling.
+                    API calls, status checks, and background polls.
                   </span>
                 </div>
                 <div className="flex flex-col gap-1">
@@ -384,7 +384,7 @@ export function ObservabilitySection() {
                     className={observabilityInputClass}
                   />
                   <span className="text-[11px] text-ink-secondary">
-                    Client page views, renders, and asset loads.
+                    Page views and screen loads.
                   </span>
                 </div>
               </div>
