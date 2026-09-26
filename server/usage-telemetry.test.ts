@@ -325,6 +325,12 @@ describe("provider naming", () => {
     expect(inferProviderAndService("computer-2", undefined, "boxAgent").provider).toBe("box");
     expect(inferProviderAndService("whatever-the-operator-typed", "gpt-5", "boxAgent").provider).toBe("box");
   });
+
+  it("attributes MiniMax models to minimax even under DSH or other drivers", () => {
+    expect(inferProviderAndService("dsh-instance", "MiniMax-M3", "dshAgent").provider).toBe("minimax");
+    expect(inferProviderAndService("deepseek", "MiniMax-M3", "deepseekAgent").provider).toBe("minimax");
+    expect(inferProviderAndService("dsh-instance", "deepseek-chat", "dshAgent").provider).toBe("dsh");
+  });
 });
 
 describe("ingest acknowledgement accounting", () => {

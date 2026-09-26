@@ -318,6 +318,15 @@ const appConfigSchema = z.object({
     projects: z
       .array(z.object({ slug: z.string(), match: z.array(z.string()).optional() }))
       .optional(),
+    enginePlans: z
+      .record(
+        z.string(),
+        z.object({
+          planName: z.string().optional(),
+          costPerMonth: z.number().nullable().optional(),
+        }),
+      )
+      .optional(),
   }).optional(),
   // Error and performance reporting.  The kill switch is explicit: a DSN
   // with no `enabled` flag reports.  Only a stored `false` stops it, so an
@@ -441,6 +450,7 @@ export interface AppConfig {
      *  Absent means on; only a stored `false` turns it off. */
     localQuotaRouting?: boolean;
     projects?: Array<{ slug: string; match?: string[] }>;
+    enginePlans?: Record<string, { planName?: string; costPerMonth?: number | null }>;
   };
   /** Error and performance reporting.  `sentryDsn` is the operator's own
    * Sentry project — BotFleet ships none.  `enabled` is the explicit kill
