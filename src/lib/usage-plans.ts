@@ -131,6 +131,22 @@ export function findMatchingPreset(
 ): EnginePlanOption | undefined {
   const options = ENGINE_PLAN_OPTIONS[engineId] ?? [];
   const norm = (s?: string | null) => (s ?? "").replace(/×/g, "x").trim().toLowerCase();
+
+  // Backward compatibility: map stored legacy preset names/costs
+  if (
+    engineId === "deepseek-harness" &&
+    (norm(planName) === "deepseek pay-as-you-go" || norm(planName) === "pay-as-you-go (api)")
+  ) {
+    return options.find((opt) => opt.planName === "Pay-as-you-go (API)");
+  }
+  if (
+    engineId === "cursor" &&
+    norm(planName) === "cursor ultra" &&
+    (costPerMonth === 40 || costPerMonth === null)
+  ) {
+    return options.find((opt) => opt.planName === "Cursor Ultra");
+  }
+
   return options.find((opt) => {
     const nameMatch = opt.planName === planName || norm(opt.planName) === norm(planName);
     const costMatch = (opt.costPerMonth ?? null) === (costPerMonth ?? null);
@@ -145,20 +161,39 @@ export function getInitialEnginePlans(
   for (const [id, entry] of Object.entries(ENGINE_CAPABILITIES)) {
     const saved = configuredEnginePlans?.[id];
     if (saved) {
+      let resolvedPlanName =
+        saved.planName ??
+        (entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
+          ? entry.pricing.subscription.tierLabel
+          : entry.pricing.kind === "api"
+            ? "Pay-as-you-go (API)"
+            : "Free");
+      let resolvedCost =
+        saved.costPerMonth !== undefined
+          ? saved.costPerMonth
+          : entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
+            ? entry.pricing.subscription.costPerMonth
+            : null;
+
+      // Migrate legacy stored names to official presets
+      if (
+        id === "deepseek-harness" &&
+        resolvedPlanName.trim().toLowerCase() === "deepseek pay-as-you-go"
+      ) {
+        resolvedPlanName = "Pay-as-you-go (API)";
+        resolvedCost = null;
+      }
+      if (
+        id === "cursor" &&
+        resolvedPlanName.trim().toLowerCase() === "cursor ultra" &&
+        resolvedCost === 40
+      ) {
+        resolvedCost = null;
+      }
+
       initial[id] = {
-        planName:
-          saved.planName ??
-          (entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
-            ? entry.pricing.subscription.tierLabel
-            : entry.pricing.kind === "api"
-              ? "Pay-as-you-go (API)"
-              : "Free"),
-        costPerMonth:
-          saved.costPerMonth !== undefined
-            ? saved.costPerMonth
-            : entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
-              ? entry.pricing.subscription.costPerMonth
-              : null,
+        planName: resolvedPlanName,
+        costPerMonth: resolvedCost,
       };
     } else {
       initial[id] = defaultEnginePlan(id);
@@ -166,3 +201,4 @@ export function getInitialEnginePlans(
   }
   return initial;
 }
+

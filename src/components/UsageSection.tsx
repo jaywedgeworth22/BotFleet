@@ -221,7 +221,7 @@ export function UsageSection() {
       setSavePlansOk(true);
       setTimeout(() => setSavePlansOk(false), 3000);
     } catch (_caught) {
-      setSavePlansError("Couldn't save engine plans. Try again.");
+      setSavePlansError("Couldn't save engine plans.\u00a0 Try again.");
     } finally {
       setSavingPlans(false);
     }
@@ -1121,7 +1121,7 @@ export function UsageSection() {
                     step="any"
                     min="0"
                     placeholder="0.00"
-                    disabled={currentPlan.costPerMonth === null && !isCustom}
+                    disabled={currentPlan.costPerMonth === null && !isCustom && entry.pricing.kind !== "subscription+api"}
                     value={currentPlan.costPerMonth != null ? currentPlan.costPerMonth : ""}
                     onChange={(e) => {
                       const val = e.target.value === "" ? null : parseFloat(e.target.value);
@@ -1767,7 +1767,7 @@ function UsageRow({
                 <span className="text-right">Cached</span>
                 <span className="text-right">Out</span>
                 <span className="text-right">Per Turn</span>
-                <span className="text-right">Cum. Cost</span>
+                <span className="text-right">Cumulative Cost</span>
               </div>
               {cumulative.map(({ task, taskUsage, model, cumulativeTokens: cumTokens, cumulativeCost: cumCost }, index) => {
                 const turnCount = taskUsage.turns || 0;
@@ -1787,7 +1787,7 @@ function UsageRow({
                       <span className="ml-1 text-ink-secondary/80">{date}</span>
                     </span>
                     <span className="min-w-0 truncate text-[11.5px] text-ink-secondary" title={task.modelSelection?.model ?? model}>
-                      {model}
+                      {modelDisplayName(model, instances)}
                     </span>
                     <span className="text-right tabular-nums text-ink">{formatTokens(taskUsage.input)}</span>
                     <span className="text-right tabular-nums text-ink-secondary">{cached > 0 ? formatTokens(cached) : "—"}</span>
