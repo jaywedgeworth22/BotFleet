@@ -24,6 +24,12 @@
 //   FAKE_CLAUDE_QUOTA_GATE  optional file whose creation releases quota mode,
 //                           so integration tests can queue work before settle
 //   FAKE_CLAUDE_REPLY  optional successful assistant text for prose-boundary tests
+//   FAKE_CLAUDE_HELP   unsupported (no --strict-mcp-config in --help) | hang
+//                      (--help never exits, so the capability probe times out)
+//   FAKE_CLAUDE_CRASH_TURN  the Nth turn played by ONE process exits 5 with
+//                      an overloaded-shaped stderr before its result (a
+//                      transient crash on a retained session); the relaunch
+//                      is a fresh process, so its own turn 1 plays normally
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -59,8 +65,13 @@ if (argv[0] === "--version") {
 
 if (argv[0] === "--help") {
   if (process.env.FAKE_CLAUDE_HELP_PROBES) appendFileSync(process.env.FAKE_CLAUDE_HELP_PROBES, "probe\n");
-  process.stdout.write(process.env.FAKE_CLAUDE_HELP === "unsupported" ? "Usage: claude\n" : "  --strict-mcp-config  Only load explicit MCP servers\n");
-  process.exit(0);
+  if (process.env.FAKE_CLAUDE_HELP === "hang") {
+    // a busy host: the probe's deadline passes before any usage text lands
+    setInterval(() => {}, 1_000);
+  } else {
+    process.stdout.write(process.env.FAKE_CLAUDE_HELP === "unsupported" ? "Usage: claude\n" : "  --strict-mcp-config  Only load explicit MCP servers\n");
+    process.exit(0);
+  }
 }
 
 if (argv[0] === "auth" && argv[1] === "status") {
@@ -110,6 +121,7 @@ type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string
 const sessionId = argAfter("--resume") ?? argAfter("--session-id") ?? "fake-session";
 const model = argAfter("--model") ?? "claude-fake";
 let dumped = false;
+let turnsPlayed = 0;
 let turnRunning = false;
 let steered: string[] = [];
 let stdinEnded = false;
@@ -125,6 +137,7 @@ const finishIfDone = () => {
 
 const playTurn = (prompt: JsonValue) => {
   turnRunning = true;
+  turnsPlayed++;
   steered = [];
   if (!dumped && process.env.FAKE_CLAUDE_DUMP) {
     dumped = true;
@@ -143,6 +156,11 @@ const playTurn = (prompt: JsonValue) => {
   if (mode === "exit-early") {
     process.stderr.write("fake-claude: simulated crash before result\n");
     process.exit(3);
+  }
+  if (process.env.FAKE_CLAUDE_CRASH_TURN && turnsPlayed === Number(process.env.FAKE_CLAUDE_CRASH_TURN)) {
+    out({ type: "system", subtype: "init", session_id: sessionId, model });
+    process.stderr.write("claude: API error (529): overloaded, please retry\n");
+    process.exit(5);
   }
   // transient-failure script for retry tests. FAKE_CLAUDE_TRANSIENTS is how
   // many launches fail transiently (503-shaped stderr, exit 5); the count of
@@ -230,6 +248,7 @@ const playTurn = (prompt: JsonValue) => {
       api_error_status: 429,
       num_turns: 1,
       total_cost_usd: 0,
+      result: "API Error: 429 rate_limit_error: This request would exceed the rate limit for your organization",
     });
     turnRunning = false;
     finishIfDone();

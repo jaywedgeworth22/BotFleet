@@ -19,7 +19,10 @@ import { stderrExcerpt } from "../stderr-excerpt.ts";
 import { augmentedPath } from "../env-path.ts";
 import { toolFields } from "../tool-fields.ts";
 import { describeResult } from "../../shared/tool-activity.ts";
-import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, killCliTreeHard, spawnCli } from "../procs.ts";
+import { redactSecretsInText } from "../redact.ts";
+import { initLoadFactor, readHostLoad } from "./acp/init-deadline.ts";
+import { classifyHttpError } from "./chat-completions/errors.ts";
 
 import type {
   DriverCreateInput,
@@ -97,6 +100,42 @@ function claudeEnvironment(
 
 const DRIVER_KIND = "claudeAgent";
 const CLAUDE_ISOLATION_REASON = "Update Claude Code to a version supporting --strict-mcp-config and refresh engines; CLI isolation support could not be verified.";
+
+/** Base wall clock for the `--help` capability probe, before host-load
+ *  scaling.  8 s matches the `--version` probe; the old 3 s fired on a
+ *  merely busy Mac and refused every turn as "unsupported" (board 4a3ee87b). */
+const STRICT_MCP_PROBE_BASE_MS = 8_000;
+
+/** What a `result` frame the CLI marked failed means for the harness.
+ *
+ *  The label is the CLI's own account of the failure, in this order:
+ *  `terminal_reason` (why the whole invocation ended abnormally — observed
+ *  "api_error" with `api_error_status` 429), then a non-success `subtype`
+ *  ("error_max_turns", "error_during_execution"), then the bare status, and
+ *  never `stop_reason`: on a failed result that field is a stale leftover
+ *  from the last model turn that DID run (observed "stop_sequence" with
+ *  duration_api_ms 0).  An HTTP status is additionally mapped onto the
+ *  shared `error:<code>` stop reasons so the fallback and cooldown logic in
+ *  model-fallback.ts treats a Claude 429 like a metered engine's. */
+function describeFailedResult(o: {
+  subtype?: unknown;
+  terminal_reason?: unknown;
+  api_error_status?: unknown;
+  result?: unknown;
+}): { stopReason: string; message: string; setup: boolean } {
+  const status = typeof o.api_error_status === "number" && Number.isFinite(o.api_error_status) ? o.api_error_status : null;
+  const subtype = typeof o.subtype === "string" && o.subtype && o.subtype !== "success" ? o.subtype : null;
+  const terminal = typeof o.terminal_reason === "string" && o.terminal_reason ? o.terminal_reason : null;
+  const label = terminal ?? subtype ?? (status !== null ? `api_error_${status}` : null) ?? "error";
+  const http = status !== null ? classifyHttpError(status) : undefined;
+  const text = redactSecretsInText(String(o.result ?? "")).trim().slice(0, 500);
+  const where = status !== null ? `${label}, HTTP ${status}` : label;
+  return {
+    stopReason: http ? `error:${http.code}` : label,
+    message: `claude turn failed (${where})${text ? `: ${text}` : ""}`,
+    setup: http?.setup ?? false,
+  };
+}
 
 export interface ClaudeConfig {
   cli: string;
@@ -474,10 +513,27 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       /** the CLI's session id from `init`, what --resume takes later */
       sessionId: string | null;
       /** the running turn, or null between turns */
-      turn: { turnId: string; settled: boolean; sawStreamDelta: boolean } | null;
+      turn: TurnState | null;
       idleTimer: ReturnType<typeof setTimeout> | null;
       closing: boolean;
       stderr: string;
+    }
+    // A retained process runs many turns, and the spawn-time `close` handler
+    // is the one that sees every one of them die.  Everything that handler
+    // needs about the CURRENT turn lives here, never in the closure of the
+    // sendTurn call that spawned the process: that closure holds turn 1's
+    // text, turnId and retry budget, and a relaunch built from it replays
+    // the wrong message under the wrong turn.
+    interface TurnState {
+      turnId: string;
+      settled: boolean;
+      sawStreamDelta: boolean;
+      /** what was asked, so a relaunch after a transient crash replays it */
+      input: SendTurnInput;
+      /** shared with retryState — a Stop flips `cancelled` here */
+      retry: { attempt: number; cancelled: boolean };
+      /** aborts this turn's retry backoff on Stop */
+      abort: AbortController;
     }
     const sessions = new Map<string, Session>();
     const configuredIdleMinimum = Number(process.env.OMB_CLAUDE_SESSION_IDLE_MIN_MS);
@@ -498,13 +554,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       s.broker = undefined;
       broker?.close();
       appendNative(threadId, { dir: "out", source: "claude.session", msg: { close: why } });
-      // stdin EOF is the CLI's exit signal; give it a moment, then insist
+      // stdin EOF is the CLI's exit signal; give it a moment, then insist.
+      // The hard kill runs even when the leader already exited: its MCP
+      // proxies live in the same process group and outlive it otherwise.
       try {
         s.child.stdin.end();
       } catch {}
-      const kill = setTimeout(() => {
-        if (s.child.exitCode === null) killCliTree(s.child);
-      }, 5_000);
+      const kill = setTimeout(() => killCliTreeHard(s.child), 5_000);
       kill.unref?.();
     };
     const armIdle = (threadId: string) => {
@@ -544,10 +600,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     // is a fresh sendTurn, and the attempt cap must survive across launches
     const retryState = new Map<string, { attempt: number; cancelled: boolean }>();
 
-    const sendTurn = async (turn: SendTurnInput) => {
+    // `relaunch` is set only by the close handler below: a transient crash
+    // relaunches the CLI for the SAME logical turn, so the replay keeps the
+    // turnId the harness already knows and announces no second turn.started.
+    const sendTurn = async (turn: SendTurnInput, relaunch?: { turnId: string }) => {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
-      const turnId = newId();
+      const turnId = relaunch?.turnId ?? newId();
       let preflightCancelled = false;
       let preflightError: unknown;
       const preflight = { turnId, stop: () => { preflightCancelled = true; } };
@@ -592,6 +651,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
       retry.cancelled = false;
       retryState.set(threadId, retry);
+      const turnState = (): TurnState => ({
+        turnId,
+        settled: false,
+        sawStreamDelta: false,
+        input: turn,
+        retry,
+        abort: retryAbort,
+      });
       // a retry relaunches the whole CLI; the backoff is scaled down in tests
       // so a fake's transient failures don't stall real seconds
       const retryScale = Number(process.env.FAKE_CLAUDE_RETRY_SCALE ?? "1");
@@ -727,9 +794,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const live = sessions.get(threadId);
       if (live && !live.turn && !live.closing && live.child.exitCode === null && live.argsKey === argsKey && (!sessionId || sessionId === live.sessionId)) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        live.turn = { turnId, settled: false, sawStreamDelta: false };
-        active.set(threadId, { stop: () => killCliTree(live.child), turnId, broker: live.broker });
-        emit({ ...base(threadId, turnId), type: "turn.started" });
+        // stderr is per turn: an old warning must not make a later crash
+        // read as transient (or terminal) on the strength of stale text
+        live.stderr = "";
+        live.turn = turnState();
+        // Stop on a retained process is the same contract as on a fresh one:
+        // mark the turn cancelled FIRST so the close handler settles it as
+        // interrupted instead of a crash, then take the whole tree down.
+        const stopRetained = () => {
+          retry.cancelled = true;
+          retryAbort.abort();
+          killCliTreeHard(live.child);
+        };
+        active.set(threadId, { stop: stopRetained, turnId, broker: live.broker });
+        if (!relaunch) emit({ ...base(threadId, turnId), type: "turn.started" });
         const written = await writeUser(live, threadId, turn.text);
         if (!written) {
           active.delete(threadId);
@@ -802,7 +880,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpConfigPath,
         argsKey,
         sessionId: sessionId ?? newSessionId,
-        turn: { turnId, settled: false, sawStreamDelta: false },
+        turn: turnState(),
         idleTimer: null,
         closing: false,
         stderr: "",
@@ -957,24 +1035,36 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // abnormally, so it wins whenever the turn failed; stop_reason
             // (the Messages API's own field: end_turn, tool_use, ...) is the
             // right label for a normal completion and stays primary there.
-            const isError = o.is_error === true;
-            const stopReason = isError
-              ? (o.terminal_reason ?? o.stop_reason ?? null)
-              : (o.stop_reason ?? o.terminal_reason ?? null);
-            settle(
-              !isError,
-              stopReason,
-              o.total_cost_usd ?? null,
-              o.usage
-                ? {
-                    input: (o.usage.input_tokens || 0) + (o.usage.cache_read_input_tokens || 0) + (o.usage.cache_creation_input_tokens || 0),
-                    output: o.usage.output_tokens || 0,
-                    ...(typeof o.usage.cache_read_input_tokens === "number"
-                      ? { cachedInput: o.usage.cache_read_input_tokens }
-                      : {}),
-                  }
-                : undefined,
-            );
+            //
+            // A failed result is also announced as a runtime.error, so
+            // errors.log, Sentry and the quota parser see the CLI's own text
+            // (`result` carries the API message on an api_error) instead of
+            // a bare stopReason.  An HTTP status maps onto the shared
+            // `error:<code>` stop reasons the chat-completions lane uses, so
+            // a 429 records a cooldown and consults the fallback chain the
+            // same way it would from a metered engine.
+            const ok = o.is_error !== true && (o.subtype == null || o.subtype === "success");
+            const usage = o.usage
+              ? {
+                  input: (o.usage.input_tokens || 0) + (o.usage.cache_read_input_tokens || 0) + (o.usage.cache_creation_input_tokens || 0),
+                  output: o.usage.output_tokens || 0,
+                  ...(typeof o.usage.cache_read_input_tokens === "number"
+                    ? { cachedInput: o.usage.cache_read_input_tokens }
+                    : {}),
+                }
+              : undefined;
+            if (ok) {
+              settle(true, o.stop_reason ?? o.terminal_reason ?? null, o.total_cost_usd ?? null, usage);
+              break;
+            }
+            const failure = describeFailedResult(o);
+            emit({
+              ...base(threadId, currentTurnId()),
+              type: "runtime.error",
+              message: failure.message,
+              ...(failure.setup ? { setup: true } : {}),
+            });
+            settle(false, failure.stopReason, o.total_cost_usd ?? null, usage);
             break;
           }
         }
@@ -1007,90 +1097,102 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       child.on("close", (code) => {
         // a turn still running when the process died is a failed turn; a
         // process that exited between turns (idle close, contract change)
-        // is just a session ending
-        if (session.turn && !session.turn.settled) {
-          const message = `claude exited ${code} before result${session.stderr ? `: ${stderrExcerpt(session.stderr)}` : ""}`;
-          const verdict = classifyError({ exitCode: code, stderr: message });
-          if (
-            !retry.cancelled &&
-            code !== 0 &&
-            verdict.transient &&
-            !session.turn.sawStreamDelta &&
-            retry.attempt < RETRY_MAX_ATTEMPTS - 1
-          ) {
-            // the CLI is gone but the TURN continues: keep the thread busy,
-            // emit no terminal event, and relaunch after the backoff. The
-            // `active` entry STAYS — it is what makes an interrupt during
-            // the backoff reach this turn's stop() and cancel the retry.
-            const failedBroker = session.broker;
-            session.broker = undefined;
-            failedBroker?.pause();
-            failedBroker?.close();
-            if (session.mcpConfigPath) {
-              try {
-                rmSync(dirname(session.mcpConfigPath), { recursive: true, force: true });
-              } catch {}
-              session.mcpConfigPath = null;
-            }
-            sessions.delete(threadId);
-            session.turn = null;
-            retry.attempt++;
-            const delayMs = computeBackoff(retry.attempt - 1);
-            emit({
-              ...base(threadId, turnId),
-              type: "turn.retrying",
-              attempt: retry.attempt,
-              delayMs,
-              reason: verdict.reason,
-            });
-            void (async () => {
-              const wait = interruptibleDelay(delayMs * retryScale, retryAbort.signal);
-              await wait.promise;
-              // an interrupt during the backoff landed here via stop(); the
-              // turn settles as interrupted and no zombie relaunch happens
-              if (retry.cancelled) {
+        // is just a session ending.  Everything about that turn is read
+        // from session.turn — this handler outlives the sendTurn call that
+        // installed it, and a retained process is on turn N by now.
+        const current = session.turn;
+        if (current && !current.settled) {
+          const { turnId: currentTurn, input: currentInput, retry, abort } = current;
+          if (retry.cancelled) {
+            // Stop asked for this exit.  It is the requested outcome, not a
+            // crash: no runtime.error (nothing to page on), and the settle
+            // reason the harness already treats as a user stop.
+            settle(false, "interrupted");
+          } else {
+            const message = `claude exited ${code} before result${session.stderr ? `: ${stderrExcerpt(session.stderr)}` : ""}`;
+            const verdict = classifyError({ exitCode: code, stderr: message });
+            if (
+              code !== 0 &&
+              verdict.transient &&
+              !current.sawStreamDelta &&
+              retry.attempt < RETRY_MAX_ATTEMPTS - 1
+            ) {
+              // the CLI is gone but the TURN continues: keep the thread busy,
+              // emit no terminal event, and relaunch after the backoff. The
+              // `active` entry STAYS — it is what makes an interrupt during
+              // the backoff reach this turn's stop() and cancel the retry.
+              const failedBroker = session.broker;
+              session.broker = undefined;
+              failedBroker?.pause();
+              failedBroker?.close();
+              if (session.mcpConfigPath) {
+                try {
+                  rmSync(dirname(session.mcpConfigPath), { recursive: true, force: true });
+                } catch {}
+                session.mcpConfigPath = null;
+              }
+              sessions.delete(threadId);
+              session.turn = null;
+              retry.attempt++;
+              const delayMs = computeBackoff(retry.attempt - 1);
+              emit({
+                ...base(threadId, currentTurn),
+                type: "turn.retrying",
+                attempt: retry.attempt,
+                delayMs,
+                reason: verdict.reason,
+              });
+              void (async () => {
+                const wait = interruptibleDelay(delayMs * retryScale, abort.signal);
+                await wait.promise;
+                // an interrupt during the backoff landed here via stop(); the
+                // turn settles as interrupted and no zombie relaunch happens
+                if (retry.cancelled) {
+                  active.delete(threadId);
+                  retryState.delete(threadId);
+                  emit({
+                    ...base(threadId, currentTurn),
+                    type: "turn.completed",
+                    ok: false,
+                    stopReason: "interrupted",
+                    cost: null,
+                  });
+                  return;
+                }
+                // hand the thread back before recursing — the relaunch's own
+                // guard would otherwise reject it as "already running".  The
+                // replay is the CURRENT turn's text under its own turnId, not
+                // whatever this process was first spawned for.
                 active.delete(threadId);
-                retryState.delete(threadId);
-                emit({
-                  ...base(threadId, turnId),
-                  type: "turn.completed",
-                  ok: false,
-                  stopReason: "interrupted",
-                  cost: null,
-                });
-                return;
-              }
-              // hand the thread back before recursing — the relaunch's own
-              // guard would otherwise reject it as "already running"
-              active.delete(threadId);
-              try {
-                const cursor = session.sessionId ?? sessionId ?? undefined;
-                await sendTurn({ ...turn, resumeCursor: cursor });
-              } catch (e) {
-                retryState.delete(threadId);
-                emit({
-                  ...base(threadId, turnId),
-                  type: "runtime.error",
-                  message: e instanceof Error ? e.message : String(e),
-                });
-                emit({
-                  ...base(threadId, turnId),
-                  type: "turn.completed",
-                  ok: false,
-                  stopReason: "exit_before_result",
-                  cost: null,
-                });
-              }
-            })();
-            return;
+                try {
+                  const cursor = session.sessionId ?? sessionId ?? undefined;
+                  await sendTurn({ ...currentInput, resumeCursor: cursor }, { turnId: currentTurn });
+                } catch (e) {
+                  retryState.delete(threadId);
+                  emit({
+                    ...base(threadId, currentTurn),
+                    type: "runtime.error",
+                    message: e instanceof Error ? e.message : String(e),
+                  });
+                  emit({
+                    ...base(threadId, currentTurn),
+                    type: "turn.completed",
+                    ok: false,
+                    stopReason: "exit_before_result",
+                    cost: null,
+                  });
+                }
+              })();
+              return;
+            }
+            retryState.delete(threadId);
+            emit({
+              ...base(threadId, currentTurn),
+              type: "runtime.error",
+              message,
+            });
+            settle(false, "exit_before_result");
           }
-          retryState.delete(threadId);
-          emit({
-            ...base(threadId, currentTurnId()),
-            type: "runtime.error",
-            message,
-          });
-          settle(false, "exit_before_result");
         }
         if (session.idleTimer) clearTimeout(session.idleTimer);
         session.broker?.close();
@@ -1105,10 +1207,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const stop = () => {
         retry.cancelled = true;
         retryAbort.abort();
-        killCliTree(child);
+        killCliTreeHard(child);
       };
       active.set(threadId, { stop, turnId, broker });
-      emit({ ...base(threadId, turnId), type: "turn.started" });
+      if (!relaunch) emit({ ...base(threadId, turnId), type: "turn.started" });
 
       // prompt over stdin as a stream-json message — never argv (ARG_MAX).
       // stdin stays OPEN: that is what keeps the session alive for a
@@ -1129,32 +1231,55 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       return writeUser(s, threadId, text);
     };
 
-    // Probe capabilities once per detected version.  Failed probes expire so
-    // a transient timeout does not require a harness restart to recover.
-    let strictMcpProbe: { version: string; expiresAt: number; result: Promise<boolean> } | undefined;
-    const supportsStrictMcp = (version: string, env: NodeJS.ProcessEnv): Promise<boolean> => {
+    // Probe capabilities once per detected version.  A real "unsupported"
+    // answer expires so an upgrade is noticed without a harness restart; a
+    // probe that TIMED OUT is not an answer at all and is never cached — it
+    // says the host was busy, not that the CLI lacks the flag.  The deadline
+    // is the `--version` probe's 8 s stretched by host load, the way ACP
+    // sizes its initialize deadline (acp/init-deadline.ts).
+    type StrictMcpVerdict = "supported" | "unsupported" | "timeout";
+    let strictMcpProbe: { version: string; expiresAt: number; result: Promise<StrictMcpVerdict> } | undefined;
+    const strictMcpProbeTimeoutMs = (): number => {
+      const configured = Number(process.env.OMB_CLAUDE_PROBE_TIMEOUT_MS);
+      const base = Number.isFinite(configured) && configured > 0 ? configured : STRICT_MCP_PROBE_BASE_MS;
+      return Math.round(base * initLoadFactor(readHostLoad()));
+    };
+    const supportsStrictMcp = (version: string, env: NodeJS.ProcessEnv): Promise<StrictMcpVerdict> => {
       if (strictMcpProbe?.version === version && strictMcpProbe.expiresAt > Date.now()) {
         return strictMcpProbe.result;
       }
+      const timeout = strictMcpProbeTimeoutMs();
       const probe = {
         version,
         expiresAt: Date.now() + 30_000,
-        result: new Promise<boolean>((resolve) => {
-          execCli(config.cli, ["--help"], { timeout: 3000, env }, (error, stdout) => {
-            resolve(!error && /(?:^|\s)--strict-mcp-config(?:\s|$)/m.test(stdout));
+        result: new Promise<StrictMcpVerdict>((resolve) => {
+          execCli(config.cli, ["--help"], { timeout, env }, (error, stdout) => {
+            if (error) {
+              const err = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };
+              const timedOut = err.killed === true || err.code === "ETIMEDOUT" || /did not exit within/.test(err.message);
+              resolve(timedOut ? "timeout" : "unsupported");
+              return;
+            }
+            resolve(/(?:^|\s)--strict-mcp-config(?:\s|$)/m.test(stdout) ? "supported" : "unsupported");
           });
         }),
       };
       strictMcpProbe = probe;
-      void probe.result.then((supported) => {
-        if (supported) probe.expiresAt = Infinity;
+      void probe.result.then((verdict) => {
+        if (verdict === "supported") probe.expiresAt = Infinity;
+        // drop a non-answer so the next caller probes again
+        else if (verdict === "timeout" && strictMcpProbe === probe) strictMcpProbe = undefined;
       });
       return probe.result;
     };
 
+    // Only a definite "unsupported" refuses.  `--strict-mcp-config` is on
+    // every turn's argv regardless, so a CLI that truly lacks the flag fails
+    // its own spawn instead of merging global MCP servers; refusing on a
+    // timed-out probe only turned a busy host into "Update Claude Code".
     const requireStrictMcp = async (): Promise<void> => {
       const env = claudeEnvironment(undefined, { ...process.env, ...input.environment });
-      if (!(await supportsStrictMcp(strictMcpProbe?.version ?? "unprobed", env))) {
+      if ((await supportsStrictMcp(strictMcpProbe?.version ?? "unprobed", env)) === "unsupported") {
         throw new Error(CLAUDE_ISOLATION_REASON);
       }
     };
@@ -1167,7 +1292,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         );
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
-      if (!(await supportsStrictMcp(version, env))) {
+      if ((await supportsStrictMcp(version, env)) === "unsupported") {
         return {
           state: "unavailable",
           reason: CLAUDE_ISOLATION_REASON,
@@ -1271,7 +1396,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           // through the broker (see sendTurn), so the asks still reach a person.
           localComputerMcp: true,
         },
-        sendTurn,
+        sendTurn: (turn) => sendTurn(turn),
         steer,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),
         respondToRequest: async (threadId, requestId, decision) => {

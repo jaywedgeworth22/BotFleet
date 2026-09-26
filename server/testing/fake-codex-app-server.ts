@@ -6,7 +6,9 @@
 //
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | windows-command |
 //                     mcp-elicitation | logged-in-stdout | logged-out | unauthorized |
-//                     resume-unauthorized | resume-transient
+//                     resume-unauthorized | resume-transient | turn-failed-quota
+//                     (turn/start is accepted, then turn/completed reports
+//                     status "failed" with a usage-limit message)
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
@@ -196,6 +198,13 @@ process.stdin.on("data", (chunk) => {
           }
         }
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
+        if (mode === "turn-failed-quota") {
+          dump();
+          notify("turn/completed", {
+            turn: { status: "failed", error: { message: "You've hit your usage limit for this plan.  Resets at 3pm." } },
+          });
+          break;
+        }
         const command = mode === "windows-command"
           ? [
               "\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\"",

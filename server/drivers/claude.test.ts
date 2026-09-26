@@ -177,6 +177,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_RETRY_SCALE;
     delete process.env.FAKE_CLAUDE_HELP;
     delete process.env.FAKE_CLAUDE_HELP_PROBES;
+    delete process.env.FAKE_CLAUDE_CRASH_TURN;
+    delete process.env.OMB_CLAUDE_PROBE_TIMEOUT_MS;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.XAI_API_KEY;
     delete process.env.COMPOSIO_API_KEY;
@@ -236,10 +238,23 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     // actionable failure look like a benign model-side stop; Seer's PR #605
     // proposed allowlisting "stop_sequence" as benign, which would have
     // silently swallowed every one of these rate-limit failures instead.
+    //
+    // The failed result now lands as the structured `error:<code>` stop
+    // reason the chat-completions lane already uses for a 429, so
+    // model-fallback.ts records a cooldown and consults the chain, and as a
+    // runtime.error carrying the CLI's own `result` text and the status, so
+    // errors.log and Sentry see the cause instead of a bare label.
     await create("api-error");
     await instance.adapter.sendTurn({ threadId: "t-api-error", text: "hi" });
     const done = await recorder.until((e) => e.type === "turn.completed");
-    expect(done).toMatchObject({ type: "turn.completed", ok: false, stopReason: "api_error" });
+    expect(done).toMatchObject({ type: "turn.completed", ok: false, stopReason: "error:quota_or_region_restriction" });
+    const error = recorder.events.find((e) => e.type === "runtime.error") as { message: string; setup?: boolean };
+    expect(error.message).toContain("api_error");
+    expect(error.message).toContain("HTTP 429");
+    expect(error.message).toContain("rate_limit_error");
+    expect(error.setup).toBeUndefined();
+    // a stale stop_reason never leaks into the label
+    expect(recorder.events.some((e: any) => e.stopReason === "stop_sequence")).toBe(false);
   });
 
   it("streams partial-message text deltas without re-emitting the whole message", async () => {
@@ -623,15 +638,70 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
   });
 
-  it("interrupt kills the turn and settles it as failed, not hung", async () => {
+  it("interrupt kills the turn and settles it as interrupted, not as a crash", async () => {
+    // Stop is the requested outcome.  Settling it as exit_before_result with
+    // a "claude exited 143 before result" runtime.error paged Sentry on
+    // every user Stop and every forced quiesce (BOTFLEET-R).
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-int", text: "go" });
     await recorder.until((e) => e.type === "session.started");
 
     await instance.adapter.interruptTurn("t-int");
     const done = await recorder.until((e) => e.type === "turn.completed");
-    expect(done).toMatchObject({ ok: false, stopReason: "exit_before_result" });
+    expect(done).toMatchObject({ ok: false, stopReason: "interrupted" });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+    expect(instance.adapter.hasSession("t-int")).toBe(false);
   });
+
+  it("interrupt on a retained process settles THAT turn as interrupted with no runtime.error", async () => {
+    // The spawn-time close handler used to read turn 1's retry flag, so a
+    // Stop during turn 2 on the same process was reported as a crash.
+    await create("slow");
+    await instance.adapter.sendTurn({ threadId: "t-int-retained", text: "one" });
+    const first = await recorder.until((e) => e.type === "turn.completed");
+    const announced = (recorder.events.find((e) => e.type === "session.started") as { sessionId: string }).sessionId;
+    const second = await instance.adapter.sendTurn({ threadId: "t-int-retained", text: "two", resumeCursor: announced });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool" && e.turnId === second.turnId);
+
+    await instance.adapter.interruptTurn("t-int-retained");
+    const done = await recorder.until((e) => e.type === "turn.completed" && e.eventId !== first.eventId);
+    expect(done).toMatchObject({ ok: false, stopReason: "interrupted", turnId: second.turnId });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(2);
+  });
+
+  it("relaunches a retained process's crashed turn with THAT turn's text and turnId", async () => {
+    // Turn 2 on a retained process dies transiently.  The close handler
+    // closed over turn 1's SendTurnInput, so the relaunch replayed "one"
+    // under turn 1's id and turn 2 never settled.
+    process.env.FAKE_CLAUDE_CRASH_TURN = "2";
+    process.env.FAKE_CLAUDE_RETRY_SCALE = "0.001";
+    const dump = join(scratch, "retained-relaunch.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-retained-crash", text: "one" });
+    const first = await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).prompt.message.content).toBe("one");
+    const announced = (recorder.events.find((e) => e.type === "session.started") as { sessionId: string }).sessionId;
+
+    const second = await instance.adapter.sendTurn({ threadId: "t-retained-crash", text: "two", resumeCursor: announced });
+    const done = await recorder.until((e) => e.type === "turn.completed" && e.eventId !== first.eventId);
+    expect(done).toMatchObject({ ok: true, turnId: second.turnId });
+    const retries = recorder.events.filter((e) => e.type === "turn.retrying");
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ turnId: second.turnId, attempt: 1 });
+    // the relaunch is the same logical turn: one settle, no second start
+    expect(recorder.events.filter((e) => e.type === "turn.completed" && e.turnId === second.turnId)).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "turn.started")).toHaveLength(2);
+    // the fresh process was handed turn 2's text and resumed the session
+    const relaunched = JSON.parse(readFileSync(dump, "utf8"));
+    expect(relaunched.prompt.message.content).toBe("two");
+    expect(relaunched.argv).toContain("--resume");
+    // exactly one reply reached the transcript for turn 2
+    expect(
+      recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text" && e.turnId === second.turnId),
+    ).toHaveLength(1);
+  }, 20_000);
 
   it("a message sent mid-turn is steered into the running turn", async () => {
     await create("slow");
@@ -1282,6 +1352,31 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await instance.generateText?.("title");
     await instance.reviewPermission?.("review");
     expect(readFileSync(probes, "utf8")).toBe("probe\n");
+  });
+
+  it("does not refuse a turn, or cache a verdict, when the capability probe times out", async () => {
+    // Board 4a3ee87b: a 3 s --help probe on a loaded Mac timed out, was
+    // cached as "unsupported" for 30 s, and every turn in that window was
+    // refused with "Update Claude Code".  A timeout is not an answer.
+    process.env.FAKE_CLAUDE_HELP = "hang";
+    process.env.OMB_CLAUDE_PROBE_TIMEOUT_MS = "50";
+    await create();
+    await expect(instance.adapter.sendTurn({ threadId: "t-probe-timeout", text: "go" })).resolves.not.toMatchObject({
+      dispatched: false,
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.threadId === "t-probe-timeout");
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "turn.completed", ok: true, threadId: "t-probe-timeout" }));
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+
+    // the next caller probes again — and a real "unsupported" still refuses
+    process.env.FAKE_CLAUDE_HELP = "unsupported";
+    delete process.env.OMB_CLAUDE_PROBE_TIMEOUT_MS;
+    await expect(instance.adapter.sendTurn({ threadId: "t-probe-again", text: "go" })).resolves.toMatchObject({
+      dispatched: false,
+    });
+    expect(recorder.events).toContainEqual(
+      expect.objectContaining({ type: "runtime.error", threadId: "t-probe-again", message: expect.stringContaining("Update Claude Code") }),
+    );
   });
 
   it("honors Stop while the first capability probe is pending", async () => {

@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { stripWorkspaceCredentialEnv } from "../config.ts";
 import { computerProxyEnv } from "../container-computer.ts";
 import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
-import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { describeSpawnFailure, execCli, killCliTreeHard, spawnCli } from "../procs.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 
 import type {
@@ -48,6 +48,32 @@ class CodexResumeError extends Error {
     );
     this.name = "CodexResumeError";
   }
+}
+
+/** The stop reason and error text for a `turn/completed` the app-server
+ *  reports as failed.  The raw message used to become the stopReason as-is,
+ *  which no downstream consumer recognises: a "usage limit reached" turn
+ *  settled without a cooldown and without consulting the fallback chain.
+ *  Classifying it through the shared retry classifier maps quota and rate
+ *  limits, auth and outages onto the `error:<code>` / auth_required stop
+ *  reasons the harness already acts on; anything else keeps the message. */
+export function describeFailedTurn(t: { status?: unknown; error?: { message?: unknown } | null }): {
+  stopReason: string;
+  message: string;
+  setup: boolean;
+} {
+  const raw = t.error?.message ?? t.status ?? "failed";
+  const text = String(raw).trim().slice(0, 500) || "failed";
+  const verdict = classifyError({ text });
+  const stopReason =
+    verdict.reason === "quota" || verdict.reason === "rate_limited"
+      ? "error:quota_or_region_restriction"
+      : verdict.reason === "auth"
+        ? "auth_required"
+        : verdict.reason === "overloaded" || verdict.reason === "server_error"
+          ? "error:upstream_outage"
+          : text;
+  return { stopReason, message: `codex turn failed: ${text}`, setup: verdict.reason === "auth" };
 }
 
 class CodexRpcError extends Error {
@@ -304,9 +330,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           send({ jsonrpc: "2.0", id, method, params });
         });
 
+      // The app-server never exits on its own, and its MCP servers live in
+      // its process group: SIGTERM the group, then SIGKILL what ignores it.
       const stop = () => {
         stopRequested = true;
-        killCliTree(child);
+        killCliTreeHard(child);
       };
 
       const settle = (ok: boolean, stopReason: string | null) => {
@@ -510,7 +538,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
           case "turn/completed": {
             const t = p.turn ?? {};
-            settle(t.status === "completed", t.status === "completed" ? null : (t.error?.message ?? t.status ?? "failed"));
+            if (t.status === "completed") {
+              settle(true, null);
+              break;
+            }
+            const failure = describeFailedTurn(t);
+            emit({
+              ...base(threadId, turnId),
+              type: "runtime.error",
+              message: failure.message,
+              ...(failure.setup ? { setup: true } : {}),
+            });
+            settle(false, failure.stopReason);
             break;
           }
           case "error":
@@ -568,14 +607,21 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       });
       child.on("close", (code) => {
         if (abandoned) return;
-        if (!state.settled) {
-          emit({
-            ...base(threadId, turnId),
-            type: "runtime.error",
-            message: `codex exited ${code} before turn/completed${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`,
-          });
-          settle(false, "exit_before_result");
+        if (state.settled) return;
+        // Stop asked for this exit: the requested outcome, not a crash, so
+        // no runtime.error and the settle reason the harness reads as a
+        // user stop (the backoff path at the bottom of launchAttempt
+        // already settles a stopped retry the same way).
+        if (stopRequested) {
+          settle(false, "interrupted");
+          return;
         }
+        emit({
+          ...base(threadId, turnId),
+          type: "runtime.error",
+          message: `codex exited ${code} before turn/completed${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`,
+        });
+        settle(false, "exit_before_result");
       });
 
       active.set(threadId, { stop, turnId, asks });
@@ -714,7 +760,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // This app-server never exits by itself. Retire the failed attempt
           // and silence its late handlers before the replacement launches.
           abandoned = true;
-          killCliTree(child);
+          killCliTreeHard(child);
           await new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, Math.max(1, Math.round(delayMs * retryScale)));
             timer.unref?.();

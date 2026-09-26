@@ -672,6 +672,34 @@ describe("CodexDriver turns (fake app-server)", () => {
     await recorder.until((e) => e.type === "turn.completed");
   });
 
+  it("Stop settles the turn as interrupted with no runtime.error", async () => {
+    // The app-server dies by our own SIGTERM on Stop; reporting that as
+    // "codex exited null before turn/completed" paged Sentry on every user
+    // Stop and every forced quiesce.  Stop is the requested outcome.
+    await create({ mode: "approval" }); // approval mode parks the turn open
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-stop", text: "one" });
+    await recorder.until((e) => e.type === "request.opened");
+    await instance.adapter.interruptTurn("t-stop");
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "interrupted", turnId });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(instance.adapter.hasSession("t-stop")).toBe(false);
+  });
+
+  it("classifies a failed turn/completed so quota text records a cooldown", async () => {
+    // The raw message used to become the stopReason verbatim, which nothing
+    // downstream recognises; the structured code is what model-fallback.ts
+    // keys a cooldown and the fallback chain off.
+    await create({ mode: "turn-failed-quota" });
+    await instance.adapter.sendTurn({ threadId: "t-failed-quota", text: "hi" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "error:quota_or_region_restriction" });
+    const error = recorder.events.find((e) => e.type === "runtime.error") as { message: string };
+    expect(error.message).toContain("usage limit");
+    expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
+  });
+
   it("a missing binary surfaces as a failed turn, and snapshot says unavailable", async () => {
     instance = await CodexDriver.create({
       instanceId: "codex-missing",

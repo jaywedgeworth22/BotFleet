@@ -139,6 +139,46 @@ export function killCliTree(child: ChildProcess): void {
   }
 }
 
+/** Signal a CLI's whole process group, or on failure the leader alone.
+ *  Returns false when nothing is left to signal (ESRCH). */
+function signalCliGroup(child: ChildProcess, pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    try {
+      return child.kill(signal);
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Stop a CLI's whole tree and make it stick: SIGTERM the process group now,
+ *  SIGKILL whatever is still in it after `graceMs`.
+ *
+ *  Unlike killCliTree this does not stop at a leader that already exited.
+ *  A crashed `claude` or `codex` leaves its MCP proxies (and their children)
+ *  alive in the group it led, and a Stop that only checks `child.exitCode`
+ *  walks past them.  The group outlives its leader on POSIX, so signalling
+ *  `-pid` still reaches every survivor; ESRCH means the group is gone and
+ *  there is nothing to do.  Windows has no process groups: taskkill /T /F is
+ *  already forceful, so the plain kill is reused there. */
+export function killCliTreeHard(child: ChildProcess, graceMs = 2_000): void {
+  const pid = child.pid;
+  if (!pid) return;
+  if (process.platform === "win32") {
+    killCliTree(child);
+    return;
+  }
+  if (!signalCliGroup(child, pid, "SIGTERM")) return;
+  const timer = setTimeout(() => {
+    signalCliGroup(child, pid, "SIGKILL");
+  }, Math.max(0, graceMs));
+  timer.unref?.();
+}
+
 /** Per-turn broker channel: unix socket on POSIX, named pipe on Windows
  * (Node can't listen on a filesystem socket path there — EACCES). */
 export function brokerSocketPath(dataDir: string, tag: string): string {
