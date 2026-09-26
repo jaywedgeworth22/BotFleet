@@ -439,12 +439,17 @@ export function Composer({
 
   useEffect(() => {
     const onGlobalPaste = (e: ClipboardEvent) => {
-      // 2026-09-26 BF-FIXER fix: the previous early-return for INPUT/TEXTAREA/contenteditable
-      // skipped file-intake for any paste that landed inside the composer textarea. The textarea's
-      // own onPaste (below) only handles text -- it never reads clipboardData.files, so screenshot
-      // and other file pastes were silently dropped. Drop the early-return entirely; filesFromClipboard
-      // returns [] for text-only pastes, so we won't double-intake text. The textarea onPaste comment
-      // ("rely on onGlobalPaste for files to prevent double-intake") now matches reality.
+      // Skip other editables (Search, Settings, CommandPalette, etc.) so file paste stays local.
+      // Composer textarea (inputRef) and pastes outside any text field still run file intake;
+      // filesFromClipboard returns [] for text-only clips, so text paste stays in textarea onPaste.
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        target !== inputRef.current &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
       const files = filesFromClipboard(e.clipboardData);
       if (files.length > 0) {
         e.preventDefault();
