@@ -281,39 +281,85 @@ export function scrubWebhookSecrets(text: string): string {
  * it is worth on the send path. */
 const SCRUB_MAX_DEPTH = 12;
 
+/** Keys the scrub never descends into.  `sdkProcessingMetadata` carries
+ * live SDK objects (the captured Scope, and through it the client and its
+ * promise buffer), and @sentry/core's envelope builder deletes it before
+ * anything is sent, so nothing under it can reach Sentry. */
+const SCRUB_SKIP_KEYS = new Set(["sdkProcessingMetadata"]);
+
+function isPlainRecord(value: object): value is Record<string, unknown> {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 /** Scrub every string in a Sentry payload in place and hand it back.  A
  * field-by-field list (transaction, request.url, culprit, span descriptions,
  * breadcrumbs, tags) would miss whichever field the next SDK release starts
  * copying the URL into, so this walks the whole payload instead: the
- * `includes` pre-check makes the common case one scan per string. */
+ * `includes` pre-check makes the common case one scan per string.
+ *
+ * A real SDK event is not pure JSON.  It can hold class instances (a Scope,
+ * the client, an OTel span) whose properties include getter-only accessors,
+ * and writing to one of those throws in strict mode.  So the walk descends
+ * only into arrays and plain objects, reads each property exactly once, and
+ * writes back only a string that the scrub actually changed. */
 export function scrubSentryPayload<T>(payload: T): T {
+  if (typeof payload === "string") {
+    // SAFETY: a string only ever becomes another string.
+    return scrubWebhookSecrets(payload) as T;
+  }
   const seen = new WeakSet<object>();
-  const walk = (value: unknown, depth: number): unknown => {
-    if (typeof value === "string") return scrubWebhookSecrets(value);
-    if (value === null || typeof value !== "object" || depth > SCRUB_MAX_DEPTH) return value;
-    if (seen.has(value)) return value;
+  const walk = (value: object, depth: number): void => {
+    if (depth > SCRUB_MAX_DEPTH || seen.has(value)) return;
     seen.add(value);
     if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i += 1) value[i] = walk(value[i], depth + 1);
-      return value;
+      for (let i = 0; i < value.length; i += 1) {
+        const cur: unknown = value[i];
+        if (typeof cur === "string") {
+          const next = scrubWebhookSecrets(cur);
+          if (next !== cur) value[i] = next;
+        } else if (cur !== null && typeof cur === "object") {
+          walk(cur, depth + 1);
+        }
+      }
+      return;
     }
-    // SAFETY: a plain record walk over a JSON-shaped payload; only string
-    // leaves are rewritten, and keys are left alone.
-    const record = value as Record<string, unknown>;
-    for (const key of Object.keys(record)) {
-      const next = walk(record[key], depth + 1);
-      if (next !== record[key]) record[key] = next;
+    if (!isPlainRecord(value)) return;
+    for (const key of Object.keys(value)) {
+      if (SCRUB_SKIP_KEYS.has(key)) continue;
+      const cur = value[key];
+      if (typeof cur === "string") {
+        const next = scrubWebhookSecrets(cur);
+        if (next !== cur) value[key] = next;
+      } else if (cur !== null && typeof cur === "object") {
+        walk(cur, depth + 1);
+      }
     }
-    return value;
   };
-  // SAFETY: the walk mutates in place and returns the same reference for
-  // every object, and a string only ever becomes another string, so the
-  // result has exactly the type it came in with.
-  return walk(payload, 0) as T;
+  if (payload !== null && typeof payload === "object") walk(payload, 0);
+  return payload;
 }
 
-/** Incoming `/hooks/*` requests never become transactions: the path is a
- * credential, and the scrub above is the second line, not the first. */
+/** Wrap a before-send hook so a throw drops the payload instead of
+ * escaping into the SDK.  When a hook throws, the SDK reports its own
+ * internal error event, and that event skips beforeSend and carries the
+ * scope's transaction name and breadcrumbs unscrubbed, so a throw here would
+ * leak the very secret the hook exists to remove.  Dropping one payload is
+ * the safe failure. */
+export function safeScrubHook<T>(payload: T): T | null {
+  try {
+    return scrubSentryPayload(payload);
+  } catch {
+    return null;
+  }
+}
+
+/** Incoming `/hooks/*` requests get no server span: the path is a
+ * credential.  That is not the whole defence.  A span started while such a
+ * request is handled (a bot turn a webhook kicks off, say) still becomes its
+ * own root transaction, and the isolation scope's request URL, transaction
+ * name and breadcrumbs ride along on it and on any error captured there.  The
+ * payload scrub above is what keeps those clean. */
 export function isWebhookIngressPath(urlPath: string): boolean {
   return urlPath.startsWith("/hooks/");
 }
@@ -408,9 +454,9 @@ async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<Sentr
       // spans are split out of the transaction in `sendEvent`, after
       // beforeSendTransaction has already walked them, so a span hook would
       // only scan the same strings twice.
-      beforeSend: (event) => scrubSentryPayload(event),
-      beforeSendTransaction: (event) => scrubSentryPayload(event),
-      beforeSendLog: (log) => scrubSentryPayload(log),
+      beforeSend: (event) => safeScrubHook(event),
+      beforeSendTransaction: (event) => safeScrubHook(event),
+      beforeSendLog: (log) => safeScrubHook(log),
       sendDefaultPii: false,
       // Sentry Agents (SaaS): standalone gen_ai envelopes for Conversations.
       // Opt-out only for self-hosted that cannot ingest them.

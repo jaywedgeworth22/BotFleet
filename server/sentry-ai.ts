@@ -470,6 +470,11 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
   switch (event.type) {
     case "turn.started": {
       reportedProviderErrors.delete(key);
+      // A turn that never completed (a crashed driver) must not hand its
+      // flags to the next turn on the same key.
+      initTimeoutTurns.delete(key);
+      modelTimeoutTurns.delete(key);
+      setupErrorTurns.delete(key);
       const identity = eventIdentity;
       const named = agentName(identity, event.provider);
       const span = sink.startInactiveSpan({
@@ -635,7 +640,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         });
         if (event.message.includes("initialize timed out")) initTimeoutTurns.add(key);
         if (event.message.includes("the model did not answer within")) modelTimeoutTurns.add(key);
-        if (event.setup) setupErrorTurns.set(key, event.message.slice(0, 500));
+        if (event.setup) setupErrorTurns.set(key, redactSecretsInText(event.message).slice(0, 500));
         break;
       }
       const turn = turns.get(key);

@@ -6,6 +6,7 @@ import {
   isSentryInitialized,
   isWebhookIngressPath,
   resetSentryForTests,
+  safeScrubHook,
   scrubSentryPayload,
   scrubWebhookSecrets,
   sentryDsnFromEnv,
@@ -233,7 +234,7 @@ describe("webhook secrets never reach Sentry", () => {
     expect(JSON.stringify(log)).not.toContain(secret);
   });
 
-  it("keeps /hooks/* requests out of transactions entirely", async () => {
+  it("drops the incoming /hooks/* server span", async () => {
     const hooks = await initWithStandIn();
     const http = hooks.integrations.find((integration) => integration.name === "Http");
     expect(http?.options?.ignoreIncomingRequests?.(`/hooks/${endpoint}/${secret}`)).toBe(true);
@@ -251,5 +252,33 @@ describe("webhook secrets never reach Sentry", () => {
     expect(out.ok).toBe(true);
     expect(out.nothing).toBeNull();
     expect(out.self).toBe(out);
+  });
+
+  it("never writes into class instances, getters or sdkProcessingMetadata", () => {
+    class LiveScope {
+      get $(): string[] {
+        return [`/hooks/${endpoint}/${secret}`];
+      }
+    }
+    const scope = new LiveScope();
+    const meta = { note: `/hooks/${endpoint}/${secret}` };
+    const holder = {};
+    Object.defineProperty(holder, "fresh", { enumerable: true, get: () => ({ url: `/hooks/${endpoint}/${secret}` }) });
+    const event = { scope, sdkProcessingMetadata: meta, holder, message: `/hooks/${endpoint}/${secret}` };
+    expect(() => scrubSentryPayload(event)).not.toThrow();
+    expect(event.message).toBe(`/hooks/${endpoint}/:secret`);
+    expect(event.scope).toBe(scope);
+    expect(meta.note).toContain(secret);
+  });
+
+  it("drops the payload rather than throwing out of a before-send hook", () => {
+    const hostile = {};
+    Object.defineProperty(hostile, "boom", {
+      enumerable: true,
+      get: () => {
+        throw new Error("getter blew up");
+      },
+    });
+    expect(safeScrubHook({ nested: hostile })).toBeNull();
   });
 });
