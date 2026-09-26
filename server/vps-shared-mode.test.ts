@@ -71,3 +71,51 @@ describe("vpsModeSwitchTargets", () => {
     expect(targets[0]!.key).toBe("shared");
   });
 });
+
+describe("shared mode lifecycle targeting", () => {
+  it("vpsComputerStatus inspects the shared container name, not the bot's", async () => {
+    const { vpsComputerStatus, SHARED_VPS_TARGET } = await import("./vps-computer.ts");
+    const inspected: string[] = [];
+    const runner: import("./vps-computer.ts").VpsCommandRunner = async (args) => {
+      // docker -H ssh://alias <command> ...
+      const command = args[2];
+      if (command === "image") {
+        return { stdout: "[]", stderr: "" };
+      }
+      if (command === "inspect") {
+        inspected.push(String(args[3] ?? ""));
+        throw new Error(`Error: No such object: ${args[3]}`);
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const cfg: AppConfig = {
+      vps: { sshAlias: "test-vps" },
+      botDefaults: { vpsMode: "shared" },
+    };
+    const status = await vpsComputerStatus(cfg, "bot-xyz", runner);
+    expect(status.container_name).toBe(SHARED_VPS_TARGET.containerName);
+    expect(inspected.some((name) => name === SHARED_VPS_TARGET.containerName)).toBe(true);
+    expect(inspected.some((name) => name.includes("botxyz") || name.includes("bot-xyz"))).toBe(false);
+  });
+
+  it("vpsComputerStatus in per-bot mode still inspects the per-bot name", async () => {
+    const { vpsComputerStatus, vpsContainerName } = await import("./vps-computer.ts");
+    const inspected: string[] = [];
+    const runner: import("./vps-computer.ts").VpsCommandRunner = async (args) => {
+      const command = args[2];
+      if (command === "image") return { stdout: "[]", stderr: "" };
+      if (command === "inspect") {
+        inspected.push(String(args[3] ?? ""));
+        throw new Error(`Error: No such object: ${args[3]}`);
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const cfg: AppConfig = {
+      vps: { sshAlias: "test-vps" },
+      botDefaults: { vpsMode: "per-bot" },
+    };
+    const status = await vpsComputerStatus(cfg, "bot-xyz", runner);
+    expect(status.container_name).toBe(vpsContainerName("bot-xyz"));
+    expect(inspected[0]).toBe(vpsContainerName("bot-xyz"));
+  });
+});

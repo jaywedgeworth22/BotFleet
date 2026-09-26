@@ -3516,7 +3516,7 @@ async function startTurn(
 
   void (async () => {
     let observedReloadGeneration = providerReloadGeneration;
-    let vpsLease: ReturnType<ExactTurnLeases["claim"]> | undefined;
+    let vpsLease: ExactTurnLease | undefined;
     const dispatchStillCurrent = (): boolean => {
       const owner = activeTurnOwners.forEvent(threadId, instanceId);
       if (owner?.dispatchId !== dispatchOwner.dispatchId) return false;
@@ -11619,6 +11619,24 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const aliasError = vpsAliasChangeError(currentAlias, nextAlias, activeVpsThreads.size > 0);
         if (aliasError) return json(res, 409, { error: aliasError });
       }
+      // Refuse a VPS mode switch early — before credential writes — when a
+      // live turn holds any desktop the switch would remove.  Actual container
+      // cleanup still runs just before save, after every other gate has passed.
+      {
+        const currentVpsMode = cfg.botDefaults?.vpsMode ?? null;
+        const nextVpsMode = patch.botDefaults && Object.hasOwn(patch.botDefaults, "vpsMode")
+          ? (patch.botDefaults.vpsMode ?? null)
+          : currentVpsMode;
+        if (nextVpsMode !== currentVpsMode) {
+          if (vpsModeChangeBusy) {
+            return json(res, 409, { error: "a VPS mode change is already in progress" });
+          }
+          const affectedVpsTargets = vps.vpsModeSwitchTargets(store.bots.map((b) => b.id));
+          if (affectedVpsTargets.some((t) => activeVpsThreads.hasTarget(t.key))) {
+            return json(res, 409, { error: "a VPS desktop is being used by a bot — stop that turn before switching modes" });
+          }
+        }
+      }
       const currentDefaultComputers = cfg.botDefaults?.computers;
       const currentAllowedComputers = consentAllowedComputers(cfg);
       const nextDefaultComputers = patch.botDefaults?.computers ?? currentDefaultComputers;
@@ -11840,9 +11858,11 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (lateImpact) return json(res, 409, lateImpact);
 
       // ── VPS mode-switch cleanup (mirrors Local VM at POST /api/local-computer/mode) ──
-      // When vpsMode changes between "shared" and "per-bot" (or to/from null
-      // when selfHostedVps is on), every container from both modes must be
-      // removed so the new mode starts clean and no orphans sit on the VPS.
+      // When vpsMode changes between "shared" and "per-bot" (or to/from null),
+      // every container from both modes must be removed so the new mode starts
+      // clean and no orphans sit on the VPS.  The leased-turn refusal ran
+      // earlier, before credential writes; recheck here in case a turn claimed
+      // a desktop while those writes ran.
       const currentVpsMode = cfg.botDefaults?.vpsMode ?? null;
       const nextVpsMode = patch.botDefaults && Object.hasOwn(patch.botDefaults, "vpsMode")
         ? (patch.botDefaults.vpsMode ?? null)
@@ -11852,11 +11872,8 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (vpsModeChangeBusy) {
           return json(res, 409, { error: "a VPS mode change is already in progress" });
         }
-        // Refuse if any VPS target is leased — a live turn is clicking
-        // inside a desktop the switch is about to remove.
         const affectedVpsTargets = vps.vpsModeSwitchTargets(store.bots.map((b) => b.id));
-        const leasedVps = affectedVpsTargets.find((t) => activeVpsThreads.hasTarget(t.key));
-        if (leasedVps) {
+        if (affectedVpsTargets.some((t) => activeVpsThreads.hasTarget(t.key))) {
           return json(res, 409, { error: "a VPS desktop is being used by a bot — stop that turn before switching modes" });
         }
         vpsModeChangeBusy = true;
