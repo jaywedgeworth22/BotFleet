@@ -168,13 +168,57 @@ describe("exact turn leases", () => {
   it("does not let an older finalizer release a successor on the same bot and thread", () => {
     const leases = new ExactTurnLeases();
     const oldLease = leases.claim("bot-1", "thread-1", 1);
-    const releaseOldFinalScreenshot = () => leases.release(oldLease);
+    const releaseOldFinalScreenshot = () => leases.release(oldLease!);
     const successor = leases.claim("bot-1", "thread-1", 2);
 
     expect(releaseOldFinalScreenshot()).toBe(false);
     expect(leases.forBot("bot-1")).toBe(successor);
     expect(vpsAliasChangeError("old-vps", "new-vps", leases.size > 0)).toBe(VPS_ALIAS_CHANGE_ERROR);
-    expect(leases.release(successor)).toBe(true);
+    expect(leases.release(successor!)).toBe(true);
+    expect(leases.size).toBe(0);
+  });
+
+  it("prevents two different bots from holding the same shared target key", () => {
+    const leases = new ExactTurnLeases();
+    const first = leases.claim("bot-a", "thread-a", 10, "shared");
+    expect(first).not.toBeNull();
+    expect(leases.hasTarget("shared")).toBe(true);
+
+    // A different bot on the same target is refused.
+    const second = leases.claim("bot-b", "thread-b", 11, "shared");
+    expect(second).toBeNull();
+    expect(leases.forBot("bot-b")).toBeUndefined();
+
+    // Same bot + thread (successor) replaces the lease.
+    const successor = leases.claim("bot-a", "thread-a", 12, "shared");
+    expect(successor).not.toBeNull();
+    expect(successor!.dispatchId).toBe(12);
+    expect(leases.hasTarget("shared")).toBe(true);
+
+    // Release frees both maps.
+    expect(leases.release(successor!)).toBe(true);
+    expect(leases.hasTarget("shared")).toBe(false);
+    expect(leases.hasBot("bot-a")).toBe(false);
+    expect(leases.size).toBe(0);
+  });
+
+  it("allows two different bots on distinct per-bot target keys", () => {
+    const leases = new ExactTurnLeases();
+    const a = leases.claim("bot-a", "thread-a", 20, "bot:aaa");
+    const b = leases.claim("bot-b", "thread-b", 21, "bot:bbb");
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    expect(leases.size).toBe(2);
+    expect(leases.hasTarget("bot:aaa")).toBe(true);
+    expect(leases.hasTarget("bot:bbb")).toBe(true);
+  });
+
+  it("clearBot removes the target entry too", () => {
+    const leases = new ExactTurnLeases();
+    leases.claim("bot-x", "thread-x", 30, "shared");
+    expect(leases.hasTarget("shared")).toBe(true);
+    leases.clearBot("bot-x");
+    expect(leases.hasTarget("shared")).toBe(false);
     expect(leases.size).toBe(0);
   });
 });
