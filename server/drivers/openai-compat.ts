@@ -27,6 +27,12 @@ import { toTurnUsage } from "./chat-completions/usage.ts";
 import { capReplayedTranscript } from "./chat-completions/replay-cap.ts";
 
 const DRIVER_KIND = "openai-compat";
+// How long a request may go without a byte before it is abandoned.  This was
+// the whole-request ceiling, which cut off a slow-but-live stream at 120s;
+// it is now the turn loop's IDLE clock (see `requestIdleMs` in
+// chat-completions/loop.ts), so a stream still delivering bytes runs to the
+// loop's hard ceiling instead.  generateText, which has no loop around it,
+// still uses it as a plain ceiling.
 const REQUEST_TIMEOUT_MS = 120_000;
 
 // Default catalog — overwritten by /models when the endpoint answers.
@@ -178,6 +184,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         stream: boolean;
         signal?: AbortSignal;
         tools?: any[];
+        onChunk?: () => void;
         onDelta?: (d: string, streamKind?: "assistant_text" | "reasoning_text") => void;
         onUsage?: (usage: TurnUsage) => void;
       },
@@ -226,6 +233,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         // and its typed classification are safe to surface in diagnostics.
         throw httpErrorFor(res.status, "");
       }
+      // headers are progress too: the socket answered
+      opts.onChunk?.();
       if (!opts.stream) {
         const json: any = await res.json();
         const msg = json.choices?.[0]?.message;
@@ -307,6 +316,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
             if (buf.trim()) takeSseLine(buf.trim());
             break;
           }
+          // Any bytes at all keep the round's idle clock alive, parsed
+          // into a delta or not.
+          opts.onChunk?.();
           buf += decoder.decode(value, { stream: true });
           let nl;
           while ((nl = buf.indexOf("\n")) !== -1) {
@@ -449,13 +461,19 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
               stream: true,
               signal: opts.signal,
               tools: openAiTools,
-              onDelta: (delta, streamKind = "assistant_text") =>
+              onChunk: opts.onChunk,
+              // `onPublished` before the emit: from here this round can
+              // never be retried, because a replay would show the person
+              // text they already read.  It also feeds the idle clock.
+              onDelta: (delta, streamKind = "assistant_text") => {
+                opts.onPublished?.();
                 emit({
                   ...base(threadId, turnId),
                   type: "content.delta",
                   streamKind,
                   delta,
-                }),
+                });
+              },
               // Forwarded straight to the loop's own live channel, so a
               // round that errors mid-stream after several chunks still gets
               // its usage folded into the terminal event instead of
@@ -498,9 +516,10 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           ? (ask) => turn.toolHost!.requestApproval!(ask)
           : undefined,
         signal: abort.signal,
-        // The per-round ceiling this driver has always used, so an
-        // OpenRouter or Groq bot waits exactly as long as it did before.
-        budget: { requestTimeoutMs: REQUEST_TIMEOUT_MS },
+        // 120s of SILENCE ends a request, as it always has for this driver;
+        // a stream that keeps delivering bytes now runs to the loop's hard
+        // ceiling instead of being cut off at 120s mid-answer.
+        budget: { requestIdleMs: REQUEST_TIMEOUT_MS },
         onSettled: () => active.delete(threadId),
       });
 

@@ -81,20 +81,28 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
     const complete = async (
       messages: any[],
       model: string,
-      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onUsage?: (usage: TurnUsage) => void; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
+      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onChunk?: () => void; onUsage?: (usage: TurnUsage) => void; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
     ): Promise<{ text: string; tool_calls?: any[]; usage: TurnUsage | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({ model, messages, stream: opts.stream, ...(opts.stream ? { stream_options: { include_usage: true } } : {}), ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}) }),
-        signal: opts.signal
-          ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
-          : AbortSignal.timeout(120_000),
+        // The turn loop's signal already carries this round's deadlines
+        // (a hard ceiling plus an idle clock fed by `onChunk`).  A second
+        // timer here used to race them: a fixed 120s under the loop's own
+        // round ceiling cut a slow-but-live reasoning round off, and
+        // because the loop could not see which clock fired it was retried
+        // and then failed as a provider_error, which paged.  Only a caller
+        // with no signal (generateText) needs a ceiling of its own — the
+        // same pattern minimax.ts and openai-compat.ts use.
+        signal: opts.signal ?? AbortSignal.timeout(180_000),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw httpErrorFor(res.status, body ? body.slice(0, 200) : "");
       }
+      // headers are progress too: the socket answered
+      opts.onChunk?.();
       if (!opts.stream) {
         const json: any = await res.json();
         return {
@@ -165,6 +173,10 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
             if (buf.trim()) takeSseLine(buf.trim());
             break;
           }
+          // Any bytes at all keep the round's idle clock alive — a
+          // reasoning model can stream keep-alives or frames this reader
+          // never turns into a delta for a long time before it answers.
+          opts.onChunk?.();
           buf += decoder.decode(value, { stream: true });
           let nl;
           while ((nl = buf.indexOf("\n")) !== -1) {
@@ -247,6 +259,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           stream: true,
           tools: openAiTools,
           signal: opts.signal,
+          onChunk: opts.onChunk,
           onUsage: (u) => opts.onUsage?.(u),
           onDelta: (delta) => {
             opts.onPublished?.();
