@@ -75,6 +75,9 @@ describe("message-db", () => {
   it("migrates known legacy transcripts at Store startup so search sees unopened tasks", () => {
     const initial = new Store(selection);
     const bot = initial.createBot({}, { seedMessages: false });
+    // bots.json writes are debounced; a relaunch goes through the shutdown
+    // flush, so the roster is on disk before the next Store reads it.
+    initial.flushBotsNow();
     closeMessageDb();
     for (const suffix of ["", "-wal", "-shm"]) rmSync(join(DATA_DIR, `messages.db${suffix}`), { force: true });
     writeFileSync(legacy(bot.threadId), JSON.stringify([msg("old", "find this unopened legacy conversation")]));
