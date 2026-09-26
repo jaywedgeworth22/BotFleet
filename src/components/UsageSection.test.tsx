@@ -94,8 +94,11 @@ import {
   ENGINE_PLAN_OPTIONS,
   defaultEnginePlan,
   findMatchingPreset,
+  getInitialEnginePlans,
   modelDisplayName,
-} from "./UsageSection.tsx";
+} from "@/lib/usage-plans";
+
+
 
 describe("modelDisplayName", () => {
   it("maps raw engine model ids to clean picker display names", () => {
@@ -173,4 +176,14 @@ describe("ENGINE_PLAN_OPTIONS & findMatchingPreset", () => {
     expect(findMatchingPreset("cursor", "Custom Cursor Plan", 50)).toBeUndefined();
     expect(findMatchingPreset("minimax", "MiniMax Token Plan Max", 200)).toBeUndefined();
   });
+
+  it("initializes plans from saved configuration or defaults via getInitialEnginePlans", () => {
+    const plans = getInitialEnginePlans({
+      minimax: { planName: "Custom MiniMax", costPerMonth: 80 },
+    });
+    expect(plans.minimax).toEqual({ planName: "Custom MiniMax", costPerMonth: 80 });
+    // Unset engines take their defaults
+    expect(plans.cursor).toEqual({ planName: "Cursor Ultra", costPerMonth: null });
+  });
 });
+
