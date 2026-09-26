@@ -105,7 +105,7 @@ const CURSOR_ULTRA_NOTE =
   "Cursor Ultra subscription.  BotFleet does not register a separate Cursor API rate.";
 
 const CLAUDE_MAX_NOTE =
-  "Claude Max 20x subscription.  BotFleet does not register an Anthropic API rate for this engine.";
+  "Claude Max 20× subscription.  BotFleet does not register an Anthropic API rate for this engine.";
 
 const CODEX_PRO_LITE_NOTE =
   "ChatGPT Pro Lite subscription.  BotFleet does not register a separate OpenAI API rate for this engine.";
@@ -235,9 +235,9 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
     pricing: {
       kind: "subscription",
       subscription: {
-        tierLabel: "Claude Max 20x",
+        tierLabel: "Claude Max 20×",
         costPerMonth: 213.2,
-        includedQuota: "20x plan usage on the Max tier",
+        includedQuota: "20× plan usage on the Max tier",
         notes: CLAUDE_MAX_NOTE,
       },
     },

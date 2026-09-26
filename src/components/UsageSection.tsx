@@ -111,13 +111,13 @@ function formatSpendUsd(amount: number): string {
   return `$${amount.toFixed(2)}`;
 }
 
-interface EnginePlanOption {
+export interface EnginePlanOption {
   label: string;
   planName: string;
   costPerMonth: number | null;
 }
 
-const ENGINE_PLAN_OPTIONS: Record<string, EnginePlanOption[]> = {
+export const ENGINE_PLAN_OPTIONS: Record<string, EnginePlanOption[]> = {
   minimax: [
     { label: "Token Plan Max ($132/mo)", planName: "MiniMax Token Plan Max", costPerMonth: 132 },
     { label: "Token Plan Pro ($55/mo)", planName: "MiniMax Token Plan Pro", costPerMonth: 55 },
@@ -125,8 +125,8 @@ const ENGINE_PLAN_OPTIONS: Record<string, EnginePlanOption[]> = {
     { label: "API Pay-as-you-go", planName: "MiniMax API Pay-as-you-go", costPerMonth: null },
   ],
   claude: [
-    { label: "Claude Max 20x ($213.20/mo)", planName: "Claude Max 20x", costPerMonth: 213.2 },
-    { label: "Claude Max 5x ($100/mo)", planName: "Claude Max 5x", costPerMonth: 100 },
+    { label: "Claude Max 20× ($213.20/mo)", planName: "Claude Max 20×", costPerMonth: 213.2 },
+    { label: "Claude Max 5× ($100/mo)", planName: "Claude Max 5×", costPerMonth: 100 },
     { label: "Claude Pro ($20/mo)", planName: "Claude Pro", costPerMonth: 20 },
     { label: "API Pay-as-you-go", planName: "API Pay-as-you-go", costPerMonth: null },
   ],
@@ -148,15 +148,132 @@ const ENGINE_PLAN_OPTIONS: Record<string, EnginePlanOption[]> = {
     { label: "API Pay-as-you-go", planName: "API Pay-as-you-go", costPerMonth: null },
   ],
   cursor: [
-    { label: "Cursor Ultra ($40/mo)", planName: "Cursor Ultra", costPerMonth: 40 },
+    { label: "Cursor Ultra", planName: "Cursor Ultra", costPerMonth: null },
     { label: "Cursor Pro ($20/mo)", planName: "Cursor Pro", costPerMonth: 20 },
     { label: "Included / Bundled", planName: "Cursor Included / Bundled", costPerMonth: null },
   ],
   "deepseek-harness": [
-    { label: "Pay-as-you-go (API)", planName: "DeepSeek Pay-as-you-go", costPerMonth: null },
-    { label: "Custom Subscription", planName: "DeepSeek Subscription", costPerMonth: 0 },
+    { label: "Pay-as-you-go (API)", planName: "Pay-as-you-go (API)", costPerMonth: null },
   ],
 };
+
+const FALLBACK_MODEL_NAMES: Record<string, string> = {
+  "minimax-m3": "MiniMax M3",
+  "minimax-h3": "MiniMax H3",
+  "minimax-m2.7-highspeed": "MiniMax M2.7 Highspeed",
+  "minimax-m2.7": "MiniMax M2.7",
+  "grok-4.7-build-fast": "Grok 4.7 Build Fast",
+  "grok-4.7": "Grok 4.7",
+  "grok-4.6": "Grok 4.6",
+  "grok-3-mini": "Grok 3 mini",
+  "grok-4": "Grok 4",
+  "deepseek-chat": "DeepSeek Chat",
+  "deepseek-reasoner": "DeepSeek Reasoner",
+  "claude-opus-4": "Claude Opus 4",
+  "claude-sonnet-4.5": "Claude Sonnet 4.5",
+  "claude-haiku-4": "Claude Haiku 4",
+  "claude-3-7-sonnet": "Claude 3.7 Sonnet",
+  "claude-3-5-sonnet": "Claude 3.5 Sonnet",
+  "gpt-5-codex": "GPT-5 Codex",
+  "gpt-5": "GPT-5",
+  "gpt-4o": "GPT-4o",
+  "gpt-4o-mini": "GPT-4o mini",
+  "gemini-2.5-pro": "Gemini 2.5 Pro",
+  "gemini-2.5-flash": "Gemini 2.5 Flash",
+  "gemini-2.0-flash": "Gemini 2.0 Flash",
+  "cursor-default": "Cursor Default",
+};
+
+/** Map model ID to clean human-readable display name, preserving raw ID in tooltips. */
+export function modelDisplayName(
+  modelId: string,
+  instances?: Array<{ models?: { options?: Array<{ id: string; label: string }> } }>,
+): string {
+  if (!modelId) return modelId;
+  if (instances) {
+    for (const inst of instances) {
+      const match = inst.models?.options?.find(
+        (o) => o.id === modelId || o.id.toLowerCase() === modelId.toLowerCase(),
+      );
+      if (match?.label) return match.label;
+    }
+  }
+  for (const entry of Object.values(ENGINE_CAPABILITIES)) {
+    for (const m of entry.defaultModels ?? []) {
+      if (m.id === modelId || m.id.toLowerCase() === modelId.toLowerCase()) {
+        if (m.display.includes("(via ")) {
+          return m.display.replace(/\s*\(via[^)]*\)/, "");
+        }
+        return m.display;
+      }
+    }
+  }
+  const fallback = FALLBACK_MODEL_NAMES[modelId.toLowerCase()];
+  if (fallback) return fallback;
+  return modelId;
+}
+
+export function defaultEnginePlan(id: string): { planName: string; costPerMonth: number | null } {
+  const entry = ENGINE_CAPABILITIES[id];
+  if (!entry) return { planName: "Standard", costPerMonth: null };
+  return {
+    planName:
+      entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
+        ? entry.pricing.subscription.tierLabel
+        : entry.pricing.kind === "api"
+          ? "Pay-as-you-go (API)"
+          : entry.pricing.kind === "free"
+            ? "Free"
+            : "Standard",
+    costPerMonth:
+      entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
+        ? entry.pricing.subscription.costPerMonth
+        : null,
+  };
+}
+
+export function findMatchingPreset(
+  engineId: string,
+  planName?: string | null,
+  costPerMonth?: number | null,
+): EnginePlanOption | undefined {
+  const options = ENGINE_PLAN_OPTIONS[engineId] ?? [];
+  const norm = (s?: string | null) => (s ?? "").replace(/×/g, "x").trim().toLowerCase();
+  return options.find((opt) => {
+    const nameMatch = opt.planName === planName || norm(opt.planName) === norm(planName);
+    const costMatch = (opt.costPerMonth ?? null) === (costPerMonth ?? null);
+    return nameMatch && costMatch;
+  });
+}
+
+function getInitialEnginePlans(
+  configuredEnginePlans?: Record<string, { planName?: string; costPerMonth?: number | null }>,
+): Record<string, { planName: string; costPerMonth: number | null }> {
+  const initial: Record<string, { planName: string; costPerMonth: number | null }> = {};
+  for (const [id, entry] of Object.entries(ENGINE_CAPABILITIES)) {
+    const saved = configuredEnginePlans?.[id];
+    if (saved) {
+      initial[id] = {
+        planName:
+          saved.planName ??
+          (entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
+            ? entry.pricing.subscription.tierLabel
+            : entry.pricing.kind === "api"
+              ? "Pay-as-you-go (API)"
+              : "Free"),
+        costPerMonth:
+          saved.costPerMonth !== undefined
+            ? saved.costPerMonth
+            : entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
+              ? entry.pricing.subscription.costPerMonth
+              : null,
+      };
+    } else {
+      initial[id] = defaultEnginePlan(id);
+    }
+  }
+  return initial;
+}
 
 export function UsageSection() {
   const { state, dispatch } = useStore();
@@ -222,36 +339,15 @@ export function UsageSection() {
   const localQuotaRouting = usageConfig?.localQuotaRouting !== false;
 
   const configuredEnginePlans = usageConfig?.enginePlans;
-  const [enginePlans, setEnginePlans] = React.useState<Record<string, { planName: string; costPerMonth: number | null }>>({});
+  const [enginePlans, setEnginePlans] = React.useState<Record<string, { planName: string; costPerMonth: number | null }>>(() =>
+    getInitialEnginePlans(configuredEnginePlans),
+  );
   const [savingPlans, setSavingPlans] = React.useState(false);
   const [savePlansOk, setSavePlansOk] = React.useState(false);
   const [savePlansError, setSavePlansError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    const initial: Record<string, { planName: string; costPerMonth: number | null }> = {};
-    for (const [id, entry] of Object.entries(ENGINE_CAPABILITIES)) {
-      const saved = configuredEnginePlans?.[id];
-      if (saved) {
-        initial[id] = {
-          planName: saved.planName ?? (entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api" ? entry.pricing.subscription.tierLabel : entry.pricing.kind === "api" ? "Pay-as-you-go (API)" : "Free"),
-          costPerMonth: saved.costPerMonth !== undefined ? saved.costPerMonth : (entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api" ? entry.pricing.subscription.costPerMonth : null),
-        };
-      } else {
-        initial[id] = {
-          planName: entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
-            ? entry.pricing.subscription.tierLabel
-            : entry.pricing.kind === "api"
-              ? "Pay-as-you-go (API)"
-              : entry.pricing.kind === "free"
-                ? "Free"
-                : "Standard",
-          costPerMonth: entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
-            ? entry.pricing.subscription.costPerMonth
-            : null,
-        };
-      }
-    }
-    setEnginePlans(initial);
+    setEnginePlans(getInitialEnginePlans(configuredEnginePlans));
   }, [configuredEnginePlans]);
 
   const saveEnginePlans = async () => {
@@ -266,8 +362,8 @@ export function UsageSection() {
       dispatch({ type: "configStatus", config });
       setSavePlansOk(true);
       setTimeout(() => setSavePlansOk(false), 3000);
-    } catch (caught) {
-      setSavePlansError(caught instanceof Error ? caught.message : String(caught));
+    } catch (_caught) {
+      setSavePlansError("Couldn't save engine plans. Try again.");
     } finally {
       setSavingPlans(false);
     }
@@ -628,6 +724,7 @@ export function UsageSection() {
                   bot={bot}
                   usage={usage}
                   open={open}
+                  instances={state.instances}
                   onToggle={() => {
                     toggleBot(bot.id);
                     if (allExpanded) setAllExpanded(false);
@@ -1080,17 +1177,17 @@ export function UsageSection() {
 
       <Card
         title="Pricing Mode by Engine"
-        subtitle={'What you actually pay on each engine.\u00A0 Select your plan or enter a custom monthly cost for accurate what-if projections and spend tracking.'}
+        subtitle={'What you actually pay on each engine.\u00A0 Select your plan or enter a custom monthly cost so the estimate below matches what you pay.'}
       >
         <div className="flex flex-col">
-          <div className="grid grid-cols-[1.3fr_1.8fr_1.1fr_0.9fr] gap-x-3 border-b border-hairline/40 pb-2 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">
+          <div className="grid grid-cols-[1.3fr_1.8fr_1.1fr_0.9fr] gap-x-3 border-b border-hairline/40 pb-2 text-[11.5px] font-medium text-ink-secondary">
             <span>Engine</span>
             <span>Your Plan</span>
             <span className="text-right">Monthly Cost</span>
-            <span className="text-right">PAYG / 1k in</span>
+            <span className="text-right">Per 1k In</span>
           </div>
           {Object.entries(ENGINE_CAPABILITIES).map(([id, entry]) => {
-            const currentPlan = enginePlans[id];
+            const currentPlan = enginePlans[id] ?? defaultEnginePlan(id);
             const options = ENGINE_PLAN_OPTIONS[id] ?? [];
             const sub = entry.pricing.kind === "subscription" || entry.pricing.kind === "subscription+api"
               ? entry.pricing.subscription
@@ -1103,7 +1200,8 @@ export function UsageSection() {
             );
             const showNumericApi = api != null && allRowsHaveApi;
             const apiCost = showNumericApi ? `$${api.inputPer1k.toFixed(5)}` : "—";
-            const isCustom = !options.some((opt) => opt.planName === currentPlan?.planName && opt.costPerMonth === currentPlan?.costPerMonth);
+            const matchingPreset = findMatchingPreset(id, currentPlan.planName, currentPlan.costPerMonth);
+            const isCustom = !matchingPreset;
 
             return (
               <div key={id} className="grid grid-cols-[1.3fr_1.8fr_1.1fr_0.9fr] items-center gap-x-3 border-b border-hairline/20 py-2.5 text-[13px]">
@@ -1115,13 +1213,13 @@ export function UsageSection() {
                 </div>
                 <div className="flex flex-col gap-1">
                   <select
-                    value={isCustom ? "custom" : (options.find((opt) => opt.planName === currentPlan?.planName && opt.costPerMonth === currentPlan?.costPerMonth)?.planName ?? "custom")}
+                    value={isCustom ? "custom" : matchingPreset.planName}
                     onChange={(e) => {
                       const selectedVal = e.target.value;
                       if (selectedVal === "custom") {
                         setEnginePlans((prev) => ({
                           ...prev,
-                          [id]: { planName: currentPlan?.planName ?? "Custom Plan", costPerMonth: currentPlan?.costPerMonth ?? 0 },
+                          [id]: { planName: matchingPreset ? "Custom Plan" : (currentPlan.planName || "Custom Plan"), costPerMonth: currentPlan.costPerMonth ?? 0 },
                         }));
                       } else {
                         const opt = options.find((o) => o.planName === selectedVal);
@@ -1140,18 +1238,18 @@ export function UsageSection() {
                         {opt.label}
                       </option>
                     ))}
-                    <option value="custom">Custom plan...</option>
+                    <option value="custom">Custom Plan…</option>
                   </select>
                   {isCustom && (
                     <input
                       type="text"
-                      placeholder="Custom plan name"
-                      value={currentPlan?.planName ?? ""}
+                      placeholder="Plan Name"
+                      value={currentPlan.planName ?? ""}
                       onChange={(e) => {
                         const val = e.target.value;
                         setEnginePlans((prev) => ({
                           ...prev,
-                          [id]: { planName: val, costPerMonth: prev[id]?.costPerMonth ?? null },
+                          [id]: { planName: val, costPerMonth: prev[id]?.costPerMonth ?? currentPlan.costPerMonth ?? null },
                         }));
                       }}
                       className="rounded border border-hairline/40 bg-control px-2 py-0.5 text-[11.5px] text-ink"
@@ -1165,13 +1263,13 @@ export function UsageSection() {
                     step="any"
                     min="0"
                     placeholder="0.00"
-                    disabled={currentPlan?.costPerMonth === null && !isCustom && entry.pricing.kind === "api"}
-                    value={currentPlan?.costPerMonth != null ? currentPlan.costPerMonth : ""}
+                    disabled={currentPlan.costPerMonth === null && !isCustom}
+                    value={currentPlan.costPerMonth != null ? currentPlan.costPerMonth : ""}
                     onChange={(e) => {
                       const val = e.target.value === "" ? null : parseFloat(e.target.value);
                       setEnginePlans((prev) => ({
                         ...prev,
-                        [id]: { planName: prev[id]?.planName ?? "Custom Plan", costPerMonth: val != null && !isNaN(val) ? val : null },
+                        [id]: { planName: prev[id]?.planName ?? currentPlan.planName ?? "Custom Plan", costPerMonth: val != null && !isNaN(val) ? val : null },
                       }));
                     }}
                     className="w-20 rounded border border-hairline/40 bg-control px-1.5 py-1 text-right text-[12px] tabular-nums text-ink disabled:opacity-40"
@@ -1206,7 +1304,7 @@ export function UsageSection() {
               )}
             </div>
             <span className="text-[11.5px] text-ink-secondary">
-              Plans are stored in your settings and used for the what-if projection below.
+              Plans are stored in your settings so the estimate below matches what you pay.
             </span>
           </div>
         </div>
@@ -1594,11 +1692,13 @@ function UsageRow({
   bot,
   usage,
   open,
+  instances,
   onToggle,
 }: {
   bot: { id: string; name: string; color?: BotColor; tasks?: ReadonlyArray<TaskLike>; modelSelection: ModelSelectionLike; roomUsageByInstance?: Record<string, TaskUsage & { lastAt: number; engineId?: string; byModel?: Record<string, TaskUsage> }> };
   usage: TaskUsage;
   open: boolean;
+  instances?: Array<{ models?: { options?: Array<{ id: string; label: string }> } }>;
   onToggle: () => void;
 }) {
   // Local state for the "expand all" / "collapse all" toggle.  When the
@@ -1672,11 +1772,12 @@ function UsageRow({
         ? [...ranModels, configuredModel]
         : ranModels
       : [];
+    const formattedModels = labelModels.map((m) => modelDisplayName(m, instances));
     const model = isRoomRow
       ? task.modelSelection?.model || task.modelSelection?.instanceId || "room"
-      : labelModels.length > 0
-        ? labelModels.join(", ") + (historyIncomplete ? " + earlier usage" : "")
-        : configuredModel;
+      : formattedModels.length > 0
+        ? formattedModels.join(", ") + (historyIncomplete ? " + earlier usage" : "")
+        : (configuredModel ? modelDisplayName(configuredModel, instances) : configuredModel);
     if (!isRoomRow && labelModels.length > 0) {
       for (const m of labelModels) modelSet.add(m);
     } else if (model && !isRoomRow) {
@@ -1738,17 +1839,17 @@ function UsageRow({
         <div className="mb-2 ml-9 mr-1 flex flex-col gap-3 rounded-lg border border-hairline/20 bg-inset/25 p-2.5">
           {modelSummaries.length > 0 && (
             <div>
-              <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-ink-secondary">
+              <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-ink-secondary">
                 <span>Usage by Model</span>
                 <span>{modelSummaries.length} model{modelSummaries.length === 1 ? "" : "s"}</span>
               </div>
-              <div className="grid grid-cols-[1.6fr_0.7fr_0.9fr_0.9fr_0.7fr_0.9fr_0.9fr] gap-x-3 border-b border-hairline/30 pb-1 text-[10.5px] font-medium uppercase tracking-wide text-ink-secondary">
+              <div className="grid grid-cols-[1.6fr_0.7fr_0.9fr_0.9fr_0.7fr_0.9fr_0.9fr] gap-x-3 border-b border-hairline/30 pb-1 text-[10.5px] font-medium text-ink-secondary">
                 <span>Model</span>
                 <span className="text-right">Turns</span>
-                <span className="text-right">Tokens in</span>
+                <span className="text-right">Tokens In</span>
                 <span className="text-right">Cached</span>
                 <span className="text-right">Out</span>
-                <span className="text-right">$/turn</span>
+                <span className="text-right">Per Turn</span>
                 <span className="text-right">Cost</span>
               </div>
               {modelSummaries.map((m) => {
@@ -1759,8 +1860,8 @@ function UsageRow({
                     key={m.model}
                     className="grid grid-cols-[1.6fr_0.7fr_0.9fr_0.9fr_0.7fr_0.9fr_0.9fr] items-center gap-x-3 border-b border-hairline/10 py-1.5 text-[12px]"
                   >
-                    <span className="min-w-0 truncate font-mono text-[11.5px] font-medium text-ink" title={m.model}>
-                      {m.model}
+                    <span className="min-w-0 truncate text-[11.5px] font-medium text-ink" title={m.model}>
+                      {modelDisplayName(m.model, instances)}
                     </span>
                     <span className="text-right tabular-nums text-ink-secondary">{m.usage.turns ?? 0}</span>
                     <span className="text-right tabular-nums text-ink">{formatTokens(m.usage.input)}</span>
@@ -1797,18 +1898,18 @@ function UsageRow({
 
           {cumulative.length > 0 && (
             <div>
-              <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-ink-secondary">
+              <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-ink-secondary">
                 <span>Sessions</span>
                 <span>{cumulative.length} session{cumulative.length === 1 ? "" : "s"}</span>
               </div>
-              <div className="grid grid-cols-[1.4fr_1fr_0.9fr_0.9fr_0.7fr_0.9fr_0.9fr] gap-x-3 border-b border-hairline/30 pb-1 text-[10.5px] font-medium uppercase tracking-wide text-ink-secondary">
+              <div className="grid grid-cols-[1.4fr_1fr_0.9fr_0.9fr_0.7fr_0.9fr_0.9fr] gap-x-3 border-b border-hairline/30 pb-1 text-[10.5px] font-medium text-ink-secondary">
                 <span>Session</span>
                 <span>Model</span>
-                <span className="text-right">Tokens in</span>
+                <span className="text-right">Tokens In</span>
                 <span className="text-right">Cached</span>
                 <span className="text-right">Out</span>
-                <span className="text-right">$/turn</span>
-                <span className="text-right">Cum. cost</span>
+                <span className="text-right">Per Turn</span>
+                <span className="text-right">Cum. Cost</span>
               </div>
               {cumulative.map(({ task, taskUsage, model, cumulativeTokens: cumTokens, cumulativeCost: cumCost }, index) => {
                 const turnCount = taskUsage.turns || 0;
@@ -1827,7 +1928,7 @@ function UsageRow({
                       {task.title || task.threadId.slice(0, 12)}
                       <span className="ml-1 text-ink-secondary/80">{date}</span>
                     </span>
-                    <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-secondary" title={model}>
+                    <span className="min-w-0 truncate text-[11.5px] text-ink-secondary" title={task.modelSelection?.model ?? model}>
                       {model}
                     </span>
                     <span className="text-right tabular-nums text-ink">{formatTokens(taskUsage.input)}</span>
