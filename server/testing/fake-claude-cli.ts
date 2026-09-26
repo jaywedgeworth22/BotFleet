@@ -24,6 +24,10 @@
 //   FAKE_CLAUDE_QUOTA_GATE  optional file whose creation releases quota mode,
 //                           so integration tests can queue work before settle
 //   FAKE_CLAUDE_REPLY  optional successful assistant text for prose-boundary tests
+//   FAKE_CLAUDE_PROMPTS  optional path; every user message this process reads
+//                        from stdin is appended as one JSON line, so a test
+//                        can see what a REUSED process was sent (the dump
+//                        above records only the launch)
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -114,9 +118,17 @@ let turnRunning = false;
 let steered: string[] = [];
 let stdinEnded = false;
 
+// The harness delivers out-of-band context (the volatile half of the system
+// prompt — drivers/prompt-split.ts) as a leading <system-reminder> block
+// inside the user turn.  The real CLI reads that block as context, not as
+// the message, so the echo below replies to the text after it: a test that
+// asserts on the reply sees the user's words, never the harness's note.
+const stripSystemReminder = (text: string): string =>
+  text.replace(/^<system-reminder>\n[\s\S]*?\n<\/system-reminder>(?:\n\n|$)/, "");
+
 const promptText = (prompt: JsonValue): string => {
   const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
-  return typeof m?.content === "string" ? m.content : "";
+  return typeof m?.content === "string" ? stripSystemReminder(m.content) : "";
 };
 
 const finishIfDone = () => {
@@ -294,6 +306,7 @@ process.stdin.on("data", (c) => {
     } catch {
       continue;
     }
+    if (process.env.FAKE_CLAUDE_PROMPTS) appendFileSync(process.env.FAKE_CLAUDE_PROMPTS, JSON.stringify({ pid: process.pid, prompt }) + "\n");
     if (turnRunning) steered.push(promptText(prompt));
     else playTurn(prompt);
   }
