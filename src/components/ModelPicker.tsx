@@ -104,6 +104,7 @@ function ModelRow({
           <span
             className="shrink-0 rounded bg-amber-500/15 px-1.5 py-px text-[10px] text-amber-700 dark:text-amber-300"
             title={option.badgeTitle ?? option.badge}
+            aria-label={option.badgeTitle ?? option.badge}
           >
             {option.badge}
           </span>
