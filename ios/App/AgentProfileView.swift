@@ -273,6 +273,7 @@ struct AgentProfileView: View {
                             TextField("12", text: maxToolRoundsBinding)
                                 .keyboardType(.numberPad)
                                 .multilineTextAlignment(.trailing)
+                                .accessibilityLabel("Maximum Tool Rounds")
                         } header: {
                             Text("Maximum Tool Rounds")
                         } footer: {
