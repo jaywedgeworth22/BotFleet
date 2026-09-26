@@ -189,6 +189,16 @@ describe("Antigravity turns (fake CLI)", () => {
     await instance?.dispose();
   });
 
+  it("ignores a trailing buffered line after result settles the turn", async () => {
+    await create({ FAKE_AGY_BURST: "1", FAKE_AGY_TRAILING_AFTER_RESULT: "1" });
+    await instance.adapter.sendTurn({ threadId: "t-trailing", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const types = recorder.events.map((e) => e.type);
+    expect(types.at(-1)).toBe("turn.completed");
+    expect(recorder.events.filter((e) => e.type === "item.started" && (e as any).itemId === "conv-fake-123:2")).toHaveLength(0);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+  });
+
   it("normalizes a full print-mode turn into the canonical event sequence", async () => {
     await create();
     const { turnId } = await instance.adapter.sendTurn({ threadId: "t-happy", text: "hi", model: "gemini-3.1-pro-high" });
@@ -506,7 +516,7 @@ describe("Antigravity turn deadlines (fake CLI)", () => {
     const errors = recorder.events.filter((e) => e.type === "runtime.error");
     expect(errors).toHaveLength(1);
     expect((errors[0] as any).message).toBe(
-      "Antigravity: agy printed nothing for 3 s while a tool step was running and was stopped as a stall.",
+      "Antigravity sent nothing for 3 s while a tool ran and was stopped.",
     );
     // the pre-cliff chip lands before the stop, not with it
     const warned = notices(recorder);
@@ -524,7 +534,7 @@ describe("Antigravity turn deadlines (fake CLI)", () => {
     const done = await recorder.until((e) => e.type === "turn.completed", 20_000);
     expect(done).toMatchObject({ ok: false, stopReason: "prompt_stall" });
     const error = recorder.events.find((e) => e.type === "runtime.error");
-    expect((error as any).message).toBe("Antigravity: agy printed nothing for 2 s and was stopped as a stall.");
+    expect((error as any).message).toBe("Antigravity sent nothing for 2 s and was stopped.");
     // give a (wrong) relaunch time to show itself before counting
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
@@ -540,7 +550,7 @@ describe("Antigravity turn deadlines (fake CLI)", () => {
     const done = await recorder.until((e) => e.type === "turn.completed", 20_000);
     expect(done).toMatchObject({ ok: false, stopReason: "prompt_timeout" });
     const error = recorder.events.find((e) => e.type === "runtime.error");
-    expect((error as any).message).toBe("Antigravity: the turn ran past its 2 s limit and was stopped.");
+    expect((error as any).message).toBe("Antigravity ran past its 2 s limit and was stopped.");
   }, 30_000);
 
   it("settles an ERROR result carrying agy's timeout text once, without a relaunch", async () => {

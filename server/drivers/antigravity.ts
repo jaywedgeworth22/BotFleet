@@ -1084,7 +1084,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       const activeTools = new Set<string>();
 
       const handleLine = (line: string) => {
-        if (hostPolicyRefused) return;
+        if (settled || retryScheduled || hostPolicyRefused) return;
         let o: any;
         try {
           o = JSON.parse(line);
@@ -1301,7 +1301,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           () =>
             tripDeadline(
               "prompt_stall",
-              `Antigravity: agy printed nothing for ${describeWindow(windowMs)}${toolRunning ? " while a tool step was running" : ""} and was stopped as a stall.`,
+              `Antigravity sent nothing for ${describeWindow(windowMs)}${toolRunning ? " while a tool ran" : ""} and was stopped.`,
             ),
           windowMs,
         );
@@ -1326,7 +1326,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           () =>
             tripDeadline(
               "prompt_timeout",
-              `Antigravity: the turn ran past its ${describeWindow(maxMs)} limit and was stopped.`,
+              `Antigravity ran past its ${describeWindow(maxMs)} limit and was stopped.`,
             ),
           Math.max(0, maxMs - elapsed),
         );
