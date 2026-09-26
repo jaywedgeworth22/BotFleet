@@ -306,8 +306,8 @@ export interface Bot {
   autoReview?: "off" | "shadow" | "enforce";
   /** tools this bot may always use without asking */
   alwaysAllow?: string[];
-  /** Ceiling on HTTP toolLoop rounds (MiniMax / Grok HTTP / openai-compat). Unset = 12. */
-  maxToolRounds?: number;
+  /** Ceiling on HTTP toolLoop rounds (MiniMax / Grok HTTP / openai-compat). Unset or null uses 12. */
+  maxToolRounds?: number | null;
   /** speak this bot's replies aloud as they settle */
   speakReplies?: boolean;
   /** this bot's own voice id (falls back to the app-wide one) */
@@ -669,6 +669,8 @@ export interface InstanceInfo {
     /** This engine can answer a bounded review prompt without changing the
      * bot's active conversation. */
     approvalReview?: boolean;
+    /** The harness runs this engine's tool loop, so Maximum Tool Rounds applies. */
+    toolLoop?: boolean;
   };
   /** Which computer destinations this engine can be given at all, derived
    *  server-side in `server/computer-capability.ts` and shipped whole.  The

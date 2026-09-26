@@ -277,6 +277,8 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var unread: Bool
     public var modelSelection: ModelSelection
     public var activeModelSelection: ModelSelection?
+    /// HTTP tool-loop ceiling. Nil uses 12. Only a toolLoop engine honors it.
+    public var maxToolRounds: Int? = nil
     public var createdAt: Double
     public var busy: Bool?
     public var pinned: Bool?
@@ -601,6 +603,8 @@ public struct ModelCatalog: Codable, Hashable, Sendable {
 
 public struct InstanceCapabilities: Codable, Hashable, Sendable {
     public var effortLevels: [String]?
+    /// True when this engine runs the harness HTTP tool loop.
+    public var toolLoop: Bool? = nil
 }
 
 public struct Instance: Codable, Hashable, Identifiable, Sendable {
@@ -808,6 +812,14 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var speakReplies: Bool?
     public var modelSelection: ModelSelection?
     public var section: SectionString?
+    /// `nil` leaves the stored ceiling alone. `.clear` sends JSON null so the
+    /// harness drops it and the turn uses 12.
+    public var maxToolRounds: MaxToolRounds?
+
+    public enum MaxToolRounds: Equatable, Sendable {
+        case set(Int)
+        case clear
+    }
 
     public enum SectionString: Equatable, Sendable {
         case set(String)
@@ -832,7 +844,8 @@ public struct BotProfilePatch: Encodable, Sendable {
         voice: String? = nil,
         speakReplies: Bool? = nil,
         modelSelection: ModelSelection? = nil,
-        section: SectionString? = nil
+        section: SectionString? = nil,
+        maxToolRounds: MaxToolRounds? = nil
     ) {
         self.name = name
         self.title = title
@@ -844,10 +857,11 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.speakReplies = speakReplies
         self.modelSelection = modelSelection
         self.section = section
+        self.maxToolRounds = maxToolRounds
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, section
+        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, section, maxToolRounds
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -870,6 +884,12 @@ public struct BotProfilePatch: Encodable, Sendable {
             switch section {
             case let .set(val): try values.encode(val, forKey: .section)
             case .clear: try values.encodeNil(forKey: .section)
+            }
+        }
+        if let maxToolRounds {
+            switch maxToolRounds {
+            case let .set(rounds): try values.encode(rounds, forKey: .maxToolRounds)
+            case .clear: try values.encodeNil(forKey: .maxToolRounds)
             }
         }
     }
