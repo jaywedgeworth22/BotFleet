@@ -2661,10 +2661,20 @@ bus.subscribe((event: RuntimeEvent) => {
       };
       // Resolve the registry engine (driver kind) once so usage banking
       // keeps attributing correctly even after the connection is deleted.
+      // DeepSeek Harness can run MiniMax models (e.g. MiniMax-M3) — attribute
+      // those turns to MiniMax so MiniMax usage is separated from DeepSeek.
+      const isMiniMaxTurn = Boolean(
+        actualSelection.model && (
+          actualSelection.model.toLowerCase().includes("minimax") ||
+          actualSelection.model.startsWith("opencode-go/minimax")
+        ),
+      );
       const actualUsageMeta = {
-        engineId: actualSelection.instanceId
-          ? registry.get(actualSelection.instanceId)?.driverKind ?? undefined
-          : undefined,
+        engineId: isMiniMaxTurn
+          ? "minimax"
+          : actualSelection.instanceId
+            ? registry.get(actualSelection.instanceId)?.driverKind ?? undefined
+            : undefined,
         model: actualSelection.model || undefined,
       };
       if (fallbackBot) {
@@ -2836,7 +2846,7 @@ bus.subscribe((event: RuntimeEvent) => {
         if (typeof event.cost === "number" && event.cost > 0) {
           rollingSpendTracker.recordTurn({
             at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
-            provider: event.provider,
+            provider: isMiniMaxTurn ? "minimax" : event.provider,
             instanceId: actualSelection.instanceId,
             costUsd: event.cost,
             billingMode: event.billingMode,
@@ -2960,7 +2970,7 @@ bus.subscribe((event: RuntimeEvent) => {
           if (typeof event.cost === "number" && event.cost > 0) {
             rollingSpendTracker.recordTurn({
               at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
-              provider: event.provider,
+              provider: isMiniMaxTurn ? "minimax" : event.provider,
               instanceId: actualSelection.instanceId,
               costUsd: event.cost,
               billingMode: event.billingMode,
@@ -6491,6 +6501,7 @@ function configStatus() {
       hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
       localQuotaRouting: localQuotaRoutingEnabled(cfg),
       projects: usageProjectRules(cfg),
+      enginePlans: cfg.usage?.enginePlans ?? {},
     },
     // This frame is broadcast to every window and, with Remote Access on,
     // travels the tunnel — so it carries the ingest host and never the DSN.

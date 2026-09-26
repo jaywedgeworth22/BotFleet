@@ -242,6 +242,11 @@ export function inferProviderAndService(
   const model = (modelId || "").toLowerCase();
   const service = modelId || instanceId || "unknown";
 
+  // MiniMax running under DSH / other bridges attributes to minimax
+  if (model.includes("minimax")) {
+    return { provider: "minimax", service: modelId || "unknown" };
+  }
+
   // The engine wins when it names a provider on its own.  An instance id is
   // operator-chosen text; an engine id is ours.
   const fromEngine = providerForEngine(driverKind);

@@ -413,7 +413,7 @@ export const ENGINE_CAPABILITIES: Record<string, EngineCapabilityEntry> = {
       kind: "subscription+api",
       subscription: {
         tierLabel: "MiniMax Token Plan Max",
-        costPerMonth: 55,
+        costPerMonth: 132,
         includedQuota: "MiniMax Token Plan Max quota",
         notes: MINIMAX_TOKEN_PLAN_NOTE,
       },

@@ -498,6 +498,7 @@ export interface ConfigStatus {
     /** Whether a locally-observed subscription cap diverts auto-fallback. */
     localQuotaRouting?: boolean;
     projects: Array<{ slug: string; match: string[] }>;
+    enginePlans?: Record<string, { planName?: string; costPerMonth?: number | null }>;
   };
   /** Opt-in flags. Absent means off. */
   features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
