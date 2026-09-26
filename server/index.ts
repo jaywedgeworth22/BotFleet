@@ -11857,17 +11857,16 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const lateImpact = unseenProviderImpact();
       if (lateImpact) return json(res, 409, lateImpact);
 
-      // ── VPS mode-switch cleanup (mirrors Local VM at POST /api/local-computer/mode) ──
-      // When vpsMode changes between "shared" and "per-bot" (or to/from null),
-      // every container from both modes must be removed so the new mode starts
-      // clean and no orphans sit on the VPS.  The leased-turn refusal ran
-      // earlier, before credential writes; recheck here in case a turn claimed
-      // a desktop while those writes ran.
+      // ── VPS mode-switch gate (cleanup runs AFTER save — see below) ──
+      // Sync only: the provider-impact guard requires nothing be awaited
+      // between lateImpact and saveConfig.  Container removal happens after
+      // the save lands, using the targets captured here.
       const currentVpsMode = cfg.botDefaults?.vpsMode ?? null;
       const nextVpsMode = patch.botDefaults && Object.hasOwn(patch.botDefaults, "vpsMode")
         ? (patch.botDefaults.vpsMode ?? null)
         : currentVpsMode;
       const vpsModeChanged = nextVpsMode !== currentVpsMode;
+      let pendingVpsModeCleanup: ReturnType<typeof vps.vpsModeSwitchTargets> | null = null;
       if (vpsModeChanged) {
         if (vpsModeChangeBusy) {
           return json(res, 409, { error: "a VPS mode change is already in progress" });
@@ -11876,15 +11875,7 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (affectedVpsTargets.some((t) => activeVpsThreads.hasTarget(t.key))) {
           return json(res, 409, { error: "a VPS desktop is being used by a bot — stop that turn before switching modes" });
         }
-        vpsModeChangeBusy = true;
-        try {
-          for (const target of affectedVpsTargets) {
-            await vps.vpsRemoveTargetIfPresent(cfg, target).catch(() => {});
-            vps.closeVpsDesktopTunnelForTarget(target.key);
-          }
-        } finally {
-          vpsModeChangeBusy = false;
-        }
+        pendingVpsModeCleanup = affectedVpsTargets;
       }
 
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
@@ -11935,6 +11926,22 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // shadow the new key until the next launch
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
+      }
+      // VPS mode-switch cleanup (mirrors Local VM at POST /api/local-computer/mode).
+      // Runs after the save so the lateImpact→saveConfig window stays await-free
+      // (config-reload-keys invariant).  Best-effort: a transport failure here
+      // leaves an orphan the next mode switch or bot delete can still name via
+      // vpsModeSwitchTargets / perBotVpsTarget.
+      if (pendingVpsModeCleanup) {
+        vpsModeChangeBusy = true;
+        try {
+          for (const target of pendingVpsModeCleanup) {
+            await vps.vpsRemoveTargetIfPresent(cfg, target).catch(() => {});
+            vps.closeVpsDesktopTunnelForTarget(target.key);
+          }
+        } finally {
+          vpsModeChangeBusy = false;
+        }
       }
       // A new machine identity, or a flipped kill switch, takes effect on this
       // request too: turning the store off clears the snapshot so the next
