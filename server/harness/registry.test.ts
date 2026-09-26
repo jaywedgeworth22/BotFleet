@@ -265,6 +265,16 @@ describe("ProviderRegistry", () => {
     expect(described.capabilities.effortLevels).toBeUndefined();
   });
 
+  it("describe() ships toolLoop from the adapter capability", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "fake" } });
+
+    expect((await registry.describe())[0].capabilities.toolLoop).toBe(false);
+    Object.assign(registry.get("a")!.adapter.capabilities, { toolLoop: true });
+    expect((await registry.describe())[0].capabilities.toolLoop).toBe(true);
+  });
+
   it("reports whether an instance supports isolated approval review", async () => {
     const fake = makeFakeDriver();
     const registry = new ProviderRegistry([fake.driver]);
