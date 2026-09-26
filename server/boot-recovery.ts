@@ -328,6 +328,26 @@ export function inspectLastTurn(
   return { outcome, state, classification: classifyResumeFailure(state) };
 }
 
+/** The classification a graceful stop may write BEFORE the canonical event
+ * log's queued writer has drained (server/harness/bus.ts).  Accept evidence
+ * can still be sitting in that queue, so a `before-accept` reading taken at
+ * that moment is only provisional and is written as `unknown`, which never
+ * licenses a replay.  `after-accept` needs no drain: later records cannot
+ * un-accept a prompt. */
+export function provisionalStopClassification(early: ResumeFailureClass): ResumeFailureClass {
+  return early === "after-accept" ? "after-accept" : "unknown";
+}
+
+/** The classification a stop records once the writer HAS drained: the log is
+ * now complete for the turn, so its reading replaces the provisional one —
+ * except that an accept already seen is never given back. */
+export function settledStopClassification(
+  provisional: ResumeFailureClass,
+  drained: ResumeFailureClass,
+): ResumeFailureClass {
+  return provisional === "after-accept" ? "after-accept" : drained;
+}
+
 /** Merge a stop's snapshot with the log after its queued writer drained.
  * A positive accept signal always wins. An explicit unknown stop record means
  * the flush may have timed out: a partial log cannot upgrade it to replayable.

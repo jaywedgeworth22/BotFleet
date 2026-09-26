@@ -336,6 +336,9 @@ import {
   inspectLastTurn,
   planBootRecovery,
   recordInterruptedTurns,
+  reconcileRecoveryClassification,
+  provisionalStopClassification,
+  settledStopClassification,
   rememberResumeFailure,
   runStaggeredResumes,
   takeInterruptedTurns,
@@ -4900,16 +4903,13 @@ function bootRecoveryEvidence(
     threadId,
     recorded: Boolean(recorded),
     outcome,
-    // A stop that classified the turn while it was still live knew more than
-    // any later reading of the log can — but only when it actually decided.
-    // The canonical event log is written by a queued writer (server/harness/
-    // bus.ts), so a shutdown reading it can be a few records behind and come
-    // back "unknown" for a turn the flushed log describes exactly.  Prefer a
-    // confident record; fall back to this boot's reading otherwise.
-    classification:
-      recorded?.classification && recorded.classification !== "unknown"
-        ? recorded.classification
-        : inspected.classification,
+    // The stop's record and this boot's reading of the drained log are
+    // reconciled, never ranked: accept evidence from either side wins, so a
+    // record taken while accept events were still queued behind the log's
+    // writer (server/harness/bus.ts) can never downgrade a turn the flushed
+    // log shows the provider accepted to safe-to-replay.  An explicit
+    // `unknown` record — the stop's drain did not finish — stays unknown.
+    classification: reconcileRecoveryClassification(recorded?.classification, inspected.classification),
     resumableSession: Object.keys(task?.resumeCursors ?? {}).length > 0,
     failedBefore: rememberedResumeFailures.has(resumeKey(bot.id, threadId)),
   };
@@ -12364,7 +12364,10 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     // identical on the next boot — same surviving `inflightThreadId`, same
     // blind re-dispatch — and with 29 boots in two days that was a full CLI
     // turn re-spent per busy bot, every time (audit HS18).  The classification
-    // is taken HERE because the evidence is never fresher than now.
+    // written here is PROVISIONAL: the canonical event log is drained by a
+    // queued writer, so provider-accept evidence can still be in memory.  It
+    // is settled below, after bus.flush(), and a stop whose drain never
+    // finishes leaves a record that cannot license a replay.
     const interrupted: InterruptedTurnRecord[] = [];
     for (const bot of store.bots) {
       if (!bot.busy) continue;
@@ -12378,7 +12381,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
         threadId,
         at: Date.now(),
         reason: "shutdown",
-        classification: inspectLastTurn(EVENTS_DIR, threadId).classification,
+        classification: provisionalStopClassification(inspectLastTurn(EVENTS_DIR, threadId).classification),
       });
     }
     if (interrupted.length > 0) {
@@ -12414,9 +12417,26 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     // closing events of the turns just recorded above, which the next boot
     // reads to decide what it may safely re-send.
     const graceExpired = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS).unref?.());
-    void Promise.race([
-      Promise.all([cancelled, telemetry.dispose(), bus.flush()]),
-      graceExpired,
-    ]).finally(() => process.exit(0));
+    const drainedAndSettled = Promise.all([cancelled, telemetry.dispose(), bus.flush()])
+      // The interrupts can queue their closing records after the first drain
+      // began; drain once more so the reading below sees the whole turn.
+      .then(() => bus.flush())
+      .then(() => {
+        if (interrupted.length === 0) return;
+        // The log is complete for these turns now: replace each provisional
+        // class with what the drained log proves (bootRecoveryEvidence still
+        // reconciles it with the boot's own reading).
+        recordInterruptedTurns(
+          DATA_DIR,
+          interrupted.map((turn) => ({
+            ...turn,
+            classification: settledStopClassification(
+              turn.classification ?? "unknown",
+              inspectLastTurn(EVENTS_DIR, turn.threadId).classification,
+            ),
+          })),
+        );
+      });
+    void Promise.race([drainedAndSettled, graceExpired]).finally(() => process.exit(0));
   });
 }

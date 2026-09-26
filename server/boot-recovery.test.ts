@@ -16,9 +16,12 @@ import {
   inspectLastTurn,
   interruptedTurnsPath,
   planBootRecovery,
+  provisionalStopClassification,
   readInterruptedTurns,
+  reconcileRecoveryClassification,
   recordInterruptedTurns,
   rememberResumeFailure,
+  settledStopClassification,
   runStaggeredResumes,
   takeInterruptedTurns,
   type BootRecoveryCandidate,
@@ -161,6 +164,93 @@ describe("reading the last turn out of a thread's event log", () => {
     // A window far smaller than the file still finds the newest turn event,
     // and the torn first line does not throw.
     expect(inspectLastTurn(eventsDir, "t1", 512).outcome).toBe("completed");
+  });
+});
+
+describe("a stop that reads the log while accept evidence is still queued", () => {
+  // The canonical event log is drained by a queued writer, so a SIGTERM
+  // handler can read a turn's log while its provider-accept events are still
+  // in memory.  Before the provisional/settled split, that read was recorded
+  // as-is and the next boot preferred it over the drained log — re-sending a
+  // prompt the provider had already accepted.
+  const setupFailure = [{ type: "turn.started" }, { type: "runtime.error", setup: true, message: "transient" }];
+  const queuedAccept = [{ type: "session.started", sessionId: "provider-session" }, { type: "item.started", itemType: "text" }];
+  const bootPlan = (eventsDir: string, root: string, patch: Partial<BootRecoveryCandidate> = {}) => {
+    const recorded = takeInterruptedTurns(root).turns.find((turn) => turn.threadId === "t1");
+    const inspected = inspectLastTurn(eventsDir, "t1");
+    return planBootRecovery([
+      candidate({
+        threadId: "t1",
+        recorded: Boolean(recorded),
+        outcome: recorded && inspected.outcome === "failed" ? "in-flight" : inspected.outcome,
+        classification: reconcileRecoveryClassification(recorded?.classification, inspected.classification),
+        ...patch,
+      }),
+    ]);
+  };
+  const replays = (plan: ReturnType<typeof planBootRecovery>) =>
+    plan.resume.filter((dispatch) => dispatch.action === "replay").map((dispatch) => dispatch.candidate.threadId);
+
+  it("records a pre-drain before-accept as unknown, then settles on the accept the drain revealed — no replay", () => {
+    const { root, eventsDir, writeEvents } = rig();
+    writeEvents("t1", setupFailure);
+    const early = inspectLastTurn(eventsDir, "t1").classification;
+    expect(early).toBe("before-accept"); // the tempting, wrong answer
+    const provisional = provisionalStopClassification(early);
+    expect(provisional).toBe("unknown");
+    expect(mayReplay(provisional)).toBe(false);
+    recordInterruptedTurns(root, [{ botId: "bot-1", threadId: "t1", at: 1, reason: "shutdown", classification: provisional }]);
+
+    // The writer drains: the accept evidence lands behind the stop's read.
+    writeEvents("t1", [...setupFailure, ...queuedAccept]);
+    const settled = settledStopClassification(provisional, inspectLastTurn(eventsDir, "t1").classification);
+    expect(settled).toBe("after-accept");
+    recordInterruptedTurns(root, [{ botId: "bot-1", threadId: "t1", at: 1, reason: "shutdown", classification: settled }]);
+
+    const plan = bootPlan(eventsDir, root);
+    expect(replays(plan)).toEqual([]);
+    expect(plan.notify.map((turn) => turn.threadId)).toEqual(["t1"]);
+  });
+
+  it("does not replay when the stop's drain never finished, even though the partial log looks replayable", () => {
+    const { root, eventsDir, writeEvents } = rig();
+    writeEvents("t1", setupFailure);
+    const provisional = provisionalStopClassification(inspectLastTurn(eventsDir, "t1").classification);
+    recordInterruptedTurns(root, [{ botId: "bot-1", threadId: "t1", at: 1, reason: "shutdown", classification: provisional }]);
+    // No settle: the grace period expired first.  The log on disk still reads
+    // before-accept, but the record says the stop could not tell.
+    expect(inspectLastTurn(eventsDir, "t1").classification).toBe("before-accept");
+    const plan = bootPlan(eventsDir, root, { resumableSession: true });
+    expect(replays(plan)).toEqual([]);
+    // It still resumes the provider's own session rather than re-sending.
+    expect(plan.resume.map((dispatch) => dispatch.action)).toEqual(["continue"]);
+  });
+
+  it("never lets a before-accept record outrank accept evidence in the flushed log", () => {
+    const { root, eventsDir, writeEvents } = rig();
+    // An older build wrote its pre-drain reading straight into the record.
+    recordInterruptedTurns(root, [{ botId: "bot-1", threadId: "t1", at: 1, reason: "shutdown", classification: "before-accept" }]);
+    writeEvents("t1", [...setupFailure, ...queuedAccept]);
+    const plan = bootPlan(eventsDir, root, { resumableSession: true });
+    expect(replays(plan)).toEqual([]);
+    expect(plan.resume.map((dispatch) => dispatch.action)).toEqual(["continue"]);
+  });
+
+  it("still replays a turn the drained log proves never reached the provider", () => {
+    const { root, eventsDir, writeEvents } = rig();
+    writeEvents("t1", setupFailure);
+    const provisional = provisionalStopClassification(inspectLastTurn(eventsDir, "t1").classification);
+    // Drained, and nothing was queued: the setup failure really was the end.
+    const settled = settledStopClassification(provisional, inspectLastTurn(eventsDir, "t1").classification);
+    expect(settled).toBe("before-accept");
+    recordInterruptedTurns(root, [{ botId: "bot-1", threadId: "t1", at: 1, reason: "shutdown", classification: settled }]);
+    expect(replays(bootPlan(eventsDir, root))).toEqual(["t1"]);
+  });
+
+  it("never gives back an accept the stop already saw", () => {
+    expect(provisionalStopClassification("after-accept")).toBe("after-accept");
+    expect(settledStopClassification("after-accept", "before-accept")).toBe("after-accept");
+    expect(settledStopClassification("after-accept", "unknown")).toBe("after-accept");
   });
 });
 

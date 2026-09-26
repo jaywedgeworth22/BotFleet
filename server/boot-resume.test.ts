@@ -104,7 +104,10 @@ afterAll(async () => {
   await removeTempDir(home);
 });
 
-describe("a graceful stop, and the boot after it", () => {
+// Windows has no POSIX signals: `child.kill("SIGTERM")` is TerminateProcess,
+// so the harness's SIGINT/SIGTERM handler never runs and no stop record can
+// be written.  The shutdown path under test only exists where signals do.
+describe.skipIf(process.platform === "win32")("a graceful stop, and the boot after it", () => {
   it("records what it interrupted, then replays it once each, staggered and capped", async () => {
     mkdirSync(dataDir, { recursive: true });
     provider = createServer((req, res) => {
