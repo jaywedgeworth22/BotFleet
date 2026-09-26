@@ -202,6 +202,19 @@ describe("exact turn leases", () => {
     expect(leases.size).toBe(0);
   });
 
+  it("lets the same bot reclaim a stale target lease from a different thread", () => {
+    // Missed release used to leave byTarget occupied; same-bot reclaim must
+    // overwrite so a bot cannot permanently self-block after a crashed unwind.
+    const leases = new ExactTurnLeases();
+    const stale = leases.claim("bot-a", "thread-old", 10, "shared");
+    expect(stale).not.toBeNull();
+    const next = leases.claim("bot-a", "thread-new", 11, "shared");
+    expect(next).not.toBeNull();
+    expect(leases.release(stale!)).toBe(false);
+    expect(leases.forBot("bot-a")).toBe(next);
+    expect(leases.hasTarget("shared")).toBe(true);
+  });
+
   it("allows two different bots on distinct per-bot target keys", () => {
     const leases = new ExactTurnLeases();
     const a = leases.claim("bot-a", "thread-a", 20, "bot:aaa");

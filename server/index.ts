@@ -2224,7 +2224,11 @@ function turnComputerDeps(
         const lease = activeVpsThreads.claim(claimBotId, claimThreadId, dispatchId, target.key);
         if (!lease) {
           throw Object.assign(
-            new Error("the shared VPS is already being used by another turn — wait for that turn to finish"),
+            new Error(
+              target.key === "shared"
+                ? "the shared VPS is already being used by another turn — wait for that turn to finish"
+                : "this bot's VPS is already being used by another turn — wait for that turn to finish",
+            ),
             { status: 409 },
           );
         }

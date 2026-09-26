@@ -182,13 +182,12 @@ export class ExactTurnLeases {
     const lease: ExactTurnLease = { botId, threadId, dispatchId, targetKey };
     if (targetKey) {
       const existing = this.byTarget.get(targetKey);
-      if (existing && existing.botId === botId && existing.threadId === threadId) {
-        // Successor on same bot+thread: replace the old lease.
-        this.byTarget.set(targetKey, lease);
-        this.byBot.set(botId, lease);
-        return lease;
-      }
-      if (existing) return null;
+      // A different bot already on this desktop: refuse (shared mutual exclusion).
+      // The same bot replaces — successor on the same thread, or recovery when a
+      // prior turn's release never ran and left a stale byTarget entry.  The
+      // historical byBot map always overwrote per bot id; keeping that for the
+      // owning bot avoids a permanent self-block after a missed cleanup.
+      if (existing && existing.botId !== botId) return null;
       this.byTarget.set(targetKey, lease);
     }
     this.byBot.set(botId, lease);
