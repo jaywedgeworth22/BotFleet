@@ -61,14 +61,20 @@ describe("appendNative", () => {
   it("caps a 5 MB payload and never writes it on the caller's stack", async () => {
     const file = join(NATIVE_DIR, "t-huge.ndjson");
     const huge = "x".repeat(5 * 1024 * 1024);
-    const before = nativeTeeStats();
+    // Start from an idle queue whatever ran before this test, then put one
+    // small record in flight.  `enqueue` starts a drain synchronously and
+    // that drain takes its first entry off the queue before its first await,
+    // so without a write already in flight the huge record would leave the
+    // queue before `appendNative` returned and `pending` would read 0.
+    await flushNativeTee();
+    appendNative("t-huge-lead", { dir: "in", source: "acp", msg: { lead: true } });
 
     appendNative("t-huge", { dir: "in", source: "acp", msg: { result: { content: huge } } });
 
     // Queued, not written: the record is waiting in the tee's writer queue
-    // when appendNative returns, and nothing has touched the disk yet.
-    const queued = nativeTeeStats();
-    expect(queued.pending + (queued.dropped - before.dropped)).toBeGreaterThanOrEqual(1);
+    // behind the in-flight write when appendNative returns, and nothing has
+    // touched its file yet.
+    expect(nativeTeeStats().pending).toBeGreaterThanOrEqual(1);
     expect(existsSync(file)).toBe(false);
 
     await flushNativeTee();

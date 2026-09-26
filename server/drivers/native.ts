@@ -22,6 +22,9 @@ import { appendBoundedAsync, NATIVE_LOG_MAX_BYTES } from "../transcript-retentio
 // `appendBoundedAsync` requires.
 const writes = new BoundedAppendQueue<null>(
   (file, data) => appendBoundedAsync(file, data, NATIVE_LOG_MAX_BYTES, { mode: 0o600 }),
+  // Named, so a drop line for this tee cannot be mistaken for one from the
+  // canonical event log's queue in server/harness/bus.ts.
+  { label: "native protocol tee" },
 );
 
 export function appendNative(threadId: string, entry: { dir: "in" | "out"; source: string; msg: unknown }) {

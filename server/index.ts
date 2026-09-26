@@ -233,6 +233,7 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 // MiniMax key at all.  The driver's own resolver is the authority on
 // precedence; this only reports what the secret map structurally cannot see.
 import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
+import { flushNativeTee } from "./drivers/native.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import { DEFAULT_MAX_DEAD_SHARE, pruneDeadThreads, searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
@@ -11999,7 +12000,11 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     // bus.flush() is here because the canonical event log is no longer written
     // on the publish path: the tee queues and one writer drains it, so the
     // last few records of every live thread are in memory when a SIGTERM
-    // arrives and exiting without draining would lose them.
-    void Promise.all([registry.disposeAll(), telemetry.dispose(), bus.flush()]).finally(() => process.exit(0));
+    // arrives and exiting without draining would lose them.  The native
+    // protocol tee (server/drivers/native.ts) is queued the same way, so it
+    // is drained here too.
+    void Promise.all([registry.disposeAll(), telemetry.dispose(), bus.flush(), flushNativeTee()]).finally(() =>
+      process.exit(0),
+    );
   });
 }

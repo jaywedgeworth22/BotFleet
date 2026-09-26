@@ -736,9 +736,9 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         tools: turn.tools,
         // Unattended turns (webhook- or resource-triggered) may need much
         // longer than the interactive ceiling (180s when PR 625 landed) to
-        // stream a full reasoning + code response (e.g. the Compiler bot analysing a CI failure) —
-        // BOTFLEET-V (board row bf77b434) showed the Compiler failing this
-        // shape of turn at 180s repeatedly.  Use the wall-clock budget as
+        // stream a full reasoning and code response, such as the Compiler
+        // bot analysing a CI failure.  BOTFLEET-V (board row bf77b434)
+        // showed the Compiler failing this shape of turn at 180s repeatedly.  Use the wall-clock budget as
         // the per-request ceiling so a genuinely slow-but-live stream can
         // finish instead of being cut off mid-answer.  This is a SEPARATE
         // policy from efficiency-and-connectivity.md's "180s timeout
