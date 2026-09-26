@@ -1086,7 +1086,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             } catch {
               continue;
             }
-            appendNative(threadId, { dir: "in", source: SOURCE, msg });
+            // A resumed session replays its whole history as session/update
+            // before the prompt goes out; handleNotification drops those, so
+            // teeing them only re-wrote the same transcript on every turn.
+            if (msg.method !== "session/update" || (state.promptSent && msg.params?._meta?.isReplay !== true)) {
+              appendNative(threadId, { dir: "in", source: SOURCE, msg });
+            }
             // Inbound traffic proves the child is alive and making progress
             // — a message chunk, a thought chunk, a tool call or result, a
             // permission request, this response itself, anything — so every

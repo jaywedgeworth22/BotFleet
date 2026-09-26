@@ -234,6 +234,7 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 // MiniMax key at all.  The driver's own resolver is the authority on
 // precedence; this only reports what the secret map structurally cannot see.
 import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
+import { flushNativeTee } from "./drivers/native.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import { DEFAULT_MAX_DEAD_SHARE, pruneDeadThreads, searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
@@ -12501,8 +12502,10 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     // arrives and exiting without draining would lose them — including the
     // closing events of the turns just recorded above, which the next boot
     // reads to decide what it may safely re-send.
+    // The native protocol tee (server/drivers/native.ts) is queued the same
+    // way, so it is drained here too.
     const graceExpired = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS).unref?.());
-    const drainedAndSettled = Promise.all([cancelled, telemetry.dispose(), bus.flush()])
+    const drainedAndSettled = Promise.all([cancelled, telemetry.dispose(), bus.flush(), flushNativeTee()])
       // The interrupts can queue their closing records after the first drain
       // began; drain once more so the reading below sees the whole turn.
       .then(() => bus.flush())

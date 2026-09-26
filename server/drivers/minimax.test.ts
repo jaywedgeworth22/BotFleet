@@ -723,7 +723,7 @@ describe("MinimaxDriver", () => {
     }
   }, 20_000);
 
-  it("still fails an interactive (attended) turn at the 180s ceiling — the widened budget never applies without turn.unattended", async () => {
+  it("ends a silent interactive (attended) turn at the loop's 120s idle deadline — the widened budget never applies without turn.unattended", async () => {
     vi.useFakeTimers();
     try {
       const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
@@ -754,11 +754,63 @@ describe("MinimaxDriver", () => {
       await instance.adapter.sendTurn({ threadId: "thread-attended-ceiling", text: "hi" });
       const completedPromise = recorder.until((event) => event.type === "turn.completed", 1_000_000);
       const errorPromise = recorder.until((event) => event.type === "runtime.error", 1_000_000);
-      await vi.advanceTimersByTimeAsync(180_000);
+      await vi.advanceTimersByTimeAsync(119_000);
+      expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2_000);
       const [completed, error] = await Promise.all([completedPromise, errorPromise]);
 
-      expect(error).toMatchObject({ message: "the model did not answer within 180s" });
+      expect(error).toMatchObject({ message: "the model did not answer within 120s — the stream went silent" });
       expect(completed).toMatchObject({ ok: false, stopReason: "timeout" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      recorder.stop();
+      await instance.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 20_000);
+
+  it("lets a slow-but-live interactive stream outlive the old 180s ceiling", async () => {
+    vi.useFakeTimers();
+    try {
+      const enc = new TextEncoder();
+      const fetchMock = vi.fn(async () => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "slow " } }] })}\n`));
+            // Gaps of 90s and 100s: each inside the 120s idle window, 190s
+            // in total — past the 180s that used to be this path's ceiling.
+            setTimeout(() => {
+              controller.enqueue(
+                enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "reasoning" } }] })}\n`),
+              );
+            }, 90_000);
+            setTimeout(() => {
+              controller.enqueue(
+                enc.encode(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } })}\n`),
+              );
+              controller.enqueue(enc.encode("data: [DONE]\n"));
+              controller.close();
+            }, 190_000);
+          },
+        });
+        return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-attended-slow",
+        displayName: "MiniMax",
+        enabled: true,
+        config: MinimaxDriver.defaultConfig(),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+      const recorder = recordEvents(instance.adapter);
+
+      await instance.adapter.sendTurn({ threadId: "thread-attended-slow", text: "hi" });
+      const completedPromise = recorder.until((event) => event.type === "turn.completed", 1_000_000);
+      await vi.advanceTimersByTimeAsync(200_000);
+      const completed = await completedPromise;
+
+      expect(completed).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 7, output: 3 } });
       expect(fetchMock).toHaveBeenCalledTimes(1);
       recorder.stop();
       await instance.dispose();

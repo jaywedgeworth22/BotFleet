@@ -660,6 +660,89 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     await instance.dispose();
   });
 
+  // 120s is this driver's IDLE budget now, not its whole-request ceiling:
+  // bytes on the wire keep a round alive, silence ends it.  Fake timers so
+  // the minutes are not real.
+  describe("the 120s idle budget", () => {
+    const enc = new TextEncoder();
+    const streamingFetch = (script: (controller: ReadableStreamDefaultController<Uint8Array>) => void) =>
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            // Real fetch rejects a pending read once its signal aborts.
+            init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+            script(controller);
+          },
+        });
+        return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+      });
+    const createIdle = (instanceId: string) =>
+      OpenAICompatDriver.create({
+        instanceId,
+        displayName: "Idle budget",
+        enabled: true,
+        config: { url: "https://example.test/v1", apiKeyEnv: "TEST_KEY", models: ["fake-model"] },
+        environment: { TEST_KEY: "secret" },
+      });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("does not abort a stream that is still delivering bytes at 130s", async () => {
+      vi.useFakeTimers();
+      // SSE comment keep-alives only — nothing the reader turns into a
+      // delta — until the answer lands at 140s.  Only raw-chunk liveness
+      // explains this round surviving past 120s.
+      const fetchMock = streamingFetch((controller) => {
+        for (let at = 20_000; at <= 130_000; at += 20_000) {
+          setTimeout(() => controller.enqueue(enc.encode(": keep-alive\n")), at);
+        }
+        setTimeout(() => {
+          controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"late but live"}}]}\n'));
+          controller.enqueue(enc.encode("data: [DONE]\n"));
+          controller.close();
+        }, 140_000);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await createIdle("idle-live");
+      const recorder = recordEvents(instance.adapter);
+      try {
+        await instance.adapter.sendTurn({ threadId: "idle-live", text: "hi", model: "fake-model" });
+        const completed = recorder.until((event) => event.type === "turn.completed", 1_000_000);
+        await vi.advanceTimersByTimeAsync(141_000);
+        expect(await completed).toMatchObject({ ok: true, stopReason: "end_turn" });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+      } finally {
+        recorder.stop();
+        await instance.dispose();
+      }
+    }, 20_000);
+
+    it("aborts after 125s of silence as a timeout", async () => {
+      vi.useFakeTimers();
+      // Headers, then nothing at all.
+      const fetchMock = streamingFetch(() => undefined);
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await createIdle("idle-silent");
+      const recorder = recordEvents(instance.adapter);
+      try {
+        await instance.adapter.sendTurn({ threadId: "idle-silent", text: "hi", model: "fake-model" });
+        const completed = recorder.until((event) => event.type === "turn.completed", 1_000_000);
+        await vi.advanceTimersByTimeAsync(125_000);
+        expect(await completed).toMatchObject({ ok: false, stopReason: "timeout" });
+        expect(recorder.events.find((e) => e.type === "runtime.error")).toMatchObject({
+          message: expect.stringContaining("the model did not answer within 120s"),
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        recorder.stop();
+        await instance.dispose();
+      }
+    }, 20_000);
+  });
+
   it("rejects an invalid dispatch before starting a turn", async () => {
     const instance = await OpenAICompatDriver.create({
       instanceId: "openaiCompat",

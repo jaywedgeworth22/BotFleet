@@ -404,13 +404,16 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void;
         onUsage?: (usage: TurnUsage) => void;
         // Guards a WIDENED per-request ceiling only — see STREAM_IDLE_TIMEOUT_MS.
-        // Undefined (the interactive-turn default) leaves reading exactly as
-        // it was before PR 625: the round's own 180s requestTimeoutMs is
-        // already a tight ceiling on total silence and nothing here should
-        // make it tighter.  Only the unattended caller (900s ceiling) sets
-        // this, because that is the ceiling wide enough for a stalled
-        // connection to sit unnoticed for a long time otherwise.
+        // Undefined (the interactive-turn default) leaves reading plain: the
+        // turn loop's own idle clock (`requestIdleMs`, fed by `onChunk`)
+        // already bounds total silence there.  Only the unattended caller
+        // (900s ceiling, loop idle clock off) sets this, because that is
+        // the path where a stalled connection would otherwise sit
+        // unnoticed for a long time.
         idleTimeoutMs?: number;
+        /** Raw-bytes liveness for the turn loop's idle clock
+         *  (`requestIdleMs` in chat-completions/loop.ts). */
+        onChunk?: () => void;
       },
     ): Promise<{ text: string; reasoning: string; tool_calls?: any[]; usage: TurnUsage | null }> => {
       // When the caller supplies a signal it already carries the request
@@ -447,6 +450,8 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // MiniMax's own `Retry-After` instead of regexing this message.
         throw httpErrorFor(res.status, body, res.headers);
       }
+      // headers are progress too: the socket answered
+      opts.onChunk?.();
 
       if (!opts.stream) {
         const json: any = await res.json();
@@ -531,6 +536,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           const { done, value } = opts.idleTimeoutMs
             ? await readChunkOrStall(reader, opts.idleTimeoutMs)
             : await reader.read();
+          if (!done) opts.onChunk?.();
           if (done) {
             // Flush whatever is left in the decoder and the line buffer.
             // MiniMax's stream_options.include_usage frame — the one
@@ -662,6 +668,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
               // unnoticed for a long time — see STREAM_IDLE_TIMEOUT_MS and
               // the `budget` comment on this turn's runTurnLoop call.
               idleTimeoutMs: turn.unattended ? STREAM_IDLE_TIMEOUT_MS : undefined,
+              // Every raw chunk feeds the loop's idle clock, which is what
+              // bounds silence on the interactive path now that its hard
+              // ceiling is the loop's default rather than 180s.
+              onChunk: opts.onChunk,
               // `onPublished` before every emit that reaches the bus: it
               // is what tells the loop this round can no longer be
               // retried, because a replay would show the person text they
@@ -731,10 +741,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // separately above from name/description/parameters.
         tools: turn.tools,
         // Unattended turns (webhook- or resource-triggered) may need much
-        // longer than the 180s interactive ceiling to stream a full reasoning
-        // + code response (e.g. the Compiler bot analysing a CI failure) —
-        // BOTFLEET-V (board row bf77b434) showed the Compiler failing this
-        // shape of turn at 180s repeatedly.  Use the wall-clock budget as
+        // longer than the interactive ceiling (180s when PR 625 landed) to
+        // stream a full reasoning and code response, such as the Compiler
+        // bot analysing a CI failure.  BOTFLEET-V (board row bf77b434)
+        // showed the Compiler failing this shape of turn at 180s repeatedly.  Use the wall-clock budget as
         // the per-request ceiling so a genuinely slow-but-live stream can
         // finish instead of being cut off mid-answer.  This is a SEPARATE
         // policy from efficiency-and-connectivity.md's "180s timeout
@@ -745,7 +755,18 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // why only MiniMax has this override today.  A stalled CONNECTION
         // (as opposed to a slow but live one) is still caught well before
         // 900s by `readChunkOrStall`'s STREAM_IDLE_TIMEOUT_MS below.
-        budget: turn.unattended ? { requestTimeoutMs: DEFAULT_TURN_LOOP_BUDGET.wallClockMs } : undefined,
+        //
+        // Interactive turns take the loop's shared defaults: a hard ceiling
+        // plus an idle clock fed by `onChunk`, so a slow-but-live stream is
+        // no longer cut off at 180s while a silent one still ends in 120s.
+        // The unattended path keeps `readChunkOrStall` as its ONLY idle
+        // guard for now (`requestIdleMs: 0`): it retries a pre-output stall
+        // as a transient `timeout`, which the loop's own idle clock does
+        // not, and retiring it waits until the shared clock has run in
+        // production.
+        budget: turn.unattended
+          ? { requestTimeoutMs: DEFAULT_TURN_LOOP_BUDGET.wallClockMs, requestIdleMs: 0 }
+          : undefined,
         toolHost: turn.toolHost,
         // The harness's permission broker, carried across on the same
         // per-turn service object caller identity rides on.  The driver

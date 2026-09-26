@@ -2,7 +2,7 @@
 // fake is a stubbed globalThis.fetch that scripts HTTP failures and SSE
 // bodies. Covers the auto-retry policy: transient (429/5xx) retried with
 // backoff, terminal (401/400) never, partial streamed output never.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
@@ -416,4 +416,97 @@ describe("GrokDriver turns (fake fetch)", () => {
     expect(total).toBeLessThan(80 * 5_000);
     expect(total).toBeGreaterThan(0);
   });
+});
+
+// The round's deadlines belong to the turn loop alone.  grok.ts used to wrap
+// the loop's signal in its own fixed 120s timer, under the loop's round
+// ceiling, so a slow-but-live reasoning round was cut off, retried, and then
+// reported as a provider_error that paged.  Fake timers, so neither test
+// costs minutes of real time.
+describe("GrokDriver round deadlines (fake timers)", () => {
+  const enc = new TextEncoder();
+  const frame = (content: string) => enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n`);
+
+  const createInstance = () =>
+    GrokDriver.create({
+      instanceId: "grok-deadlines",
+      displayName: "Grok Deadlines",
+      environment: { XAI_API_KEY: "xai-fake" },
+      enabled: true,
+      config: { url: "https://fake.xai.invalid/v1", apiKeyEnv: "XAI_API_KEY" },
+    });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("lets a round that streams for 150s complete", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+          // a chunk every 25s for 150s, then the answer ends
+          for (let at = 0; at <= 150_000; at += 25_000) {
+            setTimeout(() => controller.enqueue(frame(`t${at / 1000} `)), at);
+          }
+          setTimeout(() => {
+            controller.enqueue(enc.encode("data: [DONE]\n"));
+            controller.close();
+          }, 150_001);
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await createInstance();
+    const recorder = recordEvents(instance.adapter);
+    try {
+      await instance.adapter.sendTurn({ threadId: "t-slow-live", text: "think hard" });
+      const completed = recorder.until((event) => event.type === "turn.completed", 1_000_000);
+      await vi.advanceTimersByTimeAsync(151_000);
+
+      expect(await completed).toMatchObject({ ok: true, stopReason: "end_turn" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(0);
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+    }
+  }, 20_000);
+
+  it("ends a 200s stall as request_timeout, not provider_error", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          // Real fetch rejects a pending read once its signal aborts; the
+          // mock wires that up because it never touches the network.
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+          setTimeout(() => controller.enqueue(frame("partial ")), 1_000);
+          // ...and then nothing for 200s.
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await createInstance();
+    const recorder = recordEvents(instance.adapter);
+    try {
+      await instance.adapter.sendTurn({ threadId: "t-stall", text: "hi" });
+      const completed = recorder.until((event) => event.type === "turn.completed", 1_000_000);
+      await vi.advanceTimersByTimeAsync(201_000);
+
+      expect(await completed).toMatchObject({ ok: false, stopReason: "timeout" });
+      const error = recorder.events.find((e) => e.type === "runtime.error");
+      expect(error).toMatchObject({ message: expect.stringContaining("the model did not answer within 120s") });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(0);
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+    }
+  }, 20_000);
 });
