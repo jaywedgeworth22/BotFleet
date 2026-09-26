@@ -57,6 +57,76 @@ export const VPS_VIEWER_LABEL = "com.botfleet.vps-viewer";
 const LEGACY_VPS_MANAGED_LABELS = ["com.openmausbot.vps", "com.opengrokbot.vps"] as const;
 const LEGACY_VPS_CONTAINER_LABELS = ["com.openmausbot.container", "com.opengrokbot.container"] as const;
 export const VPS_CONTAINER_PREFIX = "botfleet-vps";
+
+// ── Shared / per-bot targeting ────────────────────────────────────────────
+// Mirrors LocalVmTarget in container-computer.ts.
+
+export interface VpsTarget {
+  /** Stable, non-secret identity used for leases, caches, and tunnel maps. */
+  key: string;
+  containerName: string;
+  label: string;
+}
+
+export const SHARED_VPS_TARGET: VpsTarget = {
+  key: "shared",
+  containerName: `${VPS_CONTAINER_PREFIX}-shared`,
+  label: "shared",
+};
+
+/** Per-bot target: container name matches the existing vpsContainerName(). */
+export function perBotVpsTarget(botId: string): VpsTarget {
+  const hash = createHash("sha256").update(botId).digest("hex");
+  return {
+    key: `bot:${hash}`,
+    containerName: vpsContainerName(botId),
+    label: hash,
+  };
+}
+
+/** Resolve the VPS target for a bot based on the workspace's vpsMode. */
+export function vpsTargetFor(cfg: AppConfig, botId: string): VpsTarget {
+  if (cfg.botDefaults?.vpsMode === "shared") return SHARED_VPS_TARGET;
+  return perBotVpsTarget(botId);
+}
+
+/** Every VPS target a workspace could have created, deduped by key.
+ *  Used by mode-switch cleanup to find containers from both modes. */
+export function vpsModeSwitchTargets(botIds: readonly string[]): VpsTarget[] {
+  const all: VpsTarget[] = [SHARED_VPS_TARGET, ...botIds.map((id) => perBotVpsTarget(id))];
+  return all.filter((target, i) => all.findIndex((o) => o.key === target.key) === i);
+}
+
+/** Remove a specific VPS target's container if it exists.  Addressed by
+ *  target, not by botId routing, so mode-switch cleanup can tear down
+ *  both shared and per-bot containers regardless of the current mode. */
+export async function vpsRemoveTargetIfPresent(
+  cfg: AppConfig,
+  target: VpsTarget,
+  runner: VpsCommandRunner = defaultRunner,
+): Promise<void> {
+  const alias = vpsSshAlias(cfg);
+  if (!alias) return;
+  const run = (args: string[], timeoutMs = 30_000) =>
+    runner(vpsDockerArgs(alias, args), { timeoutMs });
+  try {
+    const stdout = (await run(["inspect", target.containerName])).stdout;
+    const inspected = JSON.parse(stdout) as Array<{
+      Config?: { Labels?: Record<string, string> };
+      State?: { Running?: boolean };
+    }>;
+    const labels = inspected[0]?.Config?.Labels;
+    const managed =
+      labels?.[VPS_MANAGED_LABEL] === "1" ||
+      LEGACY_VPS_MANAGED_LABELS.some((key) => labels?.[key] === "1");
+    if (!managed) return;
+    await run(["rm", "-f", target.containerName], 2 * 60_000);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isMissingObjectMessage(message)) return;
+    // Swallow transport errors during best-effort cleanup.
+  }
+}
 export const LEGACY_VPS_CONTAINER_PREFIXES = ["openmausbot-vps", "opengrokbot-vps"] as const;
 // SIGTERM must give ssh + docker time to tear down the remote exec before the
 // SIGKILL escalation; 1s was routinely too short over a WAN round-trip, and an
@@ -131,13 +201,20 @@ export function vpsContainerName(botId: string): string {
   return `${VPS_CONTAINER_PREFIX}-${containerNamePart(botId)}-${hash}`;
 }
 
-/** Current name first, then predecessors from the OpenMausBot / OpenGrokBot rename. */
+/** Current per-bot name first, then predecessors from the OpenMausBot / OpenGrokBot rename. */
 export function vpsContainerNameCandidates(botId: string): string[] {
-  // Check the single shared container first, fallback to legacy per-bot names for cleanup
   const part = containerNamePart(botId);
   const hash = createHash("sha256").update(botId).digest("hex").slice(0, 12);
   const legacy = [VPS_CONTAINER_PREFIX, ...LEGACY_VPS_CONTAINER_PREFIXES].map((prefix) => `${prefix}-${part}-${hash}`);
   return [vpsContainerName(botId), ...legacy];
+}
+
+/** Container name candidates appropriate to the target's mode.  For the
+ *  shared target, only its deterministic name is searched (no legacy
+ *  per-bot names); for a per-bot target, the full legacy set is tried. */
+function containerNameCandidatesForTarget(target: VpsTarget, botId: string): string[] {
+  if (target.key === SHARED_VPS_TARGET.key) return [SHARED_VPS_TARGET.containerName];
+  return vpsContainerNameCandidates(botId);
 }
 
 export function vpsDockerArgs(alias: string, args: string[]): string[] {
@@ -210,21 +287,30 @@ function loopbackAnswers(port: number): Promise<boolean> {
   });
 }
 
-function stopDesktopTunnel(botId: string): boolean {
-  const tunnel = desktopTunnels.get(botId);
+function stopDesktopTunnel(key: string): boolean {
+  const tunnel = desktopTunnels.get(key);
   if (!tunnel) return false;
-  desktopTunnels.delete(botId);
+  desktopTunnels.delete(key);
   clearTimeout(tunnel.expiry);
   if (tunnel.child.exitCode === null && !tunnel.child.killed) tunnel.child.kill("SIGTERM");
   return true;
 }
 
-export function closeVpsDesktopTunnel(botId: string) {
-  return { closed: stopDesktopTunnel(botId) };
+/** Close the VPS desktop tunnel for a bot.  Requires cfg to resolve
+ *  the target in shared vs per-bot mode. */
+export function closeVpsDesktopTunnel(cfg: AppConfig, botId: string) {
+  const target = vpsTargetFor(cfg, botId);
+  return { closed: stopDesktopTunnel(target.key) };
+}
+
+/** Close a VPS desktop tunnel by target key directly — used by
+ *  mode-switch cleanup and close-all, which address targets, not bots. */
+export function closeVpsDesktopTunnelForTarget(key: string) {
+  return { closed: stopDesktopTunnel(key) };
 }
 
 export function closeAllVpsDesktopTunnels(): void {
-  for (const botId of desktopTunnels.keys()) stopDesktopTunnel(botId);
+  for (const key of desktopTunnels.keys()) stopDesktopTunnel(key);
 }
 
 const STREAM_CAP_CHARS = 16 * 1024 * 1024;
@@ -320,7 +406,7 @@ export function defaultRunner(args: string[], options: VpsCommandOptions = {}): 
   });
 }
 
-function emptyStatus(botId: string, alias: string | null): VpsComputerStatus {
+function emptyStatus(target: VpsTarget, alias: string | null): VpsComputerStatus {
   return {
     configured: Boolean(alias),
     sshAlias: alias,
@@ -339,7 +425,7 @@ function emptyStatus(botId: string, alias: string | null): VpsComputerStatus {
     image_ref: VPS_IMAGE,
     base_image_ref: BASE_IMAGE,
     driver_version: CUA_DRIVER_VERSION,
-    container_name: vpsContainerName(botId),
+    container_name: target.containerName,
     container_id: null,
     image_id: null,
   };
@@ -433,7 +519,8 @@ async function computeVpsComputerStatus(
   runner: VpsCommandRunner,
 ): Promise<VpsComputerStatus> {
   const alias = vpsSshAlias(cfg);
-  const status = emptyStatus(botId, alias);
+  const target = vpsTargetFor(cfg, botId);
+  const status = emptyStatus(target, alias);
   if (!alias) return status;
   viewerConnections.delete(`${alias}:${status.container_name}`);
   const run = (args: string[], timeoutMs = 30_000, input?: string) =>
@@ -483,7 +570,7 @@ async function computeVpsComputerStatus(
     };
     let inspected: InspectedContainer[] | null = null;
     let lastMissing: unknown;
-    for (const name of vpsContainerNameCandidates(botId)) {
+    for (const name of containerNameCandidatesForTarget(target, botId)) {
       try {
         inspected = JSON.parse((await run(["inspect", name])).stdout) as InspectedContainer[];
         status.container_name = name;
@@ -811,7 +898,7 @@ async function withVpsLifecycleLock<T>(key: string, operation: () => Promise<T>)
 
 function vpsLockKey(cfg: AppConfig, botId: string): string | null {
   const alias = vpsSshAlias(cfg);
-  return alias ? `${alias}:${vpsContainerName(botId)}` : null;
+  return alias ? `${alias}:${vpsTargetFor(cfg, botId).containerName}` : null;
 }
 
 export async function vpsComputerAction(
@@ -822,7 +909,8 @@ export async function vpsComputerAction(
 ): Promise<VpsComputerStatus> {
   const alias = vpsSshAlias(cfg);
   if (!alias) throw Object.assign(new Error("VPS is not configured — add an SSH config alias in App Settings → Connections"), { status: 409 });
-  const key = `${alias}:${vpsContainerName(botId)}`;
+  const target = vpsTargetFor(cfg, botId);
+  const key = `${alias}:${target.containerName}`;
   const operation = async () => {
     // A mutation invalidates every cached poll answer, before and after: the
     // panel must never keep showing the pre-action world for a TTL.
@@ -833,7 +921,7 @@ export async function vpsComputerAction(
       // A real lifecycle change invalidates the remote endpoint. Provision
       // is also the turn-start idempotency path, so leave an already-running
       // viewer alone when no start/replacement will occur.
-      if (action !== "provision" || before.container !== "running") stopDesktopTunnel(botId);
+      if (action !== "provision" || before.container !== "running") stopDesktopTunnel(target.key);
       const run = (args: string[], timeoutMs = 2 * 60_000) => runner(vpsDockerArgs(alias, args), { timeoutMs });
 
       const containerRef = before.container_id ?? before.container_name;
@@ -921,12 +1009,13 @@ export async function vpsComputerJoin(
 ): Promise<{ joinUrl: string; state: "running" }> {
   const alias = vpsSshAlias(cfg);
   if (!alias) throw Object.assign(new Error("VPS is not configured"), { status: 409 });
+  const target = vpsTargetFor(cfg, botId);
 
-  const existing = desktopTunnels.get(botId);
+  const existing = desktopTunnels.get(target.key);
   if (existing && existing.child.exitCode === null && !existing.child.killed) {
     return { joinUrl: existing.joinUrl, state: "running" };
   }
-  stopDesktopTunnel(botId);
+  stopDesktopTunnel(target.key);
 
   // Always re-inspect here. A cached IP or password from before a container
   // replacement is exactly the sort of secret-bearing stale state a viewer
@@ -960,10 +1049,10 @@ export async function vpsComputerJoin(
     failure = error.message;
   });
   child.once("close", (code) => {
-    const active = desktopTunnels.get(botId);
+    const active = desktopTunnels.get(target.key);
     if (active?.child === child) {
       clearTimeout(active.expiry);
-      desktopTunnels.delete(botId);
+      desktopTunnels.delete(target.key);
     }
     if (!failure) failure = stderr.trim() || `SSH viewer tunnel exited ${code ?? "without a status"}`;
   });
@@ -982,9 +1071,9 @@ export async function vpsComputerJoin(
   const joinUrl = `http://127.0.0.1:${localPort}/vnc.html#autoconnect=true&resize=scale&password=${encodeURIComponent(connection.password)}`;
   // Viewer-close is the normal cleanup. This unref'd ceiling is a backstop
   // for a renderer crash or an old browser client that cannot signal close.
-  const expiry = setTimeout(() => stopDesktopTunnel(botId), 8 * 60 * 60_000);
+  const expiry = setTimeout(() => stopDesktopTunnel(target.key), 8 * 60 * 60_000);
   expiry.unref?.();
-  desktopTunnels.set(botId, { child, joinUrl, expiry });
+  desktopTunnels.set(target.key, { child, joinUrl, expiry });
   return { joinUrl, state: "running" };
 }
 
@@ -1005,9 +1094,10 @@ export function vpsComputerMcp(cfg: AppConfig, botId: string, containerRef?: str
 } {
   const alias = vpsSshAlias(cfg);
   if (!alias) throw new Error("VPS is not configured — add an SSH config alias first");
+  const target = vpsTargetFor(cfg, botId);
   return {
     command: process.execPath,
-    args: [SPAWNED_PROXIES.vpsContainerMcp, alias, containerRef ?? vpsContainerName(botId)],
+    args: [SPAWNED_PROXIES.vpsContainerMcp, alias, containerRef ?? target.containerName],
     env: { ELECTRON_RUN_AS_NODE: "1" },
   };
 }
@@ -1030,7 +1120,8 @@ export async function vpsComputerScreenshot(
 ): Promise<{ png: string; format: "png" | "jpeg" }> {
   const alias = vpsSshAlias(cfg);
   if (!alias) throw Object.assign(new Error("VPS is not configured"), { status: 409 });
-  const key = `${alias}:${vpsContainerName(botId)}`;
+  const target = vpsTargetFor(cfg, botId);
+  const key = `${alias}:${target.containerName}`;
   const cacheable = runner === defaultRunner;
   return withVpsLifecycleLock(key, async () => {
     // Same shape as containerComputerScreenshot's screenshotStatusCache: the

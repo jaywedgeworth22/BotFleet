@@ -2091,6 +2091,7 @@ let localVmImageBusy = false;
 let localVmProvisionBusy = false;
 let localVmModeChangeBusy = false;
 const activeVpsThreads = new ExactTurnLeases();
+let vpsModeChangeBusy = false;
 // A restore mutates and cleans a project work tree. Claim the bot across the
 // entire async Git operation so a turn cannot start in that folder midway.
 const checkpointRestoreLeases = new Set<string>();
@@ -2217,7 +2218,24 @@ function turnComputerDeps(
     acquireLocalVm: () => acquireLocalVmMount(botId, threadId),
     vps,
     box,
-    vpsLeases: activeVpsThreads,
+    vpsLeases: {
+      claim(claimBotId: string, claimThreadId: string, dispatchId: number) {
+        const target = vps.vpsTargetFor(cfg, claimBotId);
+        const lease = activeVpsThreads.claim(claimBotId, claimThreadId, dispatchId, target.key);
+        if (!lease) {
+          throw Object.assign(
+            new Error(
+              target.key === "shared"
+                ? "the shared VPS is already being used by another turn — wait for that turn to finish"
+                : "this bot's VPS is already being used by another turn — wait for that turn to finish",
+            ),
+            { status: 409 },
+          );
+        }
+        return lease;
+      },
+      release(lease: ExactTurnLease) { activeVpsThreads.release(lease); },
+    },
     controlIntegration,
     broadcast: (frame) => broadcast({ ...frame }),
     notice,
@@ -3502,7 +3520,7 @@ async function startTurn(
 
   void (async () => {
     let observedReloadGeneration = providerReloadGeneration;
-    let vpsLease: ReturnType<ExactTurnLeases["claim"]> | undefined;
+    let vpsLease: ExactTurnLease | undefined;
     const dispatchStillCurrent = (): boolean => {
       const owner = activeTurnOwners.forEvent(threadId, instanceId);
       if (owner?.dispatchId !== dispatchOwner.dispatchId) return false;
@@ -7206,6 +7224,7 @@ function currentRuntimeReadiness(ownAdmissionActive = false, allowCredentialQueu
     connectors: pendingConnectorResumes.size,
     secrets: pendingSecretResumes.size,
     vps: activeVpsThreads.size,
+    vpsModeChange: Number(vpsModeChangeBusy),
     localVm: localVmActiveThreads.size + localVmLifecycleBusy.size,
     localVmChanges: Number(localVmImageBusy) + Number(localVmProvisionBusy) + Number(localVmModeChangeBusy),
     restores: checkpointRestoreLeases.size,
@@ -9452,6 +9471,13 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Best-effort: no container runtime, or no such container, is the
         // ordinary case and must not fail the delete.
         await containerComputerAction("remove", undefined, undefined, localVmTarget).catch(() => {});
+        // Same for the per-bot VPS container: once the store record is gone,
+        // nothing can derive the container name, and a mode-switch cleanup
+        // cannot reach it.  Only per-bot targets are removed here — the
+        // shared container serves other bots and must not be taken away.
+        const perBotVpsTarget = vps.perBotVpsTarget(bot.id);
+        await vps.vpsRemoveTargetIfPresent(cfg, perBotVpsTarget).catch(() => {});
+        vps.closeVpsDesktopTunnelForTarget(perBotVpsTarget.key);
         // The snapshot above was taken before two awaits.  A task created
         // while they ran has a record the delete below removes and a pair of
         // logs the snapshot never heard of, so take the union rather than
@@ -11597,6 +11623,24 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const aliasError = vpsAliasChangeError(currentAlias, nextAlias, activeVpsThreads.size > 0);
         if (aliasError) return json(res, 409, { error: aliasError });
       }
+      // Refuse a VPS mode switch early — before credential writes — when a
+      // live turn holds any desktop the switch would remove.  Actual container
+      // cleanup still runs just before save, after every other gate has passed.
+      {
+        const currentVpsMode = cfg.botDefaults?.vpsMode ?? null;
+        const nextVpsMode = patch.botDefaults && Object.hasOwn(patch.botDefaults, "vpsMode")
+          ? (patch.botDefaults.vpsMode ?? null)
+          : currentVpsMode;
+        if (nextVpsMode !== currentVpsMode) {
+          if (vpsModeChangeBusy) {
+            return json(res, 409, { error: "a VPS mode change is already in progress" });
+          }
+          const affectedVpsTargets = vps.vpsModeSwitchTargets(store.bots.map((b) => b.id));
+          if (affectedVpsTargets.some((t) => activeVpsThreads.hasTarget(t.key))) {
+            return json(res, 409, { error: "a VPS desktop is being used by a bot — stop that turn before switching modes" });
+          }
+        }
+      }
       const currentDefaultComputers = cfg.botDefaults?.computers;
       const currentAllowedComputers = consentAllowedComputers(cfg);
       const nextDefaultComputers = patch.botDefaults?.computers ?? currentDefaultComputers;
@@ -11816,6 +11860,28 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // the provider.  Nothing is awaited from here to the save.
       const lateImpact = unseenProviderImpact();
       if (lateImpact) return json(res, 409, lateImpact);
+
+      // ── VPS mode-switch gate (cleanup runs AFTER save — see below) ──
+      // Sync only: the provider-impact guard requires nothing be awaited
+      // between lateImpact and saveConfig.  Container removal happens after
+      // the save lands, using the targets captured here.
+      const currentVpsMode = cfg.botDefaults?.vpsMode ?? null;
+      const nextVpsMode = patch.botDefaults && Object.hasOwn(patch.botDefaults, "vpsMode")
+        ? (patch.botDefaults.vpsMode ?? null)
+        : currentVpsMode;
+      const vpsModeChanged = nextVpsMode !== currentVpsMode;
+      let pendingVpsModeCleanup: ReturnType<typeof vps.vpsModeSwitchTargets> | null = null;
+      if (vpsModeChanged) {
+        if (vpsModeChangeBusy) {
+          return json(res, 409, { error: "a VPS mode change is already in progress" });
+        }
+        const affectedVpsTargets = vps.vpsModeSwitchTargets(store.bots.map((b) => b.id));
+        if (affectedVpsTargets.some((t) => activeVpsThreads.hasTarget(t.key))) {
+          return json(res, 409, { error: "a VPS desktop is being used by a bot — stop that turn before switching modes" });
+        }
+        pendingVpsModeCleanup = affectedVpsTargets;
+      }
+
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
       if (externalSecretStorage) {
         // The packaged Electron caller commits supplied credentials to the
@@ -11864,6 +11930,22 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // shadow the new key until the next launch
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
+      }
+      // VPS mode-switch cleanup (mirrors Local VM at POST /api/local-computer/mode).
+      // Runs after the save so the lateImpact→saveConfig window stays await-free
+      // (config-reload-keys invariant).  Best-effort: a transport failure here
+      // leaves an orphan the next mode switch or bot delete can still name via
+      // vpsModeSwitchTargets / perBotVpsTarget.
+      if (pendingVpsModeCleanup) {
+        vpsModeChangeBusy = true;
+        try {
+          for (const target of pendingVpsModeCleanup) {
+            await vps.vpsRemoveTargetIfPresent(cfg, target).catch(() => {});
+            vps.closeVpsDesktopTunnelForTarget(target.key);
+          }
+        } finally {
+          vpsModeChangeBusy = false;
+        }
       }
       // A new machine identity, or a flipped kill switch, takes effect on this
       // request too: turning the store off clears the snapshot so the next
@@ -12172,7 +12254,7 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       return json(res, 200, resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "vps"
-        ? vps.closeVpsDesktopTunnel(bot.id)
+        ? vps.closeVpsDesktopTunnel(cfg, bot.id)
         : { closed: false });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|join|sleep|exec|screenshot|remove)$/);
@@ -12215,8 +12297,15 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (m[2] === "provision" && !bot.computers?.includes("cloud") && !bot.autoStartVps) {
           return json(res, 409, { error: "Auto may start this VPS only after Start VPS automatically is enabled" });
         }
-        if ((m[2] === "sleep" || m[2] === "remove") && (bot.busy || activeVpsThreads.hasBot(botId))) {
-          return json(res, 409, { error: "the VPS computer is being used by this bot — interrupt the turn first" });
+        if (m[2] === "sleep" || m[2] === "remove") {
+          const target = vps.vpsTargetFor(cfg, botId);
+          if (bot.busy || activeVpsThreads.hasBot(botId) || activeVpsThreads.hasTarget(target.key)) {
+            return json(res, 409, {
+              error: target.key === "shared"
+                ? "the shared VPS is being used by a bot — interrupt that turn first"
+                : "the VPS computer is being used by this bot — interrupt the turn first",
+            });
+          }
         }
         if (m[2] === "join") {
           if (req.headers["x-botfleet-companion"] === "1") {
