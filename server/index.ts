@@ -322,6 +322,9 @@ import { isBotPackage, packageAgentAsMember, parseBotPackage, renderBotPackageMa
 import { createTeamManifest, importedMemberProfile, parseTeamManifest } from "./team-manifest.ts";
 import { readThreadEvents } from "./thread-events.ts";
 import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./webhook-ingress.ts";
+import { readLinqWebhook } from "./routes/linq-webhook.ts";
+import { resolveLinqBinding } from "./linq/dispatch.ts";
+import { deliverLinqOutboundIfNeeded, releaseLinqChat, stopLinqTypingForThread } from "./linq/outbound.ts";
 import { memberTurnSelection } from "./member-turn.ts";
 import { WebhookManager } from "./webhooks.ts";
 import { ResourceTriggerManager } from "./resource-triggers.ts";
@@ -2268,6 +2271,15 @@ bus.subscribe((event: RuntimeEvent) => {
     // dispatches themselves release their exact keys.
     releaseLocalVmThread(event.threadId);
     releaseRoomComputerLease(event.threadId);
+      void stopLinqTypingForThread(event.threadId);
+      // The originating turn has settled (success, failure, or untagged
+      // alike): drop its Linq binding so a later BotFleet-origin turn on
+      // this thread cannot deliver to the previous external caller.
+      // Overlapping inbounds on one thread remain a known residual race
+      // (tracked for turn-scoped correlation); the dispatch reads its
+      // binding synchronously at send time, so the release cannot interrupt
+      // a send already in flight.
+      releaseLinqChat(event.threadId);
   }
   broadcast({ kind: "runtime", event });
   const routineRun = routines?.handleRuntimeEvent(event) ?? null;
@@ -2290,6 +2302,14 @@ bus.subscribe((event: RuntimeEvent) => {
     case "item.completed":
       if (event.itemType === "assistant_text") {
         pushMessage({ role: "bot", kind: "text", text: event.text });
+        if (bot) {
+          void deliverLinqOutboundIfNeeded(event.threadId, bot.id, event.text).then((r) => {
+            if (r.sent) console.log(`[linq-outbound] delivered thread=${event.threadId}`);
+            else if (r.reason && r.reason !== "no_linq_chat" && r.reason !== "not_tagged" && r.reason !== "bot_not_linq") {
+              console.warn(`[linq-outbound] failed thread=${event.threadId}: ${r.reason}`);
+            }
+          });
+        }
         // kept so "finished" can say what it finished with, rather than
         // just that something ended
         lastReply.set(event.threadId, event.text);
@@ -3778,6 +3798,16 @@ async function startTurn(
       // toolLoop eligibility.  Re-deriving that here would just risk the
       // two checks drifting apart.
       const hasPhone = usesDriverToolLoop && Boolean(integrations.phone);
+      // Linq transport gates `send_voice_message`.  The tool only surfaces
+      // when the bot opted into Linq AND the operator enabled voice
+      // (`imessageLinq.allowVoiceByDefault`) — the executor refuses
+      // otherwise, and advertising it anyway invites a wasted model round.
+      // Cost (hosted TTS) is the reason the gate is conservative.
+      const linqBinding = resolveLinqBinding(cfg, bot.id);
+      const hasLinq =
+        usesDriverToolLoop &&
+        Boolean(linqBinding) &&
+        cfg.imessageLinq?.allowVoiceByDefault === true;
       // Workspace confinement for read_file/write_file/edit_file: when a
       // bot has a workspace but no This Computer grant, the file tools
       // are still advertised (they're useful) but every path is checked
@@ -3797,8 +3827,8 @@ async function startTurn(
           ? { workspaceRealpath: realOrResolved(confinementRoot) }
           : undefined;
       const turnTools = buildTurnTools(
-        { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace, recall: hasRecall, phone: hasPhone },
-        { chiefOfStaff: Boolean(bot.chiefOfStaff) },
+        { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace, recall: hasRecall, phone: hasPhone, linq: hasLinq },
+        { chiefOfStaff: Boolean(bot.chiefOfStaff), linq: hasLinq },
       );
       // One builder, tagged parts, and the joined text is byte-identical to
       // the string this lane concatenated by hand before the split
@@ -3900,6 +3930,25 @@ async function startTurn(
               workspace: worksInWorkspace,
               recall: hasRecall && recallSettingsForTurn ? { settings: recallSettingsForTurn, botName: bot.name } : undefined,
               phone: hasPhone,
+              // Pass a resolved binding when (and only when) both the
+              // per-bot transport choice and the workspace's bot number
+              // are in place; the gate inside the host then offers
+              // `send_voice_message` (host.ts owns the executor merge).
+              linq: hasLinq ? { settings: linqBinding } : undefined,
+              // Production synthesizer: `server/index.ts` is the only place
+              // that imports `server/tts/index.ts` directly, and
+              // `server/tools/host.ts` cannot reach an `index.ts` file
+              // without tripping the import-cycle test in
+              // `tools/registry.test.ts:386`.  We close the loop here.
+              linqDeps: hasLinq
+                ? {
+                    synthesize: async (text, voice) => {
+                      const { speak } = await import("./tts/index.ts");
+                      const result = await speak(loadConfig(), text, voice);
+                      return { bytes: result.bytes, mime: result.mime };
+                    },
+                  }
+                : undefined,
               confinement: confinementForTurn,
               cwd: cwd ?? bot.cwd ?? undefined,
               // Read here, not derived from the catalog above: this is what
@@ -4291,7 +4340,26 @@ const webhooks = new WebhookManager({
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
-  webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT, beginAdmission: beginUpdateAdmission });
+  webhookIngress = await listenWebhookIngress(webhooks, {
+    port: WEBHOOK_PORT,
+    beginAdmission: beginUpdateAdmission,
+    // Linq posts to a fixed path and signs with X-Linq-Signature.  It lives
+    // on the webhook-only listener (8800) because that is what the public
+    // tunnel forwards to; the app server (8799) stays loopback-only.
+    routes: {
+      "/api/webhooks/linq": {
+        // Auth-first: the route verifies the HMAC before acquiring update
+        // admission (see readLinqWebhook), so the ingress handler must not
+        // admit it up front.
+        handler: (req, res) =>
+          readLinqWebhook(req, res, {
+            getBots: () => store.bots.slice(),
+            beginAdmission: beginUpdateAdmission,
+          }),
+        deferAdmission: true,
+      },
+    },
+  });
   console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
 } catch (error) {
   webhookIngressError = isListenInUse(error)
@@ -6431,6 +6499,30 @@ function configStatus() {
     // same configured-or-not way as every other credential
     tts: tts.describeVoice(cfg),
     imageGen: { configured: Boolean(cfg.imageGen?.key) },
+    // Linq binding credentials live in env (BOTFLEET_LINQAPP_API_KEY or
+    // legacy LINQ_API_TOKEN), so we never carry a token across this frame —
+    // only the operator-curated phone number, the per-bot transport map,
+    // and the voice-tool consent.  Same rule as tts above: configured-or-not
+    // is the whole answer.
+    imessageLinq: {
+      configured: Boolean(
+        process.env.BOTFLEET_LINQAPP_API_KEY?.trim() ||
+          process.env.LINQ_API_TOKEN?.trim() ||
+          cfg.imessageLinq?.apiToken?.trim(),
+      ),
+      // Outbound token status says nothing about inbound: without the
+      // signing secret the webhook receiver 503s every delivery.
+      webhookReady: Boolean(
+        process.env.LINQ_WEBHOOK_SECRET?.trim() ||
+          cfg.imessageLinq?.webhookSecret?.trim() ||
+          process.env.LINQ_ALLOW_UNSIGNED_WEBHOOK?.trim() === "1",
+      ),
+      botNumber: cfg.imessageLinq?.botNumber ?? "",
+      perBot: cfg.botDefaults?.imessagePerBot ?? {},
+      ignoredSenders: cfg.imessageLinq?.ignoredSenders ?? [],
+      allowedSenders: cfg.imessageLinq?.allowedSenders ?? [],
+      allowVoiceByDefault: cfg.imessageLinq?.allowVoiceByDefault === true,
+    },
     // not a secret — the sidebar shows it
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
@@ -7933,6 +8025,46 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return webhooks.remove(webhookMatch[1])
         ? json(res, 200, { ok: true })
         : json(res, 404, { error: "no such webhook" });
+    }
+
+    // The Linq partner-API webhook (`POST /api/webhooks/linq`) is mounted on
+    // the webhook-only ingress listener next to `listenWebhookIngress`, not
+    // here: the public tunnel reaches that listener, never this app server.
+
+    if (path === "/api/test/linq-self-message" && method === "POST") {
+      const cfg = loadConfig();
+      const workspace = cfg.imessageLinq;
+      const botNumber =
+        workspace?.botNumber?.trim() ||
+        process.env.BOTFLEET_LINQAPP_PHONE_NUMBER?.trim() ||
+        process.env.LINQ_AGENT_BOT_NUMBERS?.split(",")[0]?.trim() ||
+        "";
+      if (!botNumber) {
+        return json(res, 400, { ok: false, reason: "no_bot_number" });
+      }
+      if (
+        !process.env.BOTFLEET_LINQAPP_API_KEY?.trim() &&
+        !process.env.LINQ_API_TOKEN?.trim() &&
+        !cfg.imessageLinq?.apiToken?.trim()
+      ) {
+        return json(res, 400, { ok: false, reason: "missing_token" });
+      }
+      const body = await readBody(req);
+      const text = typeof body?.text === "string" ? body.text : "Test from BotFleet";
+      try {
+        const { linqSendMessage, linqCreateChat } = await import("./linq/client.ts");
+        const chat = await linqCreateChat(botNumber);
+        if (!chat.id) {
+          return json(res, 502, { ok: false, reason: "chat_resolve_failed" });
+        }
+        const result = await linqSendMessage(chat.id, {
+          text: `[BotFleet self-test] ${text}`,
+        });
+        return json(res, 200, { ok: true, messageId: result.id, chatId: chat.id });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return json(res, 502, { ok: false, reason: "send_failed", message });
+      }
     }
 
     if (path === "/api/resource-triggers" && method === "GET") {
@@ -9748,6 +9880,17 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const userAgent = Array.isArray(req.headers["user-agent"]) ? req.headers["user-agent"][0] : req.headers["user-agent"] ?? "unknown";
       const origin = req.headers.origin ?? "direct";
       const fromImessage = isImessageInboundSource(body.source, userAgent);
+      // Honor Off / Linq: Mac-relay posts (source=imessage) must not feed a bot
+      // whose operator-selected transport is off or linq.  Absent map =
+      // legacy Mac-relay (pre-per-bot transport), so upgrades keep working;
+      // an explicit "off" still rejects.
+      if (fromImessage) {
+        const transport = loadConfig().botDefaults?.imessagePerBot?.[bot.id] ?? "mac-relay";
+        if (transport !== "mac-relay") {
+          console.warn(`[inbound-message] rejecting Mac-relay post for bot ${bot.name} (${bot.id}): imessagePerBot=${transport}`);
+          return json(res, 403, { error: "imessage_transport_disabled", transport });
+        }
+      }
       const text = fromImessage ? wrapImessageInbound(rawText) : rawText;
       console.log(`[inbound-message] bot=${bot.name} (${bot.id}) thread=${bot.threadId} origin=${origin} ua=${userAgent} imessage=${fromImessage} len=${text.length}`);
 
