@@ -134,6 +134,8 @@ export interface DescribedInstance {
     effortLevels?: readonly string[];
     queueing?: boolean;
     approvalReview?: boolean;
+    /** True when this engine runs the harness HTTP tool loop. */
+    toolLoop: boolean;
   };
   /** Which computer destinations this engine can be given at all — the ONE
    *  answer, derived from the adapter's own flags in `computer-capability.ts`
@@ -409,7 +411,7 @@ export class ProviderRegistry {
         enabled,
         snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
         models: { default: "", options: [] },
-        capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
+        capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false, toolLoop: false },
         // A shadow has no adapter to ask, so the derivation is fed the same
         // all-false capabilities reported above.  That leaves the box-native
         // engine reaching its own box — which is what the client computed
@@ -657,6 +659,7 @@ export class ProviderRegistry {
         queueing: inst.adapter.capabilities.queueing === true,
         localComputerMcp: inst.adapter.capabilities.localComputerMcp === true,
         approvalReview: inst.reviewPermission !== undefined,
+        toolLoop: inst.adapter.capabilities.toolLoop === true,
       },
       // Derived here, on the one wire where adapter capabilities already
       // become an InstanceInfo, so the client never recomputes it and can
