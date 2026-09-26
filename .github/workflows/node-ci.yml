@@ -19,5 +19,5 @@ jobs:
           node-version: "24"
       - name: Enable pnpm
         run: corepack enable && corepack prepare pnpm@10.33.0 --activate
-      - run: pnpm install --frozen-lockfile --no-audit --no-fund
+      - run: pnpm install --frozen-lockfile
       - run: pnpm lint
