@@ -20,11 +20,16 @@ the tools, instructions, and transcript the endpoint had already cached.
 
 A section is **volatile** when its text legitimately differs between two turns of
 one live conversation.  `VOLATILE_SECTIONS` is `memory`, `mentions`, `outstanding`,
-and `recent`; BotFleet emits the first two today, and the ids match upstream's so
-a later port of the other sections lands on the right half.  Everything else is
-the **stable** half: persona, computer and connected-app sentences, the Chief
-roster and status capsule (byte-stable across a busy flip since PR #617), section
-context, the skills index, skill instructions, playbooks, and provenance.
+and `recent` (upstream's ids; BotFleet emits the first two today, so a later port
+of the other two lands on the right half), plus BotFleet's own
+`skill-instructions`, `playbooks`, and `automation`.  Skill instructions and
+playbooks are selected from trigger terms in the message being sent, and the
+automation note names what triggered this one turn, so all three change between
+turns of one session; on the stable half, the first message with a new trigger
+term would relaunch the Claude CLI and re-upload the cached conversation.
+Everything else is the **stable** half: persona, computer and connected-app
+sentences, the Chief roster and status capsule (byte-stable across a busy flip
+since PR #617), section context, the skills index, and provenance.
 
 `SendTurnInput` carries `system` (the whole prompt, unchanged), `systemStable`,
 `systemVolatile`, `volatileDigest` (sha256 of the volatile half), and `mentionTurn`

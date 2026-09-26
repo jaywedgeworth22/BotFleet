@@ -6,6 +6,9 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
+import { installedPlaybookInstructions } from "./installed-playbooks.ts";
+import { renderSkillInstructions, selectBundledSkills, type BundledSkill } from "./skill-library.ts";
+import type { InstalledPlaybook } from "./store.ts";
 import { buildSystemPrompt, isVolatileSection, VOLATILE_SECTIONS, volatileDigest, type PromptPart } from "./system-prompt.ts";
 
 /** The direct lane's pre-split concatenation, kept here verbatim in shape so
@@ -126,24 +129,69 @@ describe("buildSystemPrompt", () => {
     ]);
     expect(built.text).toBe(old);
     expect(built.stable + built.volatile).not.toBe(built.text);
-    expect(built.volatile).toBe(`\n${memory.trim()}`);
+    expect(built.volatile).toBe(`\n${memory.trim()}` + skillInstructions);
   });
 
-  it("reports memory and mentions apart from the stable half, in order", () => {
+  it("reports the per-turn sections apart from the stable half, in order", () => {
     const built = buildSystemPrompt(directLaneParts(FULL));
     const mentions = directLaneParts(FULL).find((part) => part.id === "mentions")!.text;
 
-    expect(built.volatile).toBe(FULL.memory + mentions);
+    expect(built.volatile).toBe(FULL.memory + FULL.skillInstructions + FULL.playbooks + FULL.automation + mentions);
     expect(built.stable).toBe(
       FULL.persona + FULL.computer + FULL.composio + FULL.recall + ` ${FULL.coordination}` + FULL.credential + FULL.routine +
-        FULL.sectionContext + FULL.skills + FULL.skillInstructions + FULL.playbooks + FULL.automation,
+        FULL.sectionContext + FULL.skills,
     );
     // the roster and the status capsule are byte-stable (PR #617) and stay
     // on the half a warm CLI process is keyed on
     expect(built.stable).toContain("Chief of Staff");
     expect(built.stable).not.toContain("likes tea");
     expect(built.stable).not.toContain("The user tagged");
-    expect(built.sections.filter((section) => section.volatile).map((section) => section.id)).toEqual(["memory", "mentions"]);
+    expect(built.stable).not.toContain("botfleet-skill");
+    expect(built.stable).not.toContain("installed_package_playbooks");
+    expect(built.sections.filter((section) => section.volatile).map((section) => section.id)).toEqual([
+      "memory",
+      "skill-instructions",
+      "playbooks",
+      "automation",
+      "mentions",
+    ]);
+  });
+
+  it("keeps the stable half byte-identical across messages with different skill and playbook trigger terms", () => {
+    // Real selection, as both lanes run it: skills and playbooks are chosen
+    // from the text of the message being sent, so two turns of one live
+    // session can mount different ones.
+    const skill = (id: string, term: string): BundledSkill => ({
+      manifest: { id, name: id, version: "1.0.0", description: id, defaultEnabled: true, triggerTerms: [term], requiredCapabilities: [] },
+      instructions: `Use the ${id} steps.`,
+      directory: `/skills/${id}`,
+    });
+    const skills = [skill("pdf", "pdf"), skill("spreadsheet", "spreadsheet")];
+    const playbooks: InstalledPlaybook[] = [
+      { key: "review", name: "Review", summary: "Review steps", triggers: ["code review"], instructions: "Read the diff first." },
+    ];
+    const turn = (message: string, automation = "") =>
+      buildSystemPrompt(directLaneParts({
+        ...FULL,
+        skillInstructions: renderSkillInstructions(selectBundledSkills(message, [], skills)),
+        playbooks: installedPlaybookInstructions(message, playbooks),
+        automation,
+        tagged: [],
+      }));
+
+    const plain = turn("How was your weekend?");
+    const pdf = turn("Summarize the attached pdf");
+    const review = turn("Do a code review of the spreadsheet export");
+    const webhook = turn("New lead arrived", " This task was triggered by an authenticated external webhook.");
+
+    expect(pdf.volatile).toContain("botfleet-skill id=\"pdf\"");
+    expect(review.volatile).toContain("botfleet-skill id=\"spreadsheet\"");
+    expect(review.volatile).toContain("installed_package_playbooks");
+    expect(webhook.volatile).toContain("authenticated external webhook");
+    for (const later of [pdf, review, webhook]) {
+      expect(later.stable).toBe(plain.stable);
+      expect(later.volatileDigest).not.toBe(plain.volatileDigest);
+    }
   });
 
   it("keeps the stable half byte-identical across a memory write and a mention", () => {
@@ -187,7 +235,7 @@ describe("buildSystemPrompt", () => {
     expect(built.volatile).toBe(" now: 20:48");
     expect(isVolatileSection({ id: "snapshot", volatile: true })).toBe(true);
     expect(isVolatileSection({ id: "skills" })).toBe(false);
-    for (const id of ["memory", "mentions", "outstanding", "recent"]) {
+    for (const id of ["memory", "mentions", "outstanding", "recent", "skill-instructions", "playbooks", "automation"]) {
       expect(VOLATILE_SECTIONS.has(id)).toBe(true);
       expect(isVolatileSection({ id })).toBe(true);
     }

@@ -9,10 +9,14 @@
 // section is volatile when its text legitimately differs between two turns
 // of one live conversation: memory, because a bot writes MEMORY.md
 // mid-conversation; mentions, which describe the message being sent right
-// now; outstanding teammate work and recent work (upstream sections that
-// BotFleet may adopt later), which settle or relabel while the person keeps
-// talking.  Everything else is the stable half: the bytes a provider's
-// cached prefix, or a spawned CLI's session contract, must keep identical.
+// now; skill instructions and playbooks, which are selected by trigger terms
+// in the message being sent right now (selectBundledSkills and
+// installedPlaybookInstructions both read the current text); the automation
+// note, which names what triggered this one turn; outstanding teammate work
+// and recent work (upstream sections that BotFleet may adopt later), which
+// settle or relabel while the person keeps talking.  Everything else is the
+// stable half: the bytes a provider's cached prefix, or a spawned CLI's
+// session contract, must keep identical.
 //
 // Before this split every one of those sections lived inside the single
 // system string.  Saving a memory changed that string, which changed the
@@ -51,9 +55,22 @@ export interface BuiltSystemPrompt {
 }
 
 /** Sections whose text legitimately differs between two turns of one live
- * conversation.  The ids match upstream's so a later port of the
- * outstanding-work and recent-work sections lands on the right half. */
-export const VOLATILE_SECTIONS: ReadonlySet<string> = new Set(["memory", "mentions", "outstanding", "recent"]);
+ * conversation.  The upstream ids (memory, mentions, outstanding, recent)
+ * match so a later port of the outstanding-work and recent-work sections
+ * lands on the right half.  `skill-instructions`, `playbooks`, and
+ * `automation` are BotFleet's own: each is chosen per message, so keeping
+ * them stable would change the stable half — and relaunch the Claude CLI,
+ * re-uploading the cached conversation — the first time a message used a
+ * new trigger term. */
+export const VOLATILE_SECTIONS: ReadonlySet<string> = new Set([
+  "memory",
+  "mentions",
+  "outstanding",
+  "recent",
+  "skill-instructions",
+  "playbooks",
+  "automation",
+]);
 
 export function isVolatileSection(part: Pick<PromptPart, "id" | "volatile">): boolean {
   return part.volatile === true || VOLATILE_SECTIONS.has(part.id);
