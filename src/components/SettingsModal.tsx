@@ -620,55 +620,6 @@ function UpdateNotificationsRow() {
   );
 }
 
-function WorkspaceLayoutRow() {
-  const { state, dispatch } = useStore();
-  const current = state.config?.workspaceLayout ?? "simple";
-  const [saving, setSaving] = useState(false);
-  const save = async (workspaceLayout: "simple" | "matrix") => {
-    if (saving || workspaceLayout === current) return;
-    setSaving(true);
-    try {
-      const config: ConfigStatus = await api("/api/conversation-mode", {
-        method: "PATCH",
-        body: JSON.stringify({ workspaceLayout }),
-      });
-      dispatch({ type: "configStatus", config });
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Card
-      title="Workspace Layout"
-      subtitle="Simple shows a single list of bots or threads down the left side. Matrix places apps across the top and bots down the side, isolating context per app."
-    >
-      <div className="flex flex-col gap-2">
-        {(["simple", "matrix"] as const).map((mode) => {
-          const selected = current === mode;
-          const title = mode === "simple" ? "Simple List" : "2D Matrix (App/Bot Grid)";
-          const subtitle = mode === "simple" 
-            ? "A flat roster of bots with individual threads and shared rooms."
-            : "Apps across the top, bots down the side. Each bot has an isolated thread per app.";
-          return (
-            <button
-              key={mode}
-              type="button"
-              disabled={saving}
-              onClick={() => void save(mode)}
-              className={cn(
-                "rounded-lg border px-3 py-2.5 text-left",
-                selected ? "border-accent bg-accent/10" : "border-hairline/40 hover:bg-raised/60",
-              )}
-            >
-              <div className="text-[14px] font-medium text-ink">{title}</div>
-              <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{subtitle}</div>
-            </button>
-          );
-        })}
-      </div>
-    </Card>
-  );
-}
 
 function WorkspaceRosterRow() {
   const { state, dispatch } = useStore();
@@ -720,55 +671,6 @@ function WorkspaceRosterRow() {
   );
 }
 
-function WorkspaceFanOutRow() {
-  const { state, dispatch } = useStore();
-  const current = state.config?.workspaceFanOut ?? "serial";
-  const [saving, setSaving] = useState(false);
-  const save = async (workspaceFanOut: "serial" | "concurrent") => {
-    if (saving || workspaceFanOut === current) return;
-    setSaving(true);
-    try {
-      const config: ConfigStatus = await api("/api/conversation-mode", {
-        method: "PATCH",
-        body: JSON.stringify({ workspaceFanOut }),
-      });
-      dispatch({ type: "configStatus", config });
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Card
-      title="Concurrency Fan-Out"
-      subtitle="How many threads a bot can be active on simultaneously."
-    >
-      <div className="flex flex-col gap-2">
-        {(["serial", "concurrent"] as const).map((mode) => {
-          const selected = current === mode;
-          const title = mode === "serial" ? "Serial (One at a time)" : "Concurrent (Parallel Apps)";
-          const subtitle = mode === "serial" 
-            ? "Bots focus on one app's turn at a time. Safe and prevents repo conflicts."
-            : "Bots can work on multiple apps at once using isolated ephemeral swarms.";
-          return (
-            <button
-              key={mode}
-              type="button"
-              disabled={saving}
-              onClick={() => void save(mode)}
-              className={cn(
-                "rounded-lg border px-3 py-2.5 text-left",
-                selected ? "border-accent bg-accent/10" : "border-hairline/40 hover:bg-raised/60",
-              )}
-            >
-              <div className="text-[14px] font-medium text-ink">{title}</div>
-              <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{subtitle}</div>
-            </button>
-          );
-        })}
-      </div>
-    </Card>
-  );
-}
 
 /** Usage analytics, on by default and switchable here. Naming what is sent
  * matters more than the switch: people who cannot see the scope assume the
@@ -1411,18 +1313,11 @@ export function SettingsModal() {
                   <div id="setting-general-terminology" className={highlightClass("setting-general-terminology")}>
                     <TerminologyRow />
                   </div>
-                  <div id="setting-general-conversation-mode" className={highlightClass("setting-general-conversation-mode")}>
-                    <WorkspaceLayoutRow />
-                  </div>
                   <div id="setting-general-workspace-roster" className={highlightClass("setting-general-workspace-roster")}>
                     <WorkspaceRosterRow />
                   </div>
-                  <div id="setting-general-workspace-fanout" className={highlightClass("setting-general-workspace-fanout")}>
-                    <WorkspaceFanOutRow />
-                  </div>
                   <Card
                     id="setting-general-room-turn-timeout"
-                    className={highlightClass("setting-general-room-turn-timeout")}
                     title="Channel Turns"
                     subtitle="Set one maximum duration for every bot turn in a channel."
                   >
