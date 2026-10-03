@@ -427,6 +427,7 @@ const appConfigSchema = z.object({
   }).optional(),
   features: featureConfigSchema.optional(),
   conversationMode: z.enum(STORED_CONVERSATION_MODES).optional(),
+  workspaceRoster: z.enum(["bots", "threads"]).optional(),
   terminology: z
     .enum(["channels", "groups", "projects", "apps", "topics", "repos", "custom"])
     .optional(),
@@ -615,6 +616,7 @@ export interface AppConfig {
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   /** How the roster and threads are laid out.  Absent means simple. */
   conversationMode?: ConversationMode;
+  workspaceRoster?: "bots" | "threads";
   /** What this person calls a room: one of the presets, or "custom" with a
    * word of their own in `terminologyCustom`.  Absent means channels. */
   terminology?: RoomTerminology;
@@ -625,6 +627,7 @@ export interface AppConfig {
 }
 export type ConfigPatch = Omit<z.output<typeof appConfigPatchSchema>, "conversationMode"> & {
   conversationMode?: ConversationMode;
+  workspaceRoster?: "bots" | "threads";
 };
 
 export function parseStoredConfig(value: JsonValue): AppConfig {
@@ -644,6 +647,7 @@ export function parseStoredConfig(value: JsonValue): AppConfig {
     conversationMode: parsed.data.conversationMode === undefined
       ? undefined
       : parseConversationMode(parsed.data.conversationMode),
+    workspaceRoster: parsed.data.workspaceRoster,
   };
 }
 
@@ -1414,6 +1418,7 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
   }
   if (checkedPatch.vps !== undefined) disk.vps = normalizeVpsConfig(checkedPatch.vps);
   if (checkedPatch.conversationMode !== undefined) disk.conversationMode = checkedPatch.conversationMode;
+  if (checkedPatch.workspaceRoster !== undefined) disk.workspaceRoster = checkedPatch.workspaceRoster;
   if (checkedPatch.terminology !== undefined) disk.terminology = checkedPatch.terminology;
   if (checkedPatch.terminologyCustom !== undefined) disk.terminologyCustom = checkedPatch.terminologyCustom;
   if (checkedPatch.deleteInstance) {

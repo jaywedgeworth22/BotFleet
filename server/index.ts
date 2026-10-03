@@ -13568,12 +13568,19 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // phone gets its own route rather than write access to /api/config.
     if (method === "PATCH" && path === "/api/conversation-mode") {
       const body = await readBody(req);
-      const patch = parseConfigPatch({ conversationMode: body.conversationMode });
-      if (patch.conversationMode === undefined) {
+      const patch = parseConfigPatch({ 
+        conversationMode: body.conversationMode,
+        workspaceRoster: body.workspaceRoster,
+      });
+      if (patch.conversationMode === undefined && patch.workspaceRoster === undefined) {
         return json(res, 400, { error: "nothing to save" });
       }
-      cfg.conversationMode = parseConversationMode(patch.conversationMode);
-      saveConfig({ conversationMode: cfg.conversationMode });
+      if (patch.conversationMode !== undefined) cfg.conversationMode = parseConversationMode(patch.conversationMode);
+      if (patch.workspaceRoster !== undefined) cfg.workspaceRoster = patch.workspaceRoster;
+      saveConfig({ 
+        conversationMode: cfg.conversationMode,
+        workspaceRoster: cfg.workspaceRoster,
+      });
       const mergeThreads = body.mergeThreads === true && cfg.conversationMode === "simple";
       if (mergeThreads) store.mergeAllExtraThreads();
       const status = configStatus();

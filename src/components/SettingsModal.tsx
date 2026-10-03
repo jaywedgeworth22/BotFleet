@@ -17,12 +17,7 @@ import {
   type RoomLabels,
   type RoomTerminology,
 } from "../../shared/terminology";
-import {
-  CONVERSATION_MODE_COPY,
-  CONVERSATION_MODES,
-  parseConversationMode,
-  type ConversationMode,
-} from "../../shared/conversation-mode";
+
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { showToolCallsEnabled, skillRecorderEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { ApiKeyRow, EngineKeyRow, VpsConnection } from "./ApiKeys";
@@ -625,103 +620,57 @@ function UpdateNotificationsRow() {
   );
 }
 
-function ConversationModeRow() {
+
+function WorkspaceRosterRow() {
   const { state, dispatch } = useStore();
-  const current = parseConversationMode(state.config?.conversationMode);
+  const current = state.config?.workspaceRoster ?? "bots";
   const [saving, setSaving] = useState(false);
-  const [pendingSimple, setPendingSimple] = useState(false);
-  const save = async (conversationMode: ConversationMode, mergeThreads = false) => {
-    if (saving) return;
+  const save = async (workspaceRoster: "bots" | "threads") => {
+    if (saving || workspaceRoster === current) return;
     setSaving(true);
-    setPendingSimple(false);
     try {
-      // `mergeThreads` is absent rather than false when the caller did not
-      // ask for it, so each payload stays one the route actually documents.
-      const payload = mergeThreads
-        ? { conversationMode, mergeThreads: true }
-        : { conversationMode };
       const config: ConfigStatus = await api("/api/conversation-mode", {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ workspaceRoster }),
       });
       dispatch({ type: "configStatus", config });
-    } catch {
     } finally {
       setSaving(false);
     }
   };
-  const choose = (conversationMode: ConversationMode) => {
-    if (saving || conversationMode === current) return;
-    if (conversationMode === "simple" && current === "projects") {
-      setPendingSimple(true);
-      return;
-    }
-    void save(conversationMode);
-  };
   return (
     <Card
-      title="Workspace Layout"
-      subtitle="Simple is Grok-style: named bots with one conversation each, plus group threads.  Projects hide named bots and treat the room word as a category that any number of threads can sit under."
+      title="Team Roster"
+      subtitle="Choose whether your workspace consists of persistent, named bots or generic ad-hoc threads."
     >
       <div className="flex flex-col gap-2">
-        {CONVERSATION_MODES.map((mode) => {
-          const copy = CONVERSATION_MODE_COPY[mode];
+        {(["bots", "threads"] as const).map((mode) => {
           const selected = current === mode;
+          const title = mode === "bots" ? "Named Bots" : "Generic Threads";
+          const subtitle = mode === "bots" 
+            ? "A persistent team of bots (e.g., Builder, Reviewer) that retain their identities."
+            : "Categories with any number of generic threads sitting under them.";
           return (
             <button
               key={mode}
               type="button"
               disabled={saving}
-              aria-pressed={selected}
-              onClick={() => void choose(mode)}
+              onClick={() => void save(mode)}
               className={cn(
                 "rounded-lg border px-3 py-2.5 text-left",
                 selected ? "border-accent bg-accent/10" : "border-hairline/40 hover:bg-raised/60",
               )}
             >
-              <div className="text-[14px] font-medium text-ink">{copy.title}</div>
-              <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{copy.subtitle}</div>
+              <div className="text-[14px] font-medium text-ink">{title}</div>
+              <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{subtitle}</div>
             </button>
           );
         })}
-        {pendingSimple && (
-          <div className="rounded-lg border border-hairline/40 bg-raised/40 px-3 py-2.5">
-            <div className="text-[14px] font-medium text-ink">Merge Extra Threads?</div>
-            <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
-              Simple is one conversation per bot.{"\u00A0"} Merge extra threads into that conversation, or keep them saved but hidden.
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => void save("simple", true)}
-                className="rounded-lg border border-accent bg-accent/10 px-3 py-1.5 text-[13px] font-medium text-ink"
-              >
-                Merge All Threads
-              </button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => void save("simple")}
-                className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-raised/60"
-              >
-                Keep Extra Threads Hidden
-              </button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => setPendingSimple(false)}
-                className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:text-ink"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </Card>
   );
 }
+
 
 /** Usage analytics, on by default and switchable here. Naming what is sent
  * matters more than the switch: people who cannot see the scope assume the
@@ -1361,15 +1310,14 @@ export function SettingsModal() {
                   >
                     <SkinPicker />
                   </Card>
-                  <div id="setting-general-conversation-mode" className={highlightClass("setting-general-conversation-mode")}>
-                    <ConversationModeRow />
-                  </div>
                   <div id="setting-general-terminology" className={highlightClass("setting-general-terminology")}>
                     <TerminologyRow />
                   </div>
+                  <div id="setting-general-workspace-roster" className={highlightClass("setting-general-workspace-roster")}>
+                    <WorkspaceRosterRow />
+                  </div>
                   <Card
                     id="setting-general-room-turn-timeout"
-                    className={highlightClass("setting-general-room-turn-timeout")}
                     title="Channel Turns"
                     subtitle="Set one maximum duration for every bot turn in a channel."
                   >

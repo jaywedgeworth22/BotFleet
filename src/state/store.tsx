@@ -537,6 +537,7 @@ export interface ConfigStatus {
   /** Simple (Grok-style bots + group threads) or Projects (categories of
    * threads).  Absent means simple. */
   conversationMode?: ConversationMode;
+  workspaceRoster?: "bots" | "threads";
   /** Shared Qdrant Bot RAG vector database status. `url` and `collection`
    * are empty until the operator sets them — BotFleet ships no endpoint. */
   qdrant?: {
@@ -641,7 +642,7 @@ export function getConversationMode(config?: ConfigStatus | null): ConversationM
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "botDefaults" | "host" | "ingress" | "localVm" | "opencodeGo" | "tts" | "callStt" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical" | "imessageLinq"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "botDefaults" | "host" | "ingress" | "localVm" | "opencodeGo" | "tts" | "callStt" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "workspaceRoster" | "qdrant" | "usage" | "features" | "observability" | "infisical" | "imessageLinq"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -668,6 +669,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     terminology: frame.terminology,
     roomLabels: frame.roomLabels,
     conversationMode: frame.conversationMode,
+    workspaceRoster: frame.workspaceRoster,
     qdrant: frame.qdrant,
     usage: frame.usage,
     features: frame.features,
