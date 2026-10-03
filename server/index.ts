@@ -13572,6 +13572,7 @@ handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         conversationMode: body.conversationMode,
         workspaceRoster: body.workspaceRoster,
       });
+      if (patch.conversationMode === undefined && patch.workspaceRoster === undefined) {
         return json(res, 400, { error: "nothing to save" });
       }
       if (patch.conversationMode !== undefined) cfg.conversationMode = parseConversationMode(patch.conversationMode);
