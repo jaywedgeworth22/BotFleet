@@ -538,7 +538,6 @@ export interface ConfigStatus {
    * threads).  Absent means simple. */
   conversationMode?: ConversationMode;
   workspaceRoster?: "bots" | "threads";
-  workspaceRoster?: "bots" | "threads";
   /** Shared Qdrant Bot RAG vector database status. `url` and `collection`
    * are empty until the operator sets them — BotFleet ships no endpoint. */
   qdrant?: {
