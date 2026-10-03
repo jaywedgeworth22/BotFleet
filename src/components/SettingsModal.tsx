@@ -1361,11 +1361,11 @@ export function SettingsModal() {
                   >
                     <SkinPicker />
                   </Card>
-                  <div id="setting-general-conversation-mode" className={highlightClass("setting-general-conversation-mode")}>
-                    <ConversationModeRow />
-                  </div>
                   <div id="setting-general-terminology" className={highlightClass("setting-general-terminology")}>
                     <TerminologyRow />
+                  </div>
+                  <div id="setting-general-conversation-mode" className={highlightClass("setting-general-conversation-mode")}>
+                    <ConversationModeRow />
                   </div>
                   <Card
                     id="setting-general-room-turn-timeout"

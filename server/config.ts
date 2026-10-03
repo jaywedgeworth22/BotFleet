@@ -427,6 +427,9 @@ const appConfigSchema = z.object({
   }).optional(),
   features: featureConfigSchema.optional(),
   conversationMode: z.enum(STORED_CONVERSATION_MODES).optional(),
+  workspaceLayout: z.enum(["simple", "matrix"]).optional(),
+  workspaceRoster: z.enum(["bots", "threads"]).optional(),
+  workspaceFanOut: z.enum(["serial", "concurrent"]).optional(),
   terminology: z
     .enum(["channels", "groups", "projects", "apps", "topics", "repos", "custom"])
     .optional(),
@@ -615,6 +618,9 @@ export interface AppConfig {
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   /** How the roster and threads are laid out.  Absent means simple. */
   conversationMode?: ConversationMode;
+  workspaceLayout?: "simple" | "matrix";
+  workspaceRoster?: "bots" | "threads";
+  workspaceFanOut?: "serial" | "concurrent";
   /** What this person calls a room: one of the presets, or "custom" with a
    * word of their own in `terminologyCustom`.  Absent means channels. */
   terminology?: RoomTerminology;
@@ -625,6 +631,9 @@ export interface AppConfig {
 }
 export type ConfigPatch = Omit<z.output<typeof appConfigPatchSchema>, "conversationMode"> & {
   conversationMode?: ConversationMode;
+  workspaceLayout?: "simple" | "matrix";
+  workspaceRoster?: "bots" | "threads";
+  workspaceFanOut?: "serial" | "concurrent";
 };
 
 export function parseStoredConfig(value: JsonValue): AppConfig {
@@ -644,6 +653,9 @@ export function parseStoredConfig(value: JsonValue): AppConfig {
     conversationMode: parsed.data.conversationMode === undefined
       ? undefined
       : parseConversationMode(parsed.data.conversationMode),
+    workspaceLayout: parsed.data.workspaceLayout,
+    workspaceRoster: parsed.data.workspaceRoster,
+    workspaceFanOut: parsed.data.workspaceFanOut,
   };
 }
 
@@ -1414,6 +1426,9 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
   }
   if (checkedPatch.vps !== undefined) disk.vps = normalizeVpsConfig(checkedPatch.vps);
   if (checkedPatch.conversationMode !== undefined) disk.conversationMode = checkedPatch.conversationMode;
+  if (checkedPatch.workspaceLayout !== undefined) disk.workspaceLayout = checkedPatch.workspaceLayout;
+  if (checkedPatch.workspaceRoster !== undefined) disk.workspaceRoster = checkedPatch.workspaceRoster;
+  if (checkedPatch.workspaceFanOut !== undefined) disk.workspaceFanOut = checkedPatch.workspaceFanOut;
   if (checkedPatch.terminology !== undefined) disk.terminology = checkedPatch.terminology;
   if (checkedPatch.terminologyCustom !== undefined) disk.terminologyCustom = checkedPatch.terminologyCustom;
   if (checkedPatch.deleteInstance) {
